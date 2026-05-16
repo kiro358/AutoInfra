@@ -1,0 +1,10 @@
+node_modules
+.next
+.env*
+.DS_Store
+dist
+build
+
+# Large Data Folders
+existing_projects_training_data/
+existing_projects_testing_data/

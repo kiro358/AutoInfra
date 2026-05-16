@@ -1,0 +1,9 @@
+webapp/node_modules
+webapp/.next
+webapp/uploads
+webapp/outputs
+webapp/.env.local
+existing_projects_training_data
+existing_projects_testing_data
+.git
+*.md

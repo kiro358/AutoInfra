@@ -1,0 +1,25 @@
+# Exclude massive training/testing data
+existing_projects_training_data/
+existing_projects_testing_data/
+
+# Exclude node_modules (will be installed in Docker)
+webapp/node_modules/
+
+# Exclude Next.js build artifacts
+webapp/.next/
+
+# Exclude local env
+webapp/.env.local
+
+# Exclude uploads/outputs
+webapp/uploads/
+webapp/outputs/
+
+# Exclude git
+.git/
+
+# Exclude markdown docs
+*.md
+
+# Exclude the webapp Dockerfile (use root Dockerfile)
+webapp/Dockerfile

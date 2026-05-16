@@ -1,0 +1,748 @@
+[
+  {
+    "projectName": "201 GEORGIAN DRIVE , BARRIE",
+    "jobNumber": "2026-067",
+    "date": "APR.19th,2026",
+    "manholes": [
+      {
+        "description": "DCBMH 2",
+        "depth": 2,
+        "addMaterials": 900,
+        "addLE": 0
+      },
+      {
+        "description": "MH 1/O.P.",
+        "depth": 1.7,
+        "addMaterials": 1500,
+        "addLE": 500
+      },
+      {
+        "description": "GREENSTORM",
+        "depth": null,
+        "addMaterials": 39835,
+        "addLE": 17430
+      }
+    ],
+    "catchbasins": {
+      "groups": [
+        {
+          "type": "SINGLE_CB",
+          "quantity": 2,
+          "wallThickness": 4,
+          "depth": 2.2,
+          "grateEach": 0,
+          "addMaterials": 900
+        },
+        {
+          "type": "DITCH_INLET_CB",
+          "quantity": 1,
+          "wallThickness": 4,
+          "depth": 2.2,
+          "grateEach": 0,
+          "addMaterials": 900
+        }
+      ],
+      "laborRates": {
+        "scbLabor": 200,
+        "dcbLabor": 250,
+        "dicbFC": 465,
+        "ddicbFC": 715
+      }
+    },
+    "sewers": [
+      {
+        "runLabel": "CB 3-DCBMH 2",
+        "isLineItem": false,
+        "length": 21,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.7,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CB 1-MH 1/INS.",
+        "isLineItem": false,
+        "length": 9,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.5,
+        "addMaterials": 720,
+        "addLE": 360
+      },
+      {
+        "runLabel": "DICB 1-CONN.",
+        "isLineItem": false,
+        "length": 17,
+        "pipeDiameter": 250,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2.3,
+        "addMaterials": 500,
+        "addLE": 250
+      },
+      {
+        "runLabel": "SWALE",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 1774,
+        "addLE": 2376
+      },
+      {
+        "runLabel": "VIDEO ($25/m)",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 705,
+        "addLE": 0
+      },
+      {
+        "runLabel": "LAYOUT",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 5000,
+        "addLE": 0
+      },
+      {
+        "runLabel": "AS BUILT",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 5000,
+        "addLE": 0
+      }
+    ]
+  },
+  {
+    "projectName": "HOLIDAY INN",
+    "jobNumber": "2026-068",
+    "date": "APRIL.13th2026",
+    "manholes": [
+      {
+        "description": "CBMH 1/RIP RAP",
+        "depth": 2.03,
+        "addMaterials": 1800,
+        "addLE": 500
+      },
+      {
+        "description": "CBMH 2",
+        "depth": 1.96,
+        "addMaterials": 900,
+        "addLE": 0
+      },
+      {
+        "description": "CBMH 4",
+        "depth": 1.49,
+        "addMaterials": 900,
+        "addLE": 0
+      },
+      {
+        "description": "CBMH 5",
+        "depth": 1.43,
+        "addMaterials": 900,
+        "addLE": 0
+      },
+      {
+        "description": "MH 9",
+        "depth": 1.29,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "HS 4/RIP RAP",
+        "depth": 1.73,
+        "addMaterials": 1000,
+        "addLE": 500
+      },
+      {
+        "description": "SAN XING",
+        "depth": null,
+        "addMaterials": 23870,
+        "addLE": 21040
+      },
+      {
+        "description": "SANITARY",
+        "depth": null,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 1A-DH",
+        "depth": 3.64,
+        "addMaterials": 3000,
+        "addLE": 6000
+      },
+      {
+        "description": "MH 2A",
+        "depth": 3.06,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 3A",
+        "depth": 1,
+        "addMaterials": 0,
+        "addLE": 0
+      }
+    ],
+    "catchbasins": {
+      "groups": [
+        {
+          "type": "SINGLE_CB",
+          "quantity": 3,
+          "wallThickness": 4,
+          "depth": 2.2,
+          "grateEach": 0,
+          "addMaterials": 900
+        }
+      ],
+      "laborRates": {
+        "scbLabor": 200,
+        "dcbLabor": 250,
+        "dicbFC": 465,
+        "ddicbFC": 715
+      }
+    },
+    "sewers": [
+      {
+        "runLabel": "CBMH 1-RIP RAP/INS.",
+        "isLineItem": false,
+        "length": 13,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1,
+        "addMaterials": 1040,
+        "addLE": 520
+      },
+      {
+        "runLabel": "CBMH 1-CBMH 2/INS.",
+        "isLineItem": false,
+        "length": 20,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.7,
+        "addMaterials": 1600,
+        "addLE": 800
+      },
+      {
+        "runLabel": "CBMH 2-CB 3/INS.",
+        "isLineItem": false,
+        "length": 35,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.3,
+        "addMaterials": 2800,
+        "addLE": 1400
+      },
+      {
+        "runLabel": "HS 4-RIP RAP/INS.",
+        "isLineItem": false,
+        "length": 8,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1,
+        "addMaterials": 640,
+        "addLE": 320
+      },
+      {
+        "runLabel": "HS 4-CBMH 4/INS.",
+        "isLineItem": false,
+        "length": 16,
+        "pipeDiameter": 100,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1,
+        "addMaterials": 1280,
+        "addLE": 640
+      },
+      {
+        "runLabel": "CBMH 4-CBMH 5/INS.",
+        "isLineItem": false,
+        "length": 10,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.2,
+        "addMaterials": 800,
+        "addLE": 400
+      },
+      {
+        "runLabel": "CBMH 5-MH 9/INS.",
+        "isLineItem": false,
+        "length": 19,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.9,
+        "addMaterials": 1520,
+        "addLE": 760
+      },
+      {
+        "runLabel": "MH 9-PLUG/INS.",
+        "isLineItem": false,
+        "length": 6,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.3,
+        "addMaterials": 840,
+        "addLE": 240
+      },
+      {
+        "runLabel": "CBMH 4-CB 6/INS.",
+        "isLineItem": false,
+        "length": 12,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.1,
+        "addMaterials": 960,
+        "addLE": 480
+      },
+      {
+        "runLabel": "CBMH 5-CB 7/INS.",
+        "isLineItem": false,
+        "length": 12,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.1,
+        "addMaterials": 960,
+        "addLE": 480
+      },
+      {
+        "runLabel": "SANITARY",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": null,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "D.H.-MH 2A",
+        "isLineItem": false,
+        "length": 15,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 2.1,
+        "depth": 3.2,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 2A-MH 1A",
+        "isLineItem": false,
+        "length": 20,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 1A-PLUG",
+        "isLineItem": false,
+        "length": 37,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1,
+        "addMaterials": 150,
+        "addLE": 0
+      },
+      {
+        "runLabel": "VIDEO ($15/m)",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 3345,
+        "addLE": 0
+      },
+      {
+        "runLabel": "LAYOUT",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 5000,
+        "addLE": 0
+      },
+      {
+        "runLabel": "AS BUILT",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 5000,
+        "addLE": 0
+      }
+    ]
+  },
+  {
+    "projectName": "AIRCRAFT HANGAR,WATERLOO AIRPORT",
+    "jobNumber": "2026-021",
+    "date": "FEB.6th,2026",
+    "manholes": [
+      {
+        "description": "MH 5",
+        "depth": 2.75,
+        "addMaterials": 1720,
+        "addLE": 0
+      },
+      {
+        "description": "MH 4",
+        "depth": 2.7099999999999795,
+        "addMaterials": 1650,
+        "addLE": 0
+      },
+      {
+        "description": "MH 3",
+        "depth": 2.6299999999999955,
+        "addMaterials": 850,
+        "addLE": 0
+      },
+      {
+        "description": "MH 2",
+        "depth": 2.170000000000016,
+        "addMaterials": 570,
+        "addLE": 0
+      },
+      {
+        "description": "MH 1",
+        "depth": 1.830000000000041,
+        "addMaterials": 420,
+        "addLE": 0
+      },
+      {
+        "description": "SAW CUT &",
+        "depth": null,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "ASPALT REMOVALS",
+        "depth": null,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "GRAN*MHs",
+        "depth": null,
+        "addMaterials": 11200,
+        "addLE": 0
+      },
+      {
+        "description": "ROAD RESTORATION",
+        "depth": null,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "STM TANK",
+        "depth": null,
+        "addMaterials": 133360,
+        "addLE": 50000
+      },
+      {
+        "description": "CONSULTING FEE",
+        "depth": null,
+        "addMaterials": 50000,
+        "addLE": 0
+      },
+      {
+        "description": "SANITARY",
+        "depth": null,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 6A",
+        "depth": 1.079999999999984,
+        "addMaterials": 200,
+        "addLE": 0
+      }
+    ],
+    "catchbasins": {
+      "groups": [
+        {
+          "type": "SINGLE_CB",
+          "quantity": 10,
+          "wallThickness": 4,
+          "depth": 2.2,
+          "grateEach": 0,
+          "addMaterials": 900
+        }
+      ],
+      "laborRates": {
+        "scbLabor": 200,
+        "dcbLabor": 250,
+        "dicbFC": 465,
+        "ddicbFC": 715
+      }
+    },
+    "sewers": [
+      {
+        "runLabel": "CB 1-MH 1",
+        "isLineItem": false,
+        "length": 9,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.5,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CB 2-MH 1",
+        "isLineItem": false,
+        "length": 8,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.5,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 1-MH 2",
+        "isLineItem": false,
+        "length": 50,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2.4,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CB 3-WYE",
+        "isLineItem": false,
+        "length": 8,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.5,
+        "addMaterials": 880,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CB 4-WYE",
+        "isLineItem": false,
+        "length": 7,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.5,
+        "addMaterials": 880,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 2-MH 3",
+        "isLineItem": false,
+        "length": 57,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.7,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CB 5-MH 2",
+        "isLineItem": false,
+        "length": 8,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.5,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CB 6-WYE",
+        "isLineItem": false,
+        "length": 5,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.5,
+        "addMaterials": 880,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CB 7-WYE",
+        "isLineItem": false,
+        "length": 3,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.5,
+        "addMaterials": 880,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 3-MH 4",
+        "isLineItem": false,
+        "length": 28,
+        "pipeDiameter": 450,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.6,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CB 8-MH 4",
+        "isLineItem": false,
+        "length": 7,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.5,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CB 9-MH 4",
+        "isLineItem": false,
+        "length": 6,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.5,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 4-MH 5",
+        "isLineItem": false,
+        "length": 39,
+        "pipeDiameter": 525,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.6,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CB 10-WYE",
+        "isLineItem": false,
+        "length": 4,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.5,
+        "addMaterials": 880,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 5-POND",
+        "isLineItem": false,
+        "length": 4,
+        "pipeDiameter": 525,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.6,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "SANITARY",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 6A-PLUG",
+        "isLineItem": false,
+        "length": 40,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1,
+        "addMaterials": 150,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 6A-CONN.",
+        "isLineItem": false,
+        "length": 62,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 2.1,
+        "depth": 1.2,
+        "addMaterials": 3000,
+        "addLE": 3000
+      },
+      {
+        "runLabel": "VIDEO ($25/m)",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 8625,
+        "addLE": 0
+      },
+      {
+        "runLabel": "LAYOUT",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 5000,
+        "addLE": 0
+      },
+      {
+        "runLabel": "AS BUILT",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 5000,
+        "addLE": 0
+      }
+    ]
+  }
+]

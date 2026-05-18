@@ -1,0 +1,5 @@
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-f', 'Dockerfile.eval', '-t', 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/batch-eval', '.']
+images:
+- 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/batch-eval'

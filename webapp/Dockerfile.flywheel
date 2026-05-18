@@ -1,0 +1,23 @@
+FROM node:20-slim
+
+# Install necessary system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies
+RUN npm install
+
+# Copy application source code
+COPY tsconfig.json .
+COPY src ./src
+COPY .env* ./
+
+# Command to run the batch evaluation and analysis loop
+CMD ["npx", "tsx", "src/scripts/flywheel.ts"]

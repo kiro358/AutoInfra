@@ -46,15 +46,8 @@ async function main() {
     fs.writeFileSync(genPath, genBuffer);
     console.log(`Output saved to: ${genPath}`);
 
-    const compareScriptPath = path.join(__dirname, 'compare-sheets.ts');
-    let compareCode = fs.readFileSync(compareScriptPath, 'utf8');
-    compareCode = compareCode.replace(/const TARGET_PROJECT = '.*';/, `const TARGET_PROJECT = '${TARGET_FOLDER}';`);
-    compareCode = compareCode.replace(/const TRUTH_FILE = '.*';/, `const TRUTH_FILE = '${xlsxFiles[0]}';`);
-    compareCode = compareCode.replace(/const GENERATED_FILE = '.*';/, `const GENERATED_FILE = '${path.basename(genPath)}';`);
-    fs.writeFileSync(compareScriptPath, compareCode);
-
     console.log(`Running compare-sheets...`);
-    execSync(`npx tsx src/scripts/compare-sheets.ts`, { stdio: 'inherit', cwd: path.resolve(__dirname, '../..') });
+    execSync(`npx tsx src/scripts/compare-sheets.ts "${TARGET_FOLDER}" "${xlsxFiles[0]}" "${path.basename(genPath)}"`, { stdio: 'inherit', cwd: path.resolve(__dirname, '../..') });
   } catch (e) {
     console.error(`Error processing:`, e);
   }

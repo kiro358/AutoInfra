@@ -8,3 +8,13 @@ build
 # Large Data Folders
 existing_projects_training_data/
 existing_projects_testing_data/
+.aider*
+
+webapp/evaluation_scoreboard_*.csv
+evaluation_scoreboard_*.csv
+webapp/tmp-eval.xlsx
+webapp/batch_eval_log.txt
+webapp/scoreboards/
+webapp/scratch/
+webapp/tmp-scoreboards/
+

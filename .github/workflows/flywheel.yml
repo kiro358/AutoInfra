@@ -1,0 +1,72 @@
+name: AutoInfra Optimization Flywheel
+
+on:
+  schedule:
+    - cron: '0 0 * * 0' # Run weekly on Sunday
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  evaluate-and-optimize:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed to commit changes
+      id-token: write # Needed for GCP authentication
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'webapp/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: webapp
+        run: npm ci
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: '${{ secrets.GCP_CREDENTIALS }}'
+          # Alternative: Workload Identity Federation
+          # workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/my-pool/providers/my-provider'
+          # service_account: 'my-service-account@my-project.iam.gserviceaccount.com'
+
+      - name: Run Cloud Evaluation (batch-evaluate-cloud.ts)
+        working-directory: webapp
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+        run: |
+          npx tsx src/scripts/batch-evaluate-cloud.ts
+
+      - name: Download Latest Scoreboards from GCS
+        working-directory: webapp
+        run: |
+          mkdir -p scoreboards
+          gsutil -m cp "gs://${{ secrets.GCS_BUCKET }}/scoreboards/*.csv" scoreboards/
+          # Combine scoreboards
+          echo 'Project,MH_Structures,MH_Catchbasins,Sewers,Watermain,Overall,TotalCells,MatchingCells' > scoreboards/combined.csv
+          tail -q -n +2 scoreboards/evaluation_scoreboard_*.csv >> scoreboards/combined.csv
+
+      - name: Analyze Failures & Suggest Improvements
+        working-directory: webapp
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_LOCATION: ${{ secrets.GCP_LOCATION }}
+          GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
+        run: |
+          npx tsx src/scripts/analyze-failures-cloud.ts scoreboards/combined.csv --limit 5
+
+      - name: Commit Automated Optimizations
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "🤖 chore: apply automated pipeline optimizations"
+          file_pattern: 'webapp/src/lib/dynamic-rules.json webapp/few_shot_examples.json'
+          branch: main
+          commit_user_name: "AutoInfra Flywheel"
+          commit_user_email: "bot@autoinfra.com"

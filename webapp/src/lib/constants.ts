@@ -102,7 +102,7 @@ export const INPUT_CELLS = {
     },
     // Data rows start at row 11, columns for each manhole:
     dataStartRow: 11,
-    dataEndRow: 60,
+    dataEndRow: 50, // Changed from 60 to 50 to match the template (manholes stop at row 50)
     dataColumns: {
       B: 'description',
       C: 'topElevation',
@@ -112,6 +112,9 @@ export const INPUT_CELLS = {
       G: 'structureType', // 1=STD, 2=LRG
       H: 'addMaterials',
       I: 'addLE',
+      J: 'depth', // Added depth to input cells
+      K: 'drop', // Added drop to input cells
+      L: 'diameter', // Added diameter to input cells
     },
   },
   'SEWERS (1)': {

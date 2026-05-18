@@ -3,7 +3,15 @@ import path from 'path';
 import { ExtractionResult, GlobalParams } from './types';
 import { DEFAULT_PARAMS } from './constants';
 
-const TEMPLATES_DIR = path.join(process.cwd(), '..', 'empty_templates');
+import fs from 'fs';
+
+let TEMPLATES_DIR = path.resolve(__dirname, '../../../empty_templates');
+if (!fs.existsSync(TEMPLATES_DIR)) {
+  TEMPLATES_DIR = path.join(process.cwd(), '..', 'empty_templates');
+  if (!fs.existsSync(TEMPLATES_DIR)) {
+    TEMPLATES_DIR = path.join(process.cwd(), 'empty_templates');
+  }
+}
 
 export async function populateTemplate(
   extraction: ExtractionResult,
@@ -15,6 +23,13 @@ export async function populateTemplate(
 
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(templatePath);
+
+  // Break shared formula chains in columns that forceSetCellValue will write to.
+  // This must happen BEFORE any fill functions are called.
+  const mhSheet = workbook.getWorksheet('MANHOLES (1)');
+  if (mhSheet) {
+    breakSharedFormulas(mhSheet, ['J', 'K', 'L'], 11, 50);
+  }
 
   // Fill MANHOLES sheet(s)
   fillManholes(workbook, extraction, params);
@@ -68,12 +83,12 @@ function fillManholes(
     setCellValue(sheet, `D${row}`, mh.lowInvert || undefined);
     setCellValue(sheet, `E${row}`, mh.highInvert || undefined);
     setCellValue(sheet, `F${row}`, mh.pipeOutDiameter || undefined);
-    setCellValue(sheet, `G${row}`, mh.structureType);
+    setCellValue(sheet, `G${row}`, mh.structureType ?? undefined);
     if (mh.addMaterials) setCellValue(sheet, `H${row}`, mh.addMaterials);
     if (mh.addLE) setCellValue(sheet, `I${row}`, mh.addLE);
-    if (mh.depth != null) setCellValue(sheet, `J${row}`, mh.depth);
-    if (mh.drop != null) setCellValue(sheet, `K${row}`, mh.drop);
-    if (mh.diameter != null) setCellValue(sheet, `L${row}`, mh.diameter);
+    if (mh.depth != null) forceSetCellValue(sheet, `J${row}`, mh.depth);
+    if (mh.drop != null) forceSetCellValue(sheet, `K${row}`, mh.drop);
+    if (mh.diameter != null) forceSetCellValue(sheet, `L${row}`, mh.diameter);
   });
 
   // Fill catchbasin groups (Rows 53-56)
@@ -147,7 +162,7 @@ function fillSewers(
     setCellValue(sheet, `D${row}`, sw.pipeDiameter || undefined);
     setCellValue(sheet, `E${row}`, sw.typeClass || undefined);
     setCellValue(sheet, `F${row}`, sw.slope || undefined);
-    setCellValue(sheet, `G${row}`, sw.depth || undefined);
+    forceSetCellValue(sheet, `G${row}`, sw.depth || undefined);
     if (sw.addMaterials) setCellValue(sheet, `H${row}`, sw.addMaterials);
     if (sw.addLE) setCellValue(sheet, `I${row}`, sw.addLE);
   });
@@ -202,7 +217,7 @@ function fillWatermain(
     setCellValue(sheet, `F${row}`, wm.ocSc);
     if (wm.addMaterials) setCellValue(sheet, `G${row}`, wm.addMaterials);
     if (wm.addLE) setCellValue(sheet, `H${row}`, wm.addLE);
-    setCellValue(sheet, `J${row}`, wm.avgCover);
+    forceSetCellValue(sheet, `J${row}`, wm.avgCover);
   });
 
   // Fill specials (starting at row 24)
@@ -244,18 +259,93 @@ function setCellValue(
 ) {
   if (value === undefined || value === null || value === '') return;
   const cell = sheet.getCell(cellRef);
-  if (cell.type === ExcelJS.ValueType.Formula || cell.sharedFormula) {
+  if (cell.type === ExcelJS.ValueType.Formula || (cell as any).sharedFormula) {
     return; // Do not overwrite existing formulas in the template
   }
   cell.value = value;
 }
 
 /**
- * Force-set a cell value, even if it contains a formula.
- * Used for calculated fields (like depth) where we have the final value
- * but not the individual inputs the formula expects.
+ * Break shared formula chains on a sheet for specific columns.
+ * Converts each shared formula (master or clone) into a standalone formula
+ * so that individual cells can be overwritten without breaking the chain.
  *
- * Note: We must handle shared formulas carefully to avoid breaking ExcelJS.
+ * Must be called ONCE after loading the template, before any forceSetCellValue calls.
+ */
+function breakSharedFormulas(
+  sheet: ExcelJS.Worksheet,
+  columns: string[],
+  startRow: number,
+  endRow: number
+) {
+  for (const col of columns) {
+    // First pass: find master formulas and their templates
+    const masters: Record<string, { formula: string; ref: string }> = {};
+
+    for (let r = startRow; r <= endRow; r++) {
+      const cell = sheet.getCell(`${col}${r}`);
+      const v = cell.value as any;
+      if (v && typeof v === 'object' && v.formula && v.ref) {
+        // This is a master cell
+        masters[`${col}${r}`] = { formula: v.formula, ref: v.ref };
+      }
+    }
+
+    // Second pass: convert all cells (masters and clones) to individual formulas
+    for (let r = startRow; r <= endRow; r++) {
+      const cellRef = `${col}${r}`;
+      const cell = sheet.getCell(cellRef);
+      const v = cell.value as any;
+
+      if (v && typeof v === 'object') {
+        if (v.formula && v.ref) {
+          // Master cell — convert to standalone formula (drop the ref/shareType)
+          cell.value = { formula: v.formula } as ExcelJS.CellFormulaValue;
+        } else if (v.sharedFormula) {
+          // Clone cell — derive the formula from the master by row offset
+          const masterRef = v.sharedFormula; // e.g., "J11"
+          const masterCol = masterRef.replace(/\d+/g, '');
+          const masterRow = parseInt(masterRef.replace(/\D+/g, ''), 10);
+          const masterInfo = masters[masterRef];
+
+          if (masterInfo) {
+            // Adjust the master formula for this row's offset
+            const rowOffset = r - masterRow;
+            const adjustedFormula = adjustFormulaForRow(masterInfo.formula, rowOffset);
+            cell.value = { formula: adjustedFormula } as ExcelJS.CellFormulaValue;
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Adjust a formula for a row offset.
+ * Replaces non-absolute row references (e.g., C11 → C15 for offset 4).
+ * Preserves absolute references (e.g., F$7 stays F$7).
+ */
+function adjustFormulaForRow(formula: string, rowOffset: number): string {
+  if (rowOffset === 0) return formula;
+
+  // Match cell references: column letters followed by optional $ and digits
+  return formula.replace(/([A-Z]+)(\$?)(\d+)/g, (match, col, abs, row) => {
+    if (abs === '$') {
+      // Absolute row reference — don't change
+      return match;
+    }
+    // Relative row reference — adjust
+    return `${col}${parseInt(row, 10) + rowOffset}`;
+  });
+}
+
+/**
+ * Force-set a cell value, even if it contains a formula.
+ * Used for calculated fields (like depth, diameter) where the estimator
+ * manually overrides the formula with a known value.
+ *
+ * IMPORTANT: breakSharedFormulas() must be called first on the relevant columns
+ * to avoid corrupting ExcelJS shared formula chains.
  */
 function forceSetCellValue(
   sheet: ExcelJS.Worksheet,
@@ -265,20 +355,11 @@ function forceSetCellValue(
   if (value === undefined || value === null || value === '') return;
   try {
     const cell = sheet.getCell(cellRef);
-    // Clear formula first, then set value
+    // Overwrite regardless of whether it's a formula or plain value.
+    // Safe because breakSharedFormulas already converted shared formulas to standalone.
     cell.value = value;
   } catch {
-    // If shared formula error, try row/col approach
-    try {
-      const match = cellRef.match(/^([A-Z]+)(\d+)$/);
-      if (match) {
-        const row = sheet.getRow(parseInt(match[2]));
-        const colNum = match[1].charCodeAt(0) - 64; // A=1, B=2, etc.
-        row.getCell(colNum).value = value;
-      }
-    } catch {
-      // Silently skip if we can't write
-    }
+    // Silently skip if we can't write
   }
 }
 

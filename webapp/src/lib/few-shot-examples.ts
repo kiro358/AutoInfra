@@ -12,6 +12,30 @@ export interface FewShotExample {
   expectedOutput: object;
 }
 
+import fs from 'fs';
+import path from 'path';
+
+function loadDynamicFewShots(): FewShotExample[] {
+  try {
+    let filePath = path.resolve(__dirname, '../../few_shot_examples.json');
+    if (!fs.existsSync(filePath)) {
+      filePath = path.resolve(process.cwd(), 'few_shot_examples.json');
+    }
+    if (fs.existsSync(filePath)) {
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      // Basic format adaptation if needed
+      return data.map((d: any) => ({
+        projectName: d.projectName,
+        description: d.description || 'Auto-added from optimization flywheel.',
+        expectedOutput: d
+      }));
+    }
+  } catch (e) {
+    console.error('Failed to load dynamic few shots', e);
+  }
+  return [];
+}
+
 /**
  * Example 1: Simple project — Georgian Dr, Barrie
  * 3 manholes, 7 sewer runs (3 pipe + 4 line items), 2 CB groups
@@ -192,19 +216,22 @@ export const FEW_SHOT_EXAMPLES: FewShotExample[] = [EXAMPLE_1, EXAMPLE_2, EXAMPL
  * Each example includes the project context and the exact JSON output expected.
  */
 export function buildFewShotPromptSection(): string {
-  const parts: string[] = [];
-  parts.push(`\n## FEW-SHOT EXAMPLES\nThe following are 3 real projects with their CORRECT extraction outputs. Study these carefully — your output must match this format exactly.\n`);
+  const dynamicFewShots = loadDynamicFewShots();
+  const examples = [...FEW_SHOT_EXAMPLES, ...dynamicFewShots];
 
-  for (let i = 0; i < FEW_SHOT_EXAMPLES.length; i++) {
-    const ex = FEW_SHOT_EXAMPLES[i];
+  const parts: string[] = [];
+  parts.push(`\n## FEW-SHOT EXAMPLES\nThe following are real projects with their CORRECT extraction outputs. Study these carefully — your output must match this format exactly.\n`);
+
+  for (let i = 0; i < examples.length; i++) {
+    const ex = examples[i];
     parts.push(`### EXAMPLE ${i + 1}: ${ex.projectName}`);
     parts.push(`Context: ${ex.description}`);
     parts.push(`CORRECT OUTPUT:\n\`\`\`json\n${JSON.stringify(ex.expectedOutput, null, 2)}\n\`\`\`\n`);
   }
 
   parts.push(`### KEY PATTERNS TO LEARN FROM THESE EXAMPLES:`);
-  parts.push(`1. **Manholes section** includes BOTH physical structures (MH, CBMH, DCBMH) AND special line items (GREENSTORM, SAN XING, STM TANK, CONSULTING FEE, SAW CUT, REMOVALS, RESTORATION, GRAN*MHs). The line items have depth=null and use addMaterials/addLE for costs.`);
-  parts.push(`2. **"SANITARY" appears as a section divider** — it's a row with description="SANITARY" and null/zero values, placed between storm and sanitary sections.`);
+  parts.push(`1. **Manholes section** includes BOTH physical structures (e.g., CBMH 1, MH 10, BOX MH) AND special line items (e.g., GREENSTORM, SAN XING, STM TANK, CONSULTING FEE, SAW CUT, REMOVALS, RESTORATION, GRAN*MHs). The line items have depth=null and use addMaterials/addLE for costs. Use EXACT labels from the drawings.`);
+  parts.push(`2. **"SANITARY" appears as a section divider** — it's a row with description="SANITARY" and null/zero values, placed between storm and sanitary sections. All structures after this divider should be sanitary structures.`);
   parts.push(`3. **Catchbasins are GROUPED by type** (SINGLE_CB, DOUBLE_CB, DITCH_INLET_CB, DOUBLE_DITCH_INLET_CB) with a total quantity count, not listed individually.`);
   parts.push(`4. **Sewer run labels use exact format**: "FROM-TO" (e.g., "CB 3-DCBMH 2", "MH 1-MH 2"). Labels with "/INS." mean "including installation". Labels with "CONN." mean connection to existing.`);
   parts.push(`5. **Non-pipe sewer line items** include VIDEO ($25/m or $15/m), LAYOUT ($5000 typical), AS BUILT ($5000 typical), SWALE, DEWATERING. These always appear at the end.`);

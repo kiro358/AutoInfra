@@ -1,0 +1,39 @@
+FROM node:20-alpine AS base
+
+# Install dependencies
+FROM base AS deps
+RUN apk add --no-cache libc6-compat
+WORKDIR /app/webapp
+
+COPY webapp/package.json webapp/package-lock.json* ./
+RUN npm ci
+
+# Build
+FROM base AS builder
+WORKDIR /app
+
+# Copy templates
+COPY empty_templates ./empty_templates
+
+# Copy webapp source
+COPY webapp ./webapp
+COPY --from=deps /app/webapp/node_modules ./webapp/node_modules
+
+# Production image
+FROM base AS runner
+WORKDIR /app/webapp
+
+ENV NODE_ENV=production
+
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 evaluser
+
+# Copy the empty templates
+COPY --from=builder --chown=evaluser:nodejs /app/empty_templates /app/empty_templates
+
+# Copy source and node_modules
+COPY --from=builder --chown=evaluser:nodejs /app/webapp ./
+
+USER evaluser
+
+CMD ["npx", "tsx", "src/scripts/batch-evaluate-cloud.ts"]

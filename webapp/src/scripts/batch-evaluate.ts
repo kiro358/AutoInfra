@@ -39,20 +39,24 @@ function findProjects(): ProjectInfo[] {
 
   const projects: ProjectInfo[] = [];
 
+  const manualOverrides: Record<string, string> = {
+    "2026-059 LAY BY INSTALLATION": "Issued for Tender Drawings_13.pdf",
+    "2026-061 SUNUP REALTY-57 ANDERSON BLVD": "April 22'26 2026-061 Sunup Realty - 57 Anderson Blvd (Industrial Development) Package.pdf",
+    "2026-068 HOLIDAY INN,TRENTON": "05-Civil Drawings & Specs.pdf",
+    "2026-069 RIOCAN GEORGIAN MALL": "1. Bid Invitation - Drawings/RioCan, Georgian Mall, Redemise, Barrie, ON/(8) Civil/509 Bayfield Street_2026-04-07.pdf",
+    "2026-060 PROPOSED COMMERCIAL DEVELOPMENT": "3. 24133 - SS-1.pdf",
+  };
+
+  const blocklist = [
+    "quote", "quotation", "schedule", "bid", "geotechnical", "geotech", "appendix 4",
+    "report", "proposal", "estimate", "pricing", "breakdown", "budget", "letter",
+    "backup", "specifications", "specs", "rpt", "contracting", "invoice", "addendum",
+    "tender_form"
+  ];
+
   for (const folder of folders) {
     const dir = path.join(TRAINING_DIR, folder);
     const files = fs.readdirSync(dir);
-
-    // Find the best PDF (service drawings, not quotes/schedules/bids)
-    const pdfFiles = files.filter(f =>
-      f.toLowerCase().endsWith('.pdf') &&
-      !f.toLowerCase().includes('quote') &&
-      !f.toLowerCase().includes('quotation') &&
-      !f.toLowerCase().includes('schedule') &&
-      !f.toLowerCase().includes('bid') &&
-      !f.toLowerCase().includes('geotechnical') &&
-      !f.toLowerCase().includes('appendix 4')
-    );
 
     // Find the ground truth XLSX
     const xlsxFiles = files.filter(f =>
@@ -66,13 +70,51 @@ function findProjects(): ProjectInfo[] {
       !f.toLowerCase().includes('additional')
     );
 
-    if (pdfFiles.length > 0 && xlsxFiles.length > 0) {
-      // Prefer the largest PDF (likely has the most drawing pages)
+    if (xlsxFiles.length === 0) continue;
+
+    // Check manual override first
+    if (manualOverrides[folder]) {
+      projects.push({
+        folder,
+        pdfFile: manualOverrides[folder],
+        truthFile: xlsxFiles[0],
+      });
+      continue;
+    }
+
+    // Find the best PDF (service drawings, not quotes/schedules/bids)
+    const pdfFiles = files.filter(f => {
+      const name = f.toLowerCase();
+      return name.endsWith(".pdf") && !blocklist.some(b => name.includes(b));
+    });
+
+    if (pdfFiles.length > 0) {
       const pdfSizes = pdfFiles.map(f => ({
         name: f,
         size: fs.statSync(path.join(dir, f)).size,
       }));
-      pdfSizes.sort((a, b) => b.size - a.size);
+
+      // Prefer civil/servicing/drainage/plan over structural/detail/spec
+      const scorePDF = (filename: string): number => {
+        const name = filename.toLowerCase();
+        let score = 0;
+        if (name.includes('civil') || name.includes('servicing') || name.includes('drainage') || name.includes('plan')) {
+          score += 1000;
+        }
+        if (name.includes('structural') || name.includes('detail') || name.includes('spec') || name.includes('det-')) {
+          score -= 500;
+        }
+        return score;
+      };
+
+      pdfSizes.sort((a, b) => {
+        const scoreA = scorePDF(a.name);
+        const scoreB = scorePDF(b.name);
+        if (scoreA !== scoreB) {
+          return scoreB - scoreA;
+        }
+        return b.size - a.size;
+      });
 
       projects.push({
         folder,

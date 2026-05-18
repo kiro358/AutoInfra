@@ -1,0 +1,9 @@
+{
+  "promptAdditions": [
+    "Pay close attention to the scope of each section. For example, the 'WATERMAIN' section is for mainline pipes only; do not include smaller, individual service connections. Similarly, structure descriptions should be simplified to their standard identifier (e.g., 'MH 1'), excluding utility types or accessories.",
+    "You must extract data from the engineering plan and profile views, and from specific data tables like 'Manhole Schedule' or 'Pipe Schedule'. Explicitly ignore any tables or lists related to cost estimates, bid items, or general construction notes unless they are directly labeling a component on the drawing itself.",
+    "A 'Run Label' must refer to a physical component of the sewer system. Ignore line items that refer to services, documentation, or general notes, such as 'VIDEO', 'LAYOUT', or 'AS BUILT'.",
+    "Only extract physical infrastructure components that are part of the construction quantities. Exclude general notes, instructions, and services (such as video inspection, layout, or as-built drawings) from the list of items."
+  ],
+  "heuristics": []
+}

@@ -1,0 +1,150 @@
+[
+  {
+    "projectName": "LAY BY INSTALLATION",
+    "jobNumber": "2026-059",
+    "date": "APRIL,12th,2026",
+    "manholes": [
+      {
+        "description": "OGS 1",
+        "depth": 2.99,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "CBMH 2",
+        "depth": 2,
+        "addMaterials": 900,
+        "addLE": 0
+      },
+      {
+        "description": "HS 75",
+        "depth": null,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "CBMH 1",
+        "depth": 2.069999999999993,
+        "addMaterials": 900,
+        "addLE": 0
+      },
+      {
+        "description": "REMOVALS",
+        "depth": null,
+        "addMaterials": 5500,
+        "addLE": 0
+      }
+    ],
+    "catchbasins": {
+      "groups": [
+        {
+          "type": "SINGLE_CB",
+          "quantity": 1,
+          "wallThickness": 4,
+          "depth": 2.2,
+          "grateEach": 0,
+          "addMaterials": 900
+        }
+      ],
+      "laborRates": {
+        "scbLabor": 200,
+        "dcbLabor": 250,
+        "dicbFC": 465,
+        "ddicbFC": 715
+      }
+    },
+    "sewers": [
+      {
+        "runLabel": "OGS 1-CONN.",
+        "isLineItem": false,
+        "length": 7,
+        "pipeDiameter": 250,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.8,
+        "addMaterials": 3000,
+        "addLE": 3000
+      },
+      {
+        "runLabel": "OGS 1-CBMH 2",
+        "isLineItem": false,
+        "length": 1,
+        "pipeDiameter": 100,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.7,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 2-HS 75",
+        "isLineItem": false,
+        "length": 15,
+        "pipeDiameter": 250,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.7,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "HS 75-CBMH 1",
+        "isLineItem": false,
+        "length": 32,
+        "pipeDiameter": 250,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.8,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 1-CB 1 / INS.",
+        "isLineItem": false,
+        "length": 35,
+        "pipeDiameter": 250,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.8,
+        "addMaterials": 960,
+        "addLE": 0
+      },
+      {
+        "runLabel": "VIDEO ($15/m)",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 2500,
+        "addLE": 0
+      },
+      {
+        "runLabel": "LAYOUT",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 5000,
+        "addLE": 0
+      },
+      {
+        "runLabel": "AS BUILT",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 5000,
+        "addLE": 0
+      }
+    ],
+    "watermain": [],
+    "watermainSpecials": [],
+    "watermainValves": []
+  }
+]

@@ -61,7 +61,7 @@ export async function generateQuote(
 
       // Rows
       doc.font('Helvetica').fontSize(9);
-      const totalSewerLen = extraction.sewers.reduce((s, r) => s + r.length, 0);
+      const totalSewerLen = extraction.sewers.reduce((s, r) => s + (r.isLineItem ? 0 : (r.length ?? 0)), 0);
       const totalWmLen = extraction.watermain.reduce((s, r) => s + r.length, 0);
 
       addQuoteRow(doc, col1, col2, col3, col4, '1', `${totalSewerLen} m`, 'Sewer Installation', formatCurrency(sewerTotal));
@@ -165,12 +165,17 @@ function formatCurrency(val: number): string {
 function estimateSewerTotal(extraction: ExtractionResult, params: GlobalParams): number {
   let total = 0;
   for (const sw of extraction.sewers) {
+    if (sw.isLineItem) continue;
+    const length = sw.length ?? 0;
+    const pipeDiameter = sw.pipeDiameter ?? 0;
+    const depth = sw.depth ?? 0;
+
     const dailyCost = params.sewers.dayCostPerDay + params.sewers.extraPerDay;
-    const daysPer = sw.length / params.sewers.productionMPerDay;
+    const daysPer = length / params.sewers.productionMPerDay;
     const laborCost = dailyCost * daysPer;
-    const pipeCost = sw.length * getPipePrice(sw.pipeDiameter);
-    const trenchWidth = Math.max(params.sewers.minTrenchWidth, sw.pipeDiameter * 0.00125 * 2 + 0.6);
-    const excavVol = trenchWidth * (sw.depth + 0.1 + sw.pipeDiameter * 0.00125) * sw.length;
+    const pipeCost = length * getPipePrice(pipeDiameter);
+    const trenchWidth = Math.max(params.sewers.minTrenchWidth, pipeDiameter * 0.00125 * 2 + 0.6);
+    const excavVol = trenchWidth * (depth + 0.1 + pipeDiameter * 0.00125) * length;
     const truckCost = excavVol * params.sewers.truckingPerCM;
     total += laborCost + pipeCost + truckCost;
   }
@@ -180,7 +185,9 @@ function estimateSewerTotal(extraction: ExtractionResult, params: GlobalParams):
 function estimateManholeTotal(extraction: ExtractionResult, params: GlobalParams): number {
   let total = 0;
   for (const mh of extraction.manholes) {
-    const depth = mh.topElevation > 0 && mh.lowInvert > 0 ? mh.topElevation - mh.lowInvert : 2.0;
+    const topElevation = mh.topElevation ?? 0;
+    const lowInvert = mh.lowInvert ?? 0;
+    const depth = topElevation > 0 && lowInvert > 0 ? topElevation - lowInvert : 2.0;
     const precastCost = depth * 500 + 400; // rough estimate
     const laborCost = params.manholes.laborPerHr * (15 + depth * 5);
     const truckCost = depth * 0.5 * params.manholes.truckingPerCM;

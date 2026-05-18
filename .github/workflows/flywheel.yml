@@ -8,6 +8,8 @@ on:
 jobs:
   evaluate-and-optimize:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     permissions:
       contents: write # Needed to commit changes
       id-token: write # Needed for GCP authentication

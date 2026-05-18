@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { ExtractionResult } from '@/lib/types';
 
 type AppState = 'upload' | 'processing' | 'results';
@@ -12,6 +12,35 @@ interface ProcessResponse {
   quoteBase64: string;
   status: string;
   error?: string;
+}
+
+interface ScoreboardRow {
+  project: string;
+  mhStructures: string;
+  mhCatchbasins: string;
+  sewers: string;
+  watermain: string;
+  overall: number;
+  totalCells: number;
+  matchingCells: number;
+}
+
+interface ScoreboardData {
+  success: boolean;
+  source: string;
+  date: string;
+  overallScore: number;
+  overallAccuracy: number;
+  totalCells: number;
+  matchingCells: number;
+  categoryAverages: {
+    mhStructures: number;
+    mhCatchbasins: number;
+    sewers: number;
+    watermain: number;
+  };
+  projectsCount: number;
+  rows: ScoreboardRow[];
 }
 
 /** Trigger a browser download from a base64 string */
@@ -42,6 +71,38 @@ export default function HomePage() {
   const [activeTab, setActiveTab] = useState<'manholes' | 'sewers' | 'watermain'>('sewers');
   const [flywheelStatus, setFlywheelStatus] = useState<'idle' | 'local' | 'cloud'>('idle');
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Scoreboard states
+  const [scoreboard, setScoreboard] = useState<ScoreboardData | null>(null);
+  const [isLoadingScoreboard, setIsLoadingScoreboard] = useState(true);
+  const [scoreboardError, setScoreboardError] = useState<string | null>(null);
+  const [showProjectsBreakdown, setShowProjectsBreakdown] = useState(false);
+
+  const fetchScoreboard = useCallback(async () => {
+    setIsLoadingScoreboard(true);
+    setScoreboardError(null);
+    try {
+      const res = await fetch('/api/scoreboard');
+      if (!res.ok) {
+        throw new Error(`Failed to fetch scoreboard (HTTP ${res.status})`);
+      }
+      const data = await res.json();
+      if (data.success) {
+        setScoreboard(data);
+      } else {
+        throw new Error(data.error || 'Failed to load scoreboard');
+      }
+    } catch (err) {
+      console.error('Error fetching scoreboard:', err);
+      setScoreboardError(err instanceof Error ? err.message : 'Unknown error');
+    } finally {
+      setIsLoadingScoreboard(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchScoreboard();
+  }, [fetchScoreboard]);
 
   const handleFlywheel = async (mode: 'local' | 'cloud') => {
     if (!confirm(`Are you sure you want to run the optimization loop in ${mode} mode? This may consume resources and update models.`)) return;
@@ -205,6 +266,287 @@ export default function HomePage() {
               <p style={{ color: 'var(--danger-400)' }}>❌ {error}</p>
             </div>
           )}
+
+          {/* Latest AI Accuracy Scoreboard */}
+          <div style={{ marginTop: 50, marginBottom: 30 }}>
+            {isLoadingScoreboard ? (
+              <div className="card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '40px', gap: '16px' }}>
+                <div className="spinner" style={{ margin: 0 }} />
+                <div style={{ color: 'var(--gray-400)', fontSize: '14px' }}>Syncing evaluation scoreboard...</div>
+              </div>
+            ) : scoreboardError ? (
+              <div className="card" style={{ borderColor: 'rgba(239, 68, 68, 0.2)', padding: '20px', textAlign: 'center' }}>
+                <p style={{ color: 'var(--danger-400)', marginBottom: '12px', fontSize: '14px' }}>⚠️ Could not load latest evaluation scores: {scoreboardError}</p>
+                <button className="btn btn-secondary btn-sm" onClick={fetchScoreboard}>
+                  🔄 Try Reloading
+                </button>
+              </div>
+            ) : scoreboard ? (
+              <div className="card" style={{
+                position: 'relative',
+                overflow: 'hidden',
+                border: '1px solid rgba(59, 130, 246, 0.2)',
+                boxShadow: scoreboard.overallAccuracy >= 80 ? '0 0 30px rgba(52, 211, 153, 0.08)' : '0 0 30px rgba(59, 130, 246, 0.08)'
+              }}>
+                {/* Visual Glow Header Indicator */}
+                <div style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  right: 0,
+                  height: '4px',
+                  background: scoreboard.overallAccuracy >= 80 
+                    ? 'linear-gradient(90deg, var(--success-500), var(--primary-500))'
+                    : 'linear-gradient(90deg, var(--warning-500), var(--primary-500))'
+                }} />
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
+                  <div>
+                    <h2 style={{ fontSize: 18, fontWeight: 700, color: 'var(--white)', display: 'flex', alignItems: 'center', gap: 8 }}>
+                      📈 System Accuracy Scoreboard
+                    </h2>
+                    <p style={{ fontSize: 13, color: 'var(--gray-400)', marginTop: 2 }}>
+                      Performance across <strong>{scoreboard.projectsCount}</strong> system validation drawing sheets
+                    </p>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <span style={{
+                      fontSize: 11,
+                      padding: '4px 10px',
+                      background: 'rgba(59, 130, 246, 0.1)',
+                      color: 'var(--primary-300)',
+                      borderRadius: 100,
+                      fontWeight: 500,
+                      border: '1px solid rgba(59, 130, 246, 0.2)'
+                    }}>
+                      📅 Run: {scoreboard.date}
+                    </span>
+                    <span style={{
+                      fontSize: 11,
+                      padding: '4px 10px',
+                      background: scoreboard.source === 'gcs' ? 'rgba(52, 211, 153, 0.1)' : 'rgba(245, 158, 11, 0.1)',
+                      color: scoreboard.source === 'gcs' ? 'var(--success-400)' : 'var(--warning-400)',
+                      borderRadius: 100,
+                      fontWeight: 500,
+                      border: scoreboard.source === 'gcs' ? '1px solid rgba(52, 211, 153, 0.2)' : '1px solid rgba(245, 158, 11, 0.2)'
+                    }}>
+                      {scoreboard.source === 'gcs' ? '☁️ GCS Cloud Sync' : '💾 Local Fallback'}
+                    </span>
+                    <button
+                      className="btn btn-secondary"
+                      onClick={fetchScoreboard}
+                      style={{ padding: '6px 8px', display: 'flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 32, borderRadius: '50%', border: 'none', cursor: 'pointer' }}
+                      title="Refresh scoreboard data"
+                    >
+                      🔄
+                    </button>
+                  </div>
+                </div>
+
+                {/* Scoreboard Metrics Dashboard Layout */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 2fr', gap: 30, marginBottom: 24, borderBottom: '1px solid var(--glass-border)', paddingBottom: 24 }}>
+                  
+                  {/* Left Column: Overall Dial */}
+                  <div style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: 'rgba(255, 255, 255, 0.02)',
+                    borderRadius: 'var(--radius-lg)',
+                    padding: '24px',
+                    border: '1px solid rgba(255, 255, 255, 0.03)',
+                    textAlign: 'center'
+                  }}>
+                    <div style={{ position: 'relative', width: 140, height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
+                      {/* Breathtaking Glowing Circle Ring */}
+                      <svg style={{ transform: 'rotate(-90deg)', width: '100%', height: '100%' }} viewBox="0 0 100 100">
+                        <circle
+                          cx="50"
+                          cy="50"
+                          r="42"
+                          fill="transparent"
+                          stroke="var(--surface-3)"
+                          strokeWidth="6"
+                        />
+                        <circle
+                          cx="50"
+                          cy="50"
+                          r="42"
+                          fill="transparent"
+                          stroke={scoreboard.overallAccuracy >= 80 ? 'var(--success-400)' : 'var(--primary-400)'}
+                          strokeWidth="6"
+                          strokeDasharray={2 * Math.PI * 42}
+                          strokeDashoffset={2 * Math.PI * 42 * (1 - scoreboard.overallAccuracy / 100)}
+                          strokeLinecap="round"
+                          style={{ transition: 'stroke-dashoffset 1s ease-in-out' }}
+                        />
+                      </svg>
+                      {/* Inside Ring Text */}
+                      <div style={{ position: 'absolute', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                        <span style={{ fontSize: 28, fontWeight: 800, color: 'var(--white)', letterSpacing: '-0.02em' }}>
+                          {scoreboard.overallAccuracy}%
+                        </span>
+                        <span style={{ fontSize: 10, color: 'var(--gray-400)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 600 }}>
+                          Accuracy
+                        </span>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 13, color: 'var(--gray-300)', fontWeight: 500 }}>
+                      System-Wide Average
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--gray-500)', marginTop: 4 }}>
+                      {scoreboard.matchingCells} of {scoreboard.totalCells} data fields correctly populated
+                    </div>
+                  </div>
+
+                  {/* Right Column: Category-specific Progress bars */}
+                  <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 16 }}>
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 12 }}>
+                        <span style={{ color: 'var(--gray-300)', fontWeight: 500 }}>📁 Manholes Structures</span>
+                        <span style={{ color: 'var(--primary-300)', fontWeight: 700 }}>{scoreboard.categoryAverages.mhStructures}%</span>
+                      </div>
+                      <div className="confidence-bar" style={{ height: 6 }}>
+                        <div className="confidence-fill high" style={{ width: `${scoreboard.categoryAverages.mhStructures}%`, background: 'linear-gradient(90deg, var(--primary-600), var(--primary-400))' }} />
+                      </div>
+                    </div>
+
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 12 }}>
+                        <span style={{ color: 'var(--gray-300)', fontWeight: 500 }}>🕳️ Manholes Catchbasins</span>
+                        <span style={{ color: 'var(--accent-400)', fontWeight: 700 }}>{scoreboard.categoryAverages.mhCatchbasins}%</span>
+                      </div>
+                      <div className="confidence-bar" style={{ height: 6 }}>
+                        <div className="confidence-fill medium" style={{ width: `${scoreboard.categoryAverages.mhCatchbasins}%`, background: 'linear-gradient(90deg, var(--accent-500), var(--accent-400))' }} />
+                      </div>
+                    </div>
+
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 12 }}>
+                        <span style={{ color: 'var(--gray-300)', fontWeight: 500 }}>🌊 Sewer Networks</span>
+                        <span style={{ color: 'var(--success-400)', fontWeight: 700 }}>{scoreboard.categoryAverages.sewers}%</span>
+                      </div>
+                      <div className="confidence-bar" style={{ height: 6 }}>
+                        <div className="confidence-fill high" style={{ width: `${scoreboard.categoryAverages.sewers}%`, background: 'linear-gradient(90deg, var(--success-600), var(--success-400))' }} />
+                      </div>
+                    </div>
+
+                    <div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, fontSize: 12 }}>
+                        <span style={{ color: 'var(--gray-300)', fontWeight: 500 }}>🚰 Watermain Infrastructure</span>
+                        <span style={{ color: 'var(--primary-400)', fontWeight: 700 }}>{scoreboard.categoryAverages.watermain}%</span>
+                      </div>
+                      <div className="confidence-bar" style={{ height: 6 }}>
+                        <div className="confidence-fill high" style={{ width: `${scoreboard.categoryAverages.watermain}%`, background: 'linear-gradient(90deg, var(--primary-500), var(--primary-300))' }} />
+                      </div>
+                    </div>
+                  </div>
+
+                </div>
+
+                {/* Collapsible Detailed List Accordion Button */}
+                <div style={{ display: 'flex', justifyContent: 'center' }}>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => setShowProjectsBreakdown(!showProjectsBreakdown)}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      background: 'rgba(255, 255, 255, 0.02)',
+                      border: '1px solid var(--glass-border)',
+                      padding: '8px 24px',
+                      borderRadius: '100px'
+                    }}
+                  >
+                    <span>{showProjectsBreakdown ? 'Collapse Detailed List' : 'View Detailed Project Breakdown'}</span>
+                    <span style={{ transform: showProjectsBreakdown ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s', fontSize: 12 }}>
+                      ▼
+                    </span>
+                  </button>
+                </div>
+
+                {/* Collapsible Content */}
+                {showProjectsBreakdown && (
+                  <div className="animate-in" style={{ marginTop: 20, borderTop: '1px solid var(--glass-border)', paddingTop: 20 }}>
+                    <div className="data-table-wrapper" style={{ maxHeight: '350px', overflowY: 'auto' }}>
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Drawing/Project</th>
+                            <th style={{ textAlign: 'center' }}>MH Structures</th>
+                            <th style={{ textAlign: 'center' }}>MH Catchbasins</th>
+                            <th style={{ textAlign: 'center' }}>Sewers</th>
+                            <th style={{ textAlign: 'center' }}>Watermain</th>
+                            <th style={{ textAlign: 'center' }}>Accuracy</th>
+                            <th style={{ textAlign: 'right' }}>Cells Matched</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {scoreboard.rows.map((row, i) => (
+                            <tr key={i}>
+                              <td style={{ fontWeight: 600, color: 'var(--gray-100)' }}>📁 {row.project}</td>
+                              <td style={{ textAlign: 'center' }}>
+                                <span style={{
+                                  fontSize: 12,
+                                  padding: '2px 8px',
+                                  borderRadius: 4,
+                                  background: row.mhStructures === 'N/A' ? 'transparent' : 'rgba(255,255,255,0.03)',
+                                  color: row.mhStructures === 'N/A' ? 'var(--gray-600)' : parseFloat(row.mhStructures) >= 80 ? 'var(--success-400)' : 'var(--gray-300)'
+                                }}>
+                                  {row.mhStructures === 'N/A' ? 'N/A' : `${row.mhStructures}%`}
+                                </span>
+                              </td>
+                              <td style={{ textAlign: 'center' }}>
+                                <span style={{
+                                  fontSize: 12,
+                                  padding: '2px 8px',
+                                  borderRadius: 4,
+                                  background: row.mhCatchbasins === 'N/A' ? 'transparent' : 'rgba(255,255,255,0.03)',
+                                  color: row.mhCatchbasins === 'N/A' ? 'var(--gray-600)' : parseFloat(row.mhCatchbasins) >= 80 ? 'var(--success-400)' : 'var(--gray-300)'
+                                }}>
+                                  {row.mhCatchbasins === 'N/A' ? 'N/A' : `${row.mhCatchbasins}%`}
+                                </span>
+                              </td>
+                              <td style={{ textAlign: 'center' }}>
+                                <span style={{
+                                  fontSize: 12,
+                                  padding: '2px 8px',
+                                  borderRadius: 4,
+                                  background: row.sewers === 'N/A' ? 'transparent' : 'rgba(255,255,255,0.03)',
+                                  color: row.sewers === 'N/A' ? 'var(--gray-600)' : parseFloat(row.sewers) >= 80 ? 'var(--success-400)' : 'var(--gray-300)'
+                                }}>
+                                  {row.sewers === 'N/A' ? 'N/A' : `${row.sewers}%`}
+                                </span>
+                              </td>
+                              <td style={{ textAlign: 'center' }}>
+                                <span style={{
+                                  fontSize: 12,
+                                  padding: '2px 8px',
+                                  borderRadius: 4,
+                                  background: row.watermain === 'N/A' ? 'transparent' : 'rgba(255,255,255,0.03)',
+                                  color: row.watermain === 'N/A' ? 'var(--gray-600)' : parseFloat(row.watermain) >= 80 ? 'var(--success-400)' : 'var(--gray-300)'
+                                }}>
+                                  {row.watermain === 'N/A' ? 'N/A' : `${row.watermain}%`}
+                                </span>
+                              </td>
+                              <td style={{ textAlign: 'center', fontWeight: 700, color: row.overall >= 80 ? 'var(--success-400)' : 'var(--gray-200)' }}>
+                                {row.overall.toFixed(1)}%
+                              </td>
+                              <td style={{ textAlign: 'right', color: 'var(--gray-400)', fontSize: 12 }}>
+                                {row.matchingCells} / {row.totalCells}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
 
           {/* How it Works */}
           <div className="steps-grid" style={{ marginTop: 60 }}>

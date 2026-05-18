@@ -69,6 +69,6 @@ jobs:
         with:
           commit_message: "🤖 chore: apply automated pipeline optimizations"
           file_pattern: 'webapp/src/lib/dynamic-rules.json webapp/few_shot_examples.json'
-          branch: main
+          branch: master
           commit_user_name: "AutoInfra Flywheel"
           commit_user_email: "bot@autoinfra.com"

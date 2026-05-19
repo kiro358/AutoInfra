@@ -10438,5 +10438,693 @@
     "watermain": [],
     "watermainSpecials": [],
     "watermainValves": []
+  },
+  {
+    "projectName": "2535 GERRARD SHELTER-TENDER #4",
+    "jobNumber": "2026-018",
+    "date": "FEB.5th,2026",
+    "manholes": [
+      {
+        "description": "MH 1",
+        "depth": 2.88,
+        "addMaterials": 320,
+        "addLE": 0
+      },
+      {
+        "description": "MH 2",
+        "depth": 2.68,
+        "addMaterials": 480,
+        "addLE": 0
+      },
+      {
+        "description": "MH 4",
+        "depth": 2.22,
+        "addMaterials": 560,
+        "addLE": 0
+      },
+      {
+        "description": "MH 5",
+        "depth": 1.97,
+        "addMaterials": 160,
+        "addLE": 0
+      },
+      {
+        "description": "MH 6",
+        "depth": 2.78,
+        "addMaterials": 320,
+        "addLE": 0
+      },
+      {
+        "description": "MH 7",
+        "depth": 2.82,
+        "addMaterials": 480,
+        "addLE": 0
+      },
+      {
+        "description": "MH 3/OGS/EF 06",
+        "depth": 4.63,
+        "addMaterials": 640,
+        "addLE": 2000
+      },
+      {
+        "description": "STORAGE TANK",
+        "depth": null,
+        "addMaterials": 66812,
+        "addLE": 41540
+      },
+      {
+        "description": "INF.TANK",
+        "depth": null,
+        "addMaterials": 39310,
+        "addLE": 42250
+      },
+      {
+        "description": "MH 8/OGS/EF 04",
+        "depth": 3.5,
+        "addMaterials": 640,
+        "addLE": 0
+      },
+      {
+        "description": "GRAN*MHs",
+        "depth": null,
+        "addMaterials": 12600,
+        "addLE": 0
+      },
+      {
+        "description": "REMOVALS",
+        "depth": null,
+        "addMaterials": 2500,
+        "addLE": 0
+      },
+      {
+        "description": "5 Ads",
+        "depth": null,
+        "addMaterials": 8925,
+        "addLE": 2500
+      },
+      {
+        "description": "SANITARY",
+        "depth": null,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 1A",
+        "depth": 2.47,
+        "addMaterials": 3160,
+        "addLE": 3000
+      }
+    ],
+    "catchbasins": {
+      "groups": [
+        {
+          "type": "SINGLE_CB",
+          "quantity": 1,
+          "wallThickness": 4,
+          "depth": 2.2,
+          "grateEach": 0,
+          "addMaterials": 900
+        },
+        {
+          "type": "DOUBLE_CB",
+          "quantity": 1,
+          "wallThickness": 4,
+          "depth": 2.2,
+          "grateEach": 0,
+          "addMaterials": 900
+        }
+      ],
+      "laborRates": {
+        "scbLabor": 200,
+        "dcbLabor": 250,
+        "dicbFC": 465,
+        "ddicbFC": 715
+      }
+    },
+    "sewers": [
+      {
+        "runLabel": "MH 1-PL",
+        "isLineItem": false,
+        "length": 10,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 2.1,
+        "depth": 3,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 1-STORAGE TANK",
+        "isLineItem": false,
+        "length": 1,
+        "pipeDiameter": 150,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2.9,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "STORAGE TANK-MH 2",
+        "isLineItem": false,
+        "length": 2,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2.7,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 2-OGS",
+        "isLineItem": false,
+        "length": 28,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2.5,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "AD 2-OGS",
+        "isLineItem": false,
+        "length": 3,
+        "pipeDiameter": 250,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.9,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "OGS-MH 4",
+        "isLineItem": false,
+        "length": 48,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2.3,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "AD 3-MH 4",
+        "isLineItem": false,
+        "length": 3,
+        "pipeDiameter": 250,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.6,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 4-MH 5",
+        "isLineItem": false,
+        "length": 5,
+        "pipeDiameter": 250,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2.1,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "INF.T.-MH 7",
+        "isLineItem": false,
+        "length": 5,
+        "pipeDiameter": 250,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2.8,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 7-CB 2",
+        "isLineItem": false,
+        "length": 3,
+        "pipeDiameter": 250,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.5,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "INF.T.-MH 6",
+        "isLineItem": false,
+        "length": 2,
+        "pipeDiameter": 250,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2.8,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 6-PLUG",
+        "isLineItem": false,
+        "length": 4,
+        "pipeDiameter": 250,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2.8,
+        "addMaterials": 350,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 7-AD 4",
+        "isLineItem": false,
+        "length": 17,
+        "pipeDiameter": 250,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.7,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "STORAGE TANK-MH 8",
+        "isLineItem": false,
+        "length": 5,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.8,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "AD 1-MH 8",
+        "isLineItem": false,
+        "length": 3,
+        "pipeDiameter": 250,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.5,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "DCB 1-MH 8",
+        "isLineItem": false,
+        "length": 20,
+        "pipeDiameter": 250,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.2,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "SANITARY",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 1A-PL",
+        "isLineItem": false,
+        "length": 15,
+        "pipeDiameter": 150,
+        "typeClass": 2.35,
+        "slope": 2.1,
+        "depth": 2.6,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 1A-PLUG",
+        "isLineItem": false,
+        "length": 4,
+        "pipeDiameter": 150,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2.4,
+        "addMaterials": 150,
+        "addLE": 0
+      },
+      {
+        "runLabel": "VIDEO ($25/m)",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 4450,
+        "addLE": 0
+      },
+      {
+        "runLabel": "LAYOUT",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 5000,
+        "addLE": 0
+      },
+      {
+        "runLabel": "AS BUILT",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 5000,
+        "addLE": 0
+      }
+    ],
+    "watermain": [],
+    "watermainSpecials": [],
+    "watermainValves": []
+  },
+  {
+    "projectName": "WIGMORE PARK PLAYGROUND",
+    "jobNumber": "2026-017",
+    "date": "JAN.27th,2026",
+    "manholes": [
+      {
+        "description": "MH 1",
+        "depth": 1.78,
+        "addMaterials": 180,
+        "addLE": 0
+      },
+      {
+        "description": "MH 2",
+        "depth": 2.31,
+        "addMaterials": 180,
+        "addLE": 0
+      },
+      {
+        "description": "CBMH 3",
+        "depth": 2.39,
+        "addMaterials": 1500,
+        "addLE": 0
+      },
+      {
+        "description": "DIVERTER MH ",
+        "depth": 2.05,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 4",
+        "depth": 1.63,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "ADS",
+        "depth": null,
+        "addMaterials": 13570,
+        "addLE": 9600
+      },
+      {
+        "description": "SERVICE VAULT",
+        "depth": 3,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "GRAN*MHs",
+        "depth": null,
+        "addMaterials": 11200,
+        "addLE": 0
+      },
+      {
+        "description": "STM XING",
+        "depth": null,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "SAN XING",
+        "depth": null,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "WM XING",
+        "depth": null,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "SANITARY",
+        "depth": null,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 1A",
+        "depth": 1.88,
+        "addMaterials": 180,
+        "addLE": 0
+      },
+      {
+        "description": "MH 2A",
+        "depth": 2.31,
+        "addMaterials": 180,
+        "addLE": 0
+      },
+      {
+        "description": "MH 3A",
+        "depth": 2.43,
+        "addMaterials": 180,
+        "addLE": 0
+      }
+    ],
+    "catchbasins": {
+      "groups": [
+        {
+          "type": "SINGLE_CB",
+          "quantity": 1,
+          "wallThickness": 4,
+          "depth": 2.2,
+          "grateEach": 0,
+          "addMaterials": 900
+        }
+      ],
+      "laborRates": {
+        "scbLabor": 200,
+        "dcbLabor": 250,
+        "dicbFC": 465,
+        "ddicbFC": 715
+      }
+    },
+    "sewers": [
+      {
+        "runLabel": "MH 1-CONN.",
+        "isLineItem": false,
+        "length": 9,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.9,
+        "addMaterials": 3000,
+        "addLE": 3000
+      },
+      {
+        "runLabel": "MH 1-MH 2",
+        "isLineItem": false,
+        "length": 22,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2.1,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 2-CBMH 3",
+        "isLineItem": false,
+        "length": 27,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2.2,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 3-MH 4",
+        "isLineItem": false,
+        "length": 37,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.9,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 4-DIVERTER MH ",
+        "isLineItem": false,
+        "length": 1,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.7,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 4-ADS",
+        "isLineItem": false,
+        "length": 2,
+        "pipeDiameter": 600,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.7,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CB-DIVERTER MH ",
+        "isLineItem": false,
+        "length": 10,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.5,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "SANITARY",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 1A-CONN.",
+        "isLineItem": false,
+        "length": 12,
+        "pipeDiameter": 150,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2,
+        "addMaterials": 3000,
+        "addLE": 3000
+      },
+      {
+        "runLabel": "MH 1A-MH 2A",
+        "isLineItem": false,
+        "length": 23,
+        "pipeDiameter": 150,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2.1,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 2A-MH 3A",
+        "isLineItem": false,
+        "length": 10,
+        "pipeDiameter": 150,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2.4,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 3A-DIV.MH ",
+        "isLineItem": false,
+        "length": 53,
+        "pipeDiameter": 150,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2.1,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "C.O.-WYE",
+        "isLineItem": false,
+        "length": 26,
+        "pipeDiameter": 100,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.5,
+        "addMaterials": 260,
+        "addLE": 0
+      },
+      {
+        "runLabel": "PLUG-WYE",
+        "isLineItem": false,
+        "length": 10,
+        "pipeDiameter": 100,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.5,
+        "addMaterials": 160,
+        "addLE": 0
+      },
+      {
+        "runLabel": "C.O.-WYE",
+        "isLineItem": false,
+        "length": 10,
+        "pipeDiameter": 100,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.5,
+        "addMaterials": 220,
+        "addLE": 0
+      },
+      {
+        "runLabel": "VIDEO ($25/m)",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 6300,
+        "addLE": 0
+      },
+      {
+        "runLabel": "LAYOUT",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 5000,
+        "addLE": 0
+      },
+      {
+        "runLabel": "AS BUILT",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 5000,
+        "addLE": 0
+      }
+    ],
+    "watermain": [],
+    "watermainSpecials": [],
+    "watermainValves": []
   }
 ]

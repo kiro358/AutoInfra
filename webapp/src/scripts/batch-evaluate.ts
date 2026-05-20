@@ -22,6 +22,19 @@ import { compareSpreadsheets, CompareResult } from './compare-sheets';
 
 const TRAINING_DIR = path.resolve(__dirname, '../../..', 'existing_projects_training_data');
 
+const GOLDEN_PROJECTS = [
+  "2026-067 201 GEORGIAN DR,BARRIE",
+  "2026-068 HOLIDAY INN,TRENTON",
+  "2026-021 MATTHEWS HANGER WATERLOO",
+  "2026-001 ECOLE SECONDAIRE CATHOLIQUE-BRAMPTON",
+  "2026-002 BRADFORD WEST GWILLIMBURY CIVIC CENTRE",
+  "2026-015 UXBRIDGE POOL SPRUNG",
+  "2026-041 TFS PERFORMING ARTS CENTRE",
+  "2026-050 PANATTONI-6500 MISSISSAUGA ROAD",
+  "2026-060 PROPOSED COMMERCIAL DEVELOPMENT",
+  "2026-069 RIOCAN GEORGIAN MALL"
+];
+
 interface ProjectInfo {
   folder: string;
   pdfFile: string;
@@ -201,6 +214,7 @@ async function main() {
   let limit = Infinity;
   let targetProject: string | null = null;
   let skipExisting = false;
+  let useGolden = false;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--limit' && args[i + 1]) {
@@ -211,6 +225,8 @@ async function main() {
       i++;
     } else if (args[i] === '--skip-existing') {
       skipExisting = true;
+    } else if (args[i] === '--golden') {
+      useGolden = true;
     }
   }
 
@@ -227,6 +243,9 @@ async function main() {
       console.error(`❌ No project matching "${targetProject}" found`);
       process.exit(1);
     }
+  } else if (useGolden) {
+    projects = projects.filter(p => GOLDEN_PROJECTS.includes(p.folder));
+    console.log(`Using Golden Suite: ${projects.length} projects`);
   }
 
   if (skipExisting) {

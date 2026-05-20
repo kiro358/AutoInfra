@@ -6,10 +6,18 @@
  * Selected projects span simple → medium → complex scenarios.
  */
 
+export interface ProjectMetadata {
+  hasWatermain: boolean;
+  hasSanitary: boolean;
+  isLargeSubdivision: boolean;
+  estimatedPageCount: number;
+}
+
 export interface FewShotExample {
   projectName: string;
   description: string;
   expectedOutput: object;
+  metadata?: ProjectMetadata;
 }
 
 import fs from 'fs';
@@ -211,22 +219,61 @@ const EXAMPLE_3: FewShotExample = {
 
 export const FEW_SHOT_EXAMPLES: FewShotExample[] = [EXAMPLE_1, EXAMPLE_2, EXAMPLE_3];
 
+function calculateSimilarity(str1: string, str2: string): number {
+  const words1 = new Set(str1.toLowerCase().split(/\\W+/).filter(w => w.length > 2));
+  const words2 = new Set(str2.toLowerCase().split(/\\W+/).filter(w => w.length > 2));
+  let intersection = 0;
+  for (const w of words1) {
+    if (words2.has(w)) intersection++;
+  }
+  return intersection;
+}
+
 /**
  * Builds the few-shot portion of the prompt as a string.
  * Each example includes the project context and the exact JSON output expected.
  */
-export function buildFewShotPromptSection(): string {
+export function buildFewShotPromptSection(targetProjectName: string): string {
   const dynamicFewShots = loadDynamicFewShots();
   const examples = [...FEW_SHOT_EXAMPLES, ...dynamicFewShots];
 
-  const parts: string[] = [];
-  parts.push(`\n## FEW-SHOT EXAMPLES\nThe following are real projects with their CORRECT extraction outputs. Study these carefully — your output must match this format exactly.\n`);
+  // Filter out standard fees from the expected output so they don't contradict the prompt rules
+  // AND exclude the target project itself to prevent the model from cheating
+  const validExamples: FewShotExample[] = [];
+  examples.forEach(ex => {
+    // If the project name is heavily similar to the target, it's the same project. Skip it.
+    if (calculateSimilarity(targetProjectName, ex.projectName) >= 3 || targetProjectName.includes(ex.projectName)) {
+      return;
+    }
 
-  for (let i = 0; i < examples.length; i++) {
-    const ex = examples[i];
+    const out = ex.expectedOutput as any;
+    if (out && out.sewers && Array.isArray(out.sewers)) {
+      out.sewers = out.sewers.filter((s: any) => {
+        if (!s.runLabel) return true;
+        const lbl = s.runLabel.toUpperCase();
+        return !lbl.includes('VIDEO') && !lbl.includes('LAYOUT') && !lbl.includes('AS BUILT');
+      });
+    }
+    validExamples.push(ex);
+  });
+
+  const scoredExamples = validExamples.map(ex => {
+    let score = calculateSimilarity(targetProjectName, ex.projectName);
+    score += calculateSimilarity(targetProjectName, ex.description) * 0.5;
+    return { example: ex, score };
+  });
+
+  scoredExamples.sort((a, b) => b.score - a.score);
+  const selectedExamples = scoredExamples.slice(0, 3).map(s => s.example);
+
+  const parts: string[] = [];
+  parts.push(`\\n## FEW-SHOT EXAMPLES\\nThe following are real projects with their CORRECT extraction outputs. Study these carefully — your output must match this format exactly.\\n`);
+
+  for (let i = 0; i < selectedExamples.length; i++) {
+    const ex = selectedExamples[i];
     parts.push(`### EXAMPLE ${i + 1}: ${ex.projectName}`);
     parts.push(`Context: ${ex.description}`);
-    parts.push(`CORRECT OUTPUT:\n\`\`\`json\n${JSON.stringify(ex.expectedOutput, null, 2)}\n\`\`\`\n`);
+    parts.push(`CORRECT OUTPUT:\\n\`\`\`json\\n${JSON.stringify(ex.expectedOutput, null, 2)}\\n\`\`\`\\n`);
   }
 
   parts.push(`### KEY PATTERNS TO LEARN FROM THESE EXAMPLES:`);
@@ -234,7 +281,7 @@ export function buildFewShotPromptSection(): string {
   parts.push(`2. **"SANITARY" appears as a section divider** — it's a row with description="SANITARY" and null/zero values, placed between storm and sanitary sections. All structures after this divider should be sanitary structures.`);
   parts.push(`3. **Catchbasins are GROUPED by type** (SINGLE_CB, DOUBLE_CB, DITCH_INLET_CB, DOUBLE_DITCH_INLET_CB) with a total quantity count, not listed individually.`);
   parts.push(`4. **Sewer run labels use exact format**: "FROM-TO" (e.g., "CB 3-DCBMH 2", "MH 1-MH 2"). Labels with "/INS." mean "including installation". Labels with "CONN." mean connection to existing.`);
-  parts.push(`5. **Non-pipe sewer line items** include VIDEO ($25/m or $15/m), LAYOUT ($5000 typical), AS BUILT ($5000 typical), SWALE, DEWATERING. These always appear at the end.`);
+  parts.push(`5. **Non-pipe sewer line items** include SWALE, DEWATERING, etc. These always appear at the end. DO NOT extract standard fees like VIDEO, LAYOUT, or AS BUILT.`);
   parts.push(`6. **Wye connections** (CB connecting to main via wye) have addMaterials of ~$880 per wye.`);
   parts.push(`7. **Default slope is 1.1%** unless profile view shows otherwise. typeClass defaults to 2.35 for concrete storm sewers, 1.3 for PVC.`);
   parts.push(`8. **If NO watermain work exists**, return empty arrays — do NOT hallucinate watermain data.`);

@@ -19,7 +19,7 @@ function getGenAI() {
   });
 }
 
-function getSystemPrompt(): string {
+function getSystemPrompt(projectName: string): string {
   return `You are a senior civil engineering cost estimator analyzing PDF construction/servicing drawings. Your task is to extract ALL infrastructure data from the drawings to populate a standardized cost estimation spreadsheet.
 
 You have deep expertise in Ontario municipal servicing standards and know how cost estimators structure their takeoffs.
@@ -72,10 +72,10 @@ List every pipe run AND non-pipe line items:
 - addLE: Additional labor costs (e.g., $40/m for insulation → length×40)
 
 **Non-Pipe Line Items (always appear at the end of the sewer list):**
-- runLabel: Item name (e.g., "SWALE", "VIDEO ($25/m)", "LAYOUT", "AS BUILT", "DEWATERING")
+- runLabel: Item name (e.g., "SWALE", "DEWATERING", "GREENSTORM")
 - isLineItem: true
 - All pipe fields (length, pipeDiameter, typeClass, slope, depth) = null
-- addMaterials: Total cost for the item. VIDEO is typically $25/m × total pipe length. LAYOUT and AS BUILT are typically $5000 each.
+- addMaterials: Total cost for the item.
 - addLE: 0 (usually)
 
 **SANITARY section divider:** If the project has both storm AND sanitary sewers, insert a row with runLabel="SANITARY", isLineItem=true, all values null/0, between the storm and sanitary pipe runs.
@@ -95,12 +95,13 @@ If NO watermain work is shown, return EMPTY arrays. Do NOT hallucinate watermain
 4. **Look at BOTH plan views AND profile views** for complete data.
 5. **Check for MH schedules/tables** on the drawings — these are the most reliable source for labels and elevations.
 6. **Count catchbasins by type** — do NOT list them as individual manhole rows.
-7. **Include the standard line items** at the end of sewers: VIDEO, LAYOUT, AS BUILT.
+7. **DO NOT include standard fees** like VIDEO, LAYOUT, or AS BUILT. These will be added automatically by our system. ONLY include line items explicitly drawn or noted on the plans.
 8. **Watermain Extraction**: ONLY extract watermain data if watermain work is explicitly shown on the drawings. If no watermain work is shown, return EMPTY arrays for all watermain sections.
 9. **Include a confidence score** (0-1) for overall extraction quality.
 10. **Abbreviate Structure Prefixes**: Drawings often label storm manholes as "STMH 1" or sanitary as "SANMH 1". Cost estimators abbreviate these to "MH 1" under their respective sections. You MUST drop the "ST", "STM", "SAN" prefixes for manhole descriptions (e.g., STMH 1 -> MH 1, STCBMH 2 -> CBMH 2).
+11. **IGNORE EXISTING INFRASTRUCTURE**: Do NOT extract any structures, pipes, or catchbasins that are marked as "EX.", "EXIST.", "EXISTING", or are clearly shown as existing to remain. ONLY extract PROPOSED new infrastructure.
 
-${buildFewShotPromptSection()}
+${buildFewShotPromptSection(projectName)}
 
 ## OUTPUT FORMAT
 Return ONLY valid JSON matching this schema:
@@ -156,45 +157,152 @@ function getDynamicHeuristics(): string[] {
   return [];
 }
 
-async function applyHeuristicsPostProcessing(
-  data: ExtractionResult,
-  heuristics: string[]
-): Promise<ExtractionResult> {
-  try {
-    const ai = getGenAI();
-    const systemInstruction = `You are an expert civil engineering data validation assistant. Your task is to apply a set of heuristic rules to correct a JSON dataset extracted from construction drawings.
+function applyDeterministicHeuristics(data: ExtractionResult): ExtractionResult {
+  // 1. Calculate total pipe length for Video Inspection fee
+  let totalSewerLength = 0;
+  for (const s of data.sewers) {
+    if (!s.isLineItem && s.length) {
+      totalSewerLength += s.length;
+    }
+  }
 
-You must apply these exact heuristic rules to the JSON data:
-${heuristics.map((h, i) => `${i + 1}. ${h}`).join('\n')}
-
-Return ONLY the corrected JSON dataset matching the original schema perfectly. Do not change any fields unless explicitly required by the heuristics. Do not alter the overall structure. Do not include markdown framing other than returning valid JSON.`;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            { text: systemInstruction },
-            { text: `Original JSON data:\n${JSON.stringify(data, null, 2)}` }
-          ]
-        }
-      ],
-      config: {
-        temperature: 0,
-        responseMimeType: 'application/json',
-      }
+  // 2. Append standard line items if there are any sewers
+  if (data.sewers.length > 0) {
+    const videoCost = totalSewerLength * 25; // $25/m
+    data.sewers.push({
+      item: data.sewers.length + 1,
+      runLabel: 'VIDEO ($25/m)',
+      isLineItem: true,
+      lineItemType: undefined,
+      length: null,
+      pipeDiameter: null,
+      typeClass: null,
+      slope: null,
+      depth: null,
+      addMaterials: videoCost,
+      addLE: 0
     });
+    
+    data.sewers.push({
+      item: data.sewers.length + 2,
+      runLabel: 'LAYOUT',
+      isLineItem: true,
+      lineItemType: undefined,
+      length: null,
+      pipeDiameter: null,
+      typeClass: null,
+      slope: null,
+      depth: null,
+      addMaterials: 5000,
+      addLE: 0
+    });
+    
+    data.sewers.push({
+      item: data.sewers.length + 3,
+      runLabel: 'AS BUILT',
+      isLineItem: true,
+      lineItemType: undefined,
+      length: null,
+      pipeDiameter: null,
+      typeClass: null,
+      slope: null,
+      depth: null,
+      addMaterials: 5000,
+      addLE: 0
+    });
+  }
 
-    const text = response.text || '';
+  return data;
+}
+
+function parseRawExtraction(text: string, projectName: string): ExtractionResult {
+  try {
     const raw = JSON.parse(text);
     return {
-      ...data,
-      ...raw,
+      projectName: raw.projectName || projectName,
+      jobNumber: raw.jobNumber || '',
+      date: raw.date || new Date().toISOString().split('T')[0],
+      templateType: determineTemplateType(raw),
+      manholes: (raw.manholes || []).map((m: any, i: number) => ({
+        item: i + 1,
+        description: String(m.description || ''),
+        topElevation: m.topElevation != null ? Number(m.topElevation) : null,
+        lowInvert: m.lowInvert != null ? Number(m.lowInvert) : null,
+        highInvert: m.highInvert != null ? Number(m.highInvert) : null,
+        pipeOutDiameter: m.pipeOutDiameter != null ? Number(m.pipeOutDiameter) : null,
+        structureType: m.structureType ? String(m.structureType) : null,
+        addMaterials: Number(m.addMaterials) || 0,
+        addLE: Number(m.addLE) || 0,
+        depth: m.depth != null ? Number(m.depth) : null,
+        drop: m.drop != null ? Number(m.drop) : null,
+        diameter: m.diameter != null ? snapToPipeDiameter(Number(m.diameter)) : null,
+      })),
+      catchbasins: {
+        groups: (raw.catchbasins?.groups || []).map((g: any) => ({
+          type: String(g.type || 'SINGLE_CB'),
+          quantity: Number(g.quantity) || 0,
+          wallThickness: Number(g.wallThickness) || 4,
+          depth: Number(g.depth) || 2.2,
+          grateEach: Number(g.grateEach) || 0,
+          addMaterials: Number(g.addMaterials) || 0,
+        })),
+        laborRates: {
+          scbLabor: Number(raw.catchbasins?.laborRates?.scbLabor) || 200,
+          dcbLabor: Number(raw.catchbasins?.laborRates?.dcbLabor) || 250,
+          dicbFC: Number(raw.catchbasins?.laborRates?.dicbFC) || 465,
+          ddicbFC: Number(raw.catchbasins?.laborRates?.ddicbFC) || 715,
+        },
+      },
+      sewers: (raw.sewers || []).map((s: Record<string, unknown>, i: number) => ({
+        item: i + 1,
+        runLabel: String(s.runLabel || ''),
+        isLineItem: Boolean(s.isLineItem),
+        lineItemType: s.lineItemType ? String(s.lineItemType) : undefined,
+        length: s.length != null ? Number(s.length) : null,
+        pipeDiameter: s.pipeDiameter != null ? snapToPipeDiameter(Number(s.pipeDiameter)) : null,
+        typeClass: s.typeClass != null ? Number(s.typeClass) : null,
+        slope: s.slope != null ? normalizeSlope(Number(s.slope)) : null,
+        depth: s.depth != null ? Number(s.depth) : null,
+        addMaterials: Number(s.addMaterials) || 0,
+        addLE: Number(s.addLE) || 0,
+      })),
+      watermain: (raw.watermain || []).map((w: Record<string, unknown>, i: number) => ({
+        item: i + 1,
+        sizeAndType: String(w.sizeAndType || ''),
+        length: Number(w.length) || 0,
+        pipeDiameter: snapToPipeDiameter(Number(w.pipeDiameter) || 0),
+        ocSc: Number(w.ocSc) || 1.1,
+        addMaterials: Number(w.addMaterials) || 0,
+        addLE: Number(w.addLE) || 0,
+        avgCover: Number(w.avgCover) || 1.8,
+      })),
+      watermainSpecials: (raw.watermainSpecials || []).map(
+        (sp: Record<string, unknown>, i: number) => ({
+          item: i + 1,
+          specialName: String(sp.specialName || ''),
+          quantity: Number(sp.quantity) || 0,
+          costEach: Number(sp.costEach) || 0,
+          thrustBlock: Number(sp.thrustBlock) || 0,
+          anodeCost: Number(sp.anodeCost) || 100,
+          laborEach: Number(sp.laborEach) || 0,
+        })
+      ),
+      watermainValves: (raw.watermainValves || []).map(
+        (v: Record<string, unknown>, i: number) => ({
+          item: i + 1,
+          valveSize: String(v.valveSize || ''),
+          quantity: Number(v.quantity) || 0,
+          valveCost: Number(v.valveCost) || 0,
+          boxCost: Number(v.boxCost) || 285,
+          anodeCost: Number(v.anodeCost) || 150,
+          laborPerValve: Number(v.laborPerValve) || 150,
+        })
+      ),
+      confidence: Number(raw.confidence) || 0.5,
+      warnings: raw.warnings || [],
     };
-  } catch (err: any) {
-    console.error('      [extraction.ts] Heuristics post-processing failed, falling back to raw extraction:', err.message);
-    return data;
+  } catch (e: any) {
+    throw new Error(`Failed to parse Gemini response as JSON: ${text.slice(0, 500)}`);
   }
 }
 
@@ -239,16 +347,17 @@ export async function extractFromPDF(
           },
         };
 
-    const response = await ai.models.generateContent({
+    console.log(`      [extraction.ts] Running Pass 1 (Structures)...`);
+    const response1 = await ai.models.generateContent({
       model: 'gemini-2.5-pro',
       contents: [
         {
           role: 'user',
           parts: [
-            { text: `Project: ${projectName}\n\n${getSystemPrompt()}${getDynamicPromptAdditions()}` },
+            { text: `Project: ${projectName}\n\n${getSystemPrompt(projectName)}${getDynamicPromptAdditions()}` },
             pdfPart,
             {
-              text: 'Analyze ALL the above drawing pages and extract the complete infrastructure data. Return ONLY valid JSON. Remember: read labels exactly from the drawings, count catchbasins by type, include SANITARY section dividers, and add VIDEO/LAYOUT/AS BUILT line items at the end of sewers.',
+              text: 'Analyze ALL the above drawing pages. Your task for Pass 1 is to extract ONLY MANHOLES AND CATCHBASINS (focusing on Schedule Tables and Plan views). Return empty arrays for sewers and watermain. Return ONLY valid JSON. Remember: read labels exactly from the drawings, count catchbasins by type, and include SANITARY section dividers.',
             },
           ],
         },
@@ -259,101 +368,50 @@ export async function extractFromPDF(
       },
     });
 
-    const text = response.text || '{}';
+    const pass1Parsed = parseRawExtraction(response1.text || '{}', projectName);
 
-    // Parse and validate
-    let parsed: ExtractionResult;
-    try {
-      const raw = JSON.parse(text);
-      parsed = {
-        projectName: raw.projectName || projectName,
-        jobNumber: raw.jobNumber || '',
-        date: raw.date || new Date().toISOString().split('T')[0],
-        templateType: determineTemplateType(raw),
-        manholes: (raw.manholes || []).map((m: any, i: number) => ({
-          item: i + 1,
-          description: String(m.description || ''),
-          topElevation: m.topElevation != null ? Number(m.topElevation) : null,
-          lowInvert: m.lowInvert != null ? Number(m.lowInvert) : null,
-          highInvert: m.highInvert != null ? Number(m.highInvert) : null,
-          pipeOutDiameter: m.pipeOutDiameter != null ? Number(m.pipeOutDiameter) : null,
-          structureType: m.structureType ? String(m.structureType) : null,
-          addMaterials: Number(m.addMaterials) || 0,
-          addLE: Number(m.addLE) || 0,
-          depth: m.depth != null ? Number(m.depth) : null,
-          drop: m.drop != null ? Number(m.drop) : null,
-          diameter: m.diameter != null ? snapToPipeDiameter(Number(m.diameter)) : null,
-        })),
-        catchbasins: {
-          groups: (raw.catchbasins?.groups || []).map((g: any) => ({
-            type: String(g.type || 'SINGLE_CB'),
-            quantity: Number(g.quantity) || 0,
-            wallThickness: Number(g.wallThickness) || 4,
-            depth: Number(g.depth) || 2.2,
-            grateEach: Number(g.grateEach) || 0,
-            addMaterials: Number(g.addMaterials) || 0,
-          })),
-          laborRates: {
-            scbLabor: Number(raw.catchbasins?.laborRates?.scbLabor) || 200,
-            dcbLabor: Number(raw.catchbasins?.laborRates?.dcbLabor) || 250,
-            dicbFC: Number(raw.catchbasins?.laborRates?.dicbFC) || 465,
-            ddicbFC: Number(raw.catchbasins?.laborRates?.ddicbFC) || 715,
-          },
+    console.log(`      [extraction.ts] Running Pass 2 (Pipes)...`);
+    const response2 = await ai.models.generateContent({
+      model: 'gemini-2.5-pro',
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: `Project: ${projectName}\n\n${getSystemPrompt(projectName)}${getDynamicPromptAdditions()}` },
+            pdfPart,
+            {
+              text: `Analyze ALL the above drawing pages. Your task for Pass 2 is to extract ONLY SEWERS AND WATERMAIN. 
+You must use the following structures (extracted in Pass 1) as a reference:
+${JSON.stringify({manholes: pass1Parsed.manholes, catchbasins: pass1Parsed.catchbasins}, null, 2)}
+
+DO NOT re-extract the structures. Return empty arrays for manholes and catchbasins. Return ONLY valid JSON.`,
+            },
+          ],
         },
-        sewers: (raw.sewers || []).map((s: Record<string, unknown>, i: number) => ({
-          item: i + 1,
-          runLabel: String(s.runLabel || ''),
-          isLineItem: Boolean(s.isLineItem),
-          lineItemType: s.lineItemType ? String(s.lineItemType) : undefined,
-          length: s.length != null ? Number(s.length) : null,
-          pipeDiameter: s.pipeDiameter != null ? snapToPipeDiameter(Number(s.pipeDiameter)) : null,
-          typeClass: s.typeClass != null ? Number(s.typeClass) : null,
-          slope: s.slope != null ? normalizeSlope(Number(s.slope)) : null,
-          depth: s.depth != null ? Number(s.depth) : null,
-          addMaterials: Number(s.addMaterials) || 0,
-          addLE: Number(s.addLE) || 0,
-        })),
-        watermain: (raw.watermain || []).map((w: Record<string, unknown>, i: number) => ({
-          item: i + 1,
-          sizeAndType: String(w.sizeAndType || ''),
-          length: Number(w.length) || 0,
-          pipeDiameter: snapToPipeDiameter(Number(w.pipeDiameter) || 0),
-          ocSc: Number(w.ocSc) || 1.1,
-          addMaterials: Number(w.addMaterials) || 0,
-          addLE: Number(w.addLE) || 0,
-          avgCover: Number(w.avgCover) || 1.8,
-        })),
-        watermainSpecials: (raw.watermainSpecials || []).map(
-          (sp: Record<string, unknown>, i: number) => ({
-            item: i + 1,
-            specialName: String(sp.specialName || ''),
-            quantity: Number(sp.quantity) || 0,
-            costEach: Number(sp.costEach) || 0,
-            thrustBlock: Number(sp.thrustBlock) || 0,
-            anodeCost: Number(sp.anodeCost) || 100,
-            laborEach: Number(sp.laborEach) || 0,
-          })
-        ),
-        watermainValves: (raw.watermainValves || []).map(
-          (v: Record<string, unknown>, i: number) => ({
-            item: i + 1,
-            valveSize: String(v.valveSize || ''),
-            quantity: Number(v.quantity) || 0,
-            valveCost: Number(v.valveCost) || 0,
-            boxCost: Number(v.boxCost) || 285,
-            anodeCost: Number(v.anodeCost) || 150,
-            laborPerValve: Number(v.laborPerValve) || 150,
-          })
-        ),
-        confidence: Number(raw.confidence) || 0.5,
-        warnings: raw.warnings || [],
-      };
-    } catch {
-      throw new Error(`Failed to parse Gemini response as JSON: ${text.slice(0, 500)}`);
-    }
+      ],
+      config: {
+        temperature: 0,
+        responseMimeType: 'application/json',
+      },
+    });
+
+    const pass2Parsed = parseRawExtraction(response2.text || '{}', projectName);
+
+    let parsed: ExtractionResult = {
+      ...pass1Parsed,
+      sewers: pass2Parsed.sewers,
+      watermain: pass2Parsed.watermain,
+      watermainSpecials: pass2Parsed.watermainSpecials,
+      watermainValves: pass2Parsed.watermainValves,
+      confidence: (pass1Parsed.confidence + pass2Parsed.confidence) / 2,
+      warnings: [...pass1Parsed.warnings, ...pass2Parsed.warnings]
+    };
 
     // Run heuristic validation
     parsed.warnings = [...parsed.warnings, ...validateExtraction(parsed)];
+
+    // Apply deterministic heuristics
+    parsed = applyDeterministicHeuristics(parsed);
 
     return parsed;
   } catch (err: any) {

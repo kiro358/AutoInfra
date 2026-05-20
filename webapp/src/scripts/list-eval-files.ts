@@ -8,11 +8,11 @@ async function main() {
   
   console.log('Listing scoreboard files:');
   const [files] = await bucket.getFiles({ prefix: 'scoreboards/' });
-  files.forEach(f => console.log(`- ${f.name} (${(f.metadata.size / 1024).toFixed(2)} KB, updated: ${f.metadata.updated})`));
+  files.forEach(f => console.log(`- ${f.name} (${(Number(f.metadata.size || 0) / 1024).toFixed(2)} KB, updated: ${f.metadata.updated})`));
   
   console.log('\nListing files for 2026-069 RIOCAN GEORGIAN MALL:');
   const [riocanFiles] = await bucket.getFiles({ prefix: '2026-069 RIOCAN GEORGIAN MALL/' });
-  riocanFiles.forEach(f => console.log(`- ${f.name} (${(f.metadata.size / 1024).toFixed(2)} KB, updated: ${f.metadata.updated})`));
+  riocanFiles.forEach(f => console.log(`- ${f.name} (${(Number(f.metadata.size || 0) / 1024).toFixed(2)} KB, updated: ${f.metadata.updated})`));
 }
 
 main().catch(console.error);

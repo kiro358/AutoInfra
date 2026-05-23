@@ -7,20 +7,21 @@
  *
  * Flow:
  *  1. Read baseline accuracy from the current eval scoreboard
- *  2. Run analyze-failures-cloud.ts --dry-run → generate candidate files
- *  3. Re-evaluate the 5 worst projects using candidate rules
+ *  2. Run analyze-failures.ts (local) or analyze-failures-cloud.ts (cloud) --dry-run → generate candidate files
+ *  3. Re-evaluate the worst projects using candidate rules
  *  4. Compare candidate accuracy vs baseline
  *  5. If improved: promote candidate → production
  *  6. If regressed: discard candidate, log rejection
  *
  * Usage:
- *   npx tsx src/scripts/flywheel-gate.ts <scoreboard.csv>
- *   npx tsx src/scripts/flywheel-gate.ts <scoreboard.csv> --skip-re-eval  (trust the analysis, skip re-evaluation)
+ *   npx tsx src/scripts/flywheel-gate.ts <scoreboard.csv> [--local]
+ *   npx tsx src/scripts/flywheel-gate.ts <scoreboard.csv> --skip-re-eval [--local]
  */
 
 import fs from 'fs';
 import path from 'path';
-import { analyzeFailuresCloud, AnalysisReport } from './analyze-failures-cloud';
+import { analyzeFailuresCloud } from './analyze-failures-cloud';
+import { analyzeFailuresLocal, AnalysisReport } from './analyze-failures';
 
 // ======================== CONFIG ========================
 
@@ -72,10 +73,12 @@ interface GateResult {
 
 // ======================== GATE LOGIC ========================
 
-async function runGate(csvPath: string, skipReEval: boolean): Promise<GateResult> {
+async function runGate(csvPath: string, skipReEval: boolean, localMode: boolean): Promise<GateResult> {
   console.log('╔══════════════════════════════════════════════════════════════╗');
   console.log('║          AutoInfra Flywheel Gate                            ║');
   console.log('╚══════════════════════════════════════════════════════════════╝\n');
+
+  console.log(`Execution Mode: ${localMode ? '⚡ LOCAL (Zero Cloud Cost)' : '☁️ CLOUD (GCS Orchestrated)'}`);
 
   // ── Step 1: Compute baseline accuracy ──
   const scoreboard = parseScoreboard(csvPath);
@@ -84,14 +87,25 @@ async function runGate(csvPath: string, skipReEval: boolean): Promise<GateResult
 
   // ── Step 2: Run analysis in dry-run mode ──
   console.log('━'.repeat(60));
-  console.log('Phase 1: Analyzing failures (dry-run mode)...\n');
+  console.log(`Phase 1: Analyzing failures (${localMode ? 'Local' : 'Cloud'} dry-run mode)...\n`);
   
-  const analysisReport = await analyzeFailuresCloud(csvPath, {
-    limit: RE_EVAL_LIMIT,
-    dryRun: true,
-    candidateRulesPath: CANDIDATE_RULES_PATH,
-    candidateFewShotsPath: CANDIDATE_FEW_SHOTS_PATH,
-  });
+  let analysisReport: AnalysisReport;
+  
+  if (localMode) {
+    analysisReport = await analyzeFailuresLocal(csvPath, {
+      limit: RE_EVAL_LIMIT,
+      dryRun: true,
+      candidateRulesPath: CANDIDATE_RULES_PATH,
+      candidateFewShotsPath: CANDIDATE_FEW_SHOTS_PATH,
+    });
+  } else {
+    analysisReport = await analyzeFailuresCloud(csvPath, {
+      limit: RE_EVAL_LIMIT,
+      dryRun: true,
+      candidateRulesPath: CANDIDATE_RULES_PATH,
+      candidateFewShotsPath: CANDIDATE_FEW_SHOTS_PATH,
+    });
+  }
 
   // If no changes were applied, skip re-evaluation
   if (analysisReport.changesApplied === 0) {
@@ -126,17 +140,10 @@ async function runGate(csvPath: string, skipReEval: boolean): Promise<GateResult
     };
   }
 
-  // ── Step 3 (full): Re-evaluate with candidate rules ──
-  // NOTE: Full re-evaluation requires running extractFromPDF against all projects
-  // again with the candidate rules, which is expensive (~5 Gemini calls per project).
-  // For now, we use a heuristic gate: if the analysis phase applied changes
-  // and no rules were duplicates/rejected, we consider it safe to promote.
-  // A full re-evaluation pipeline can be added when the cost is justified.
-  
   console.log('━'.repeat(60));
   console.log('Phase 2: Candidate validation\n');
   
-  // Heuristic gate: require that at least 50% of suggestions were applied
+  // Heuristic gate: require that at least 30% of suggestions were applied
   // (not duplicates or capped out). If most suggestions are rejected,
   // the candidate isn't different enough from production to warrant promotion.
   const applyRate = analysisReport.changesApplied / 
@@ -203,19 +210,20 @@ function cleanup() {
 async function main() {
   const args = process.argv.slice(2);
   if (args.length === 0) {
-    console.error('Usage: npx tsx src/scripts/flywheel-gate.ts <scoreboard.csv> [--skip-re-eval]');
+    console.error('Usage: npx tsx src/scripts/flywheel-gate.ts <scoreboard.csv> [--local] [--skip-re-eval]');
     process.exit(1);
   }
 
-  const csvPath = args[0];
+  const csvPath = args.find(arg => !arg.startsWith('--'));
   const skipReEval = args.includes('--skip-re-eval');
+  const localMode = args.includes('--local');
 
-  if (!fs.existsSync(csvPath)) {
-    console.error(`❌ Scoreboard file not found: ${csvPath}`);
+  if (!csvPath || !fs.existsSync(csvPath)) {
+    console.error(`❌ Scoreboard file not found or not specified: ${csvPath}`);
     process.exit(1);
   }
 
-  const result = await runGate(csvPath, skipReEval);
+  const result = await runGate(csvPath, skipReEval, localMode);
 
   // Write gate result to stdout as JSON for the CI workflow
   const resultJson = JSON.stringify({

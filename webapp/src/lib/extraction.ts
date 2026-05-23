@@ -3,6 +3,19 @@ import { Storage } from '@google-cloud/storage';
 import { ExtractionResult } from './types';
 import { PIPE_DIAMETERS, MH_DIAMETERS } from './constants';
 import { buildFewShotPromptSection } from './few-shot-examples';
+import { setGlobalDispatcher, Agent } from 'undici';
+
+// Globally override Undici's default 30-second headers/body timeout
+try {
+  setGlobalDispatcher(new Agent({
+    headersTimeout: 300000, // 5 minutes in milliseconds
+    bodyTimeout: 300000,
+    connectTimeout: 300000
+  }));
+  console.log('      [extraction.ts] Undici global dispatcher configured with 5m timeouts.');
+} catch (e) {
+  console.warn('      [extraction.ts] Failed to configure Undici global dispatcher:', e);
+}
 
 const PROJECT_ID = process.env.GCP_PROJECT_ID || '';
 const LOCATION = process.env.GCP_LOCATION || 'us-central1';
@@ -15,7 +28,10 @@ function getGenAI() {
   return new GoogleGenAI({
     vertexai: true,
     project: PROJECT_ID,
-    location: LOCATION
+    location: LOCATION,
+    httpOptions: {
+      timeout: 300000 // 5 minutes in milliseconds
+    }
   });
 }
 

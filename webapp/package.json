@@ -6,7 +6,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "evaluate:golden": "tsx src/scripts/evaluate-golden.ts",
+    "flywheel:local": "tsx src/scripts/batch-evaluate.ts --golden && tsx src/scripts/flywheel-gate.ts $(ls -t evaluation_scoreboard_*.csv | head -n 1) --local"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.19.0",

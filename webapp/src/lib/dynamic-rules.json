@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "baselineAccuracy": 72.3,
+  "baselineAccuracy": 42.3257575757576,
   "lastUpdated": "2026-05-23",
   "promptAdditions": [
     {
@@ -19,6 +19,18 @@
       "rule": "Crucially, you are populating a bid sheet for the project's scope of work, not creating an inventory of everything on the drawing. Only extract quantities for *newly proposed* infrastructure or *modifications to existing* infrastructure. Ignore any existing items that are to remain untouched.",
       "addedBy": "manual",
       "addedAt": "2026-05-15",
+      "accuracyDelta": null
+    },
+    {
+      "rule": "Only populate fields for 'Additional Materials' or 'Add Mtrls' if the drawing explicitly and separately itemizes a cost for them. Do not infer these costs from general notes or other values. If no explicit, separate cost for additional materials is listed for an item, the value should be null or 0.",
+      "addedBy": "flywheel",
+      "addedAt": "2026-05-23",
+      "accuracyDelta": null
+    },
+    {
+      "rule": "If a value for a specific field (like quantity or cost) is not explicitly listed for a line item, you must leave that field null. Do not infer values or assign numbers from nearby, unrelated text on the drawing.",
+      "addedBy": "flywheel",
+      "addedAt": "2026-05-23",
       "accuracyDelta": null
     }
   ],

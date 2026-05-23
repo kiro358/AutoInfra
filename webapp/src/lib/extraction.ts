@@ -127,13 +127,17 @@ Return ONLY valid JSON matching this schema:
 import fs from 'fs';
 import path from 'path';
 
-function getDynamicPromptAdditions(): string {
+function getDynamicPromptAdditions(overridePath?: string): string {
   try {
-    const filePath = path.resolve(__dirname, 'dynamic-rules.json');
+    const filePath = overridePath || path.resolve(__dirname, 'dynamic-rules.json');
     if (fs.existsSync(filePath)) {
       const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
       if (data.promptAdditions && data.promptAdditions.length > 0) {
-        return '\n\n## DYNAMICALLY LEARNED RULES\n' + data.promptAdditions.map((r: string, i: number) => (i + 1) + '. ' + r).join('\n');
+        // Support both v1 (plain strings) and v2 (objects with metadata)
+        const rules = data.promptAdditions.map((r: string | { rule: string }) =>
+          typeof r === 'string' ? r : r.rule
+        );
+        return '\n\n## DYNAMICALLY LEARNED RULES\n' + rules.map((r: string, i: number) => (i + 1) + '. ' + r).join('\n');
       }
     }
   } catch (e) {
@@ -142,13 +146,16 @@ function getDynamicPromptAdditions(): string {
   return '';
 }
 
-function getDynamicHeuristics(): string[] {
+function getDynamicHeuristics(overridePath?: string): string[] {
   try {
-    const filePath = path.resolve(__dirname, 'dynamic-rules.json');
+    const filePath = overridePath || path.resolve(__dirname, 'dynamic-rules.json');
     if (fs.existsSync(filePath)) {
       const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
       if (data.heuristics && data.heuristics.length > 0) {
-        return data.heuristics;
+        // Support both v1 (plain strings) and v2 (objects with metadata)
+        return data.heuristics.map((h: string | { rule: string }) =>
+          typeof h === 'string' ? h : h.rule
+        );
       }
     }
   } catch (e) {

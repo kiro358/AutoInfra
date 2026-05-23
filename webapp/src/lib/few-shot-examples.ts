@@ -23,20 +23,52 @@ export interface FewShotExample {
 import fs from 'fs';
 import path from 'path';
 
-function loadDynamicFewShots(): FewShotExample[] {
+const STANDARD_FEE_LABELS = ['VIDEO', 'LAYOUT', 'AS BUILT'];
+const MAX_DYNAMIC_FEW_SHOTS = 3;
+
+function isStandardFeeLine(label: string): boolean {
+  const upper = label.toUpperCase();
+  return STANDARD_FEE_LABELS.some(fee => upper.includes(fee));
+}
+
+function loadDynamicFewShots(overridePath?: string): FewShotExample[] {
   try {
-    let filePath = path.resolve(__dirname, '../../few_shot_examples.json');
-    if (!fs.existsSync(filePath)) {
+    let filePath = overridePath || path.resolve(__dirname, '../../few_shot_examples.json');
+    if (!overridePath && !fs.existsSync(filePath)) {
       filePath = path.resolve(process.cwd(), 'few_shot_examples.json');
     }
     if (fs.existsSync(filePath)) {
       const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-      // Basic format adaptation if needed
-      return data.map((d: any) => ({
-        projectName: d.projectName,
-        description: d.description || 'Auto-added from optimization flywheel.',
-        expectedOutput: d
-      }));
+      const examples: FewShotExample[] = [];
+
+      for (const d of data) {
+        // Validate required fields
+        if (!d.projectName || (!d.manholes && !d.sewers)) {
+          console.warn(`Skipping invalid dynamic few-shot: missing required fields (${d.projectName || 'unnamed'})`);
+          continue;
+        }
+
+        // Filter out standard fee line items from sewer entries
+        if (d.sewers && Array.isArray(d.sewers)) {
+          d.sewers = d.sewers.filter((s: any) => {
+            if (!s.runLabel) return true;
+            return !isStandardFeeLine(s.runLabel);
+          });
+        }
+
+        examples.push({
+          projectName: d.projectName,
+          description: d.description || 'Auto-added from optimization flywheel.',
+          expectedOutput: d,
+        });
+      }
+
+      // Cap at MAX_DYNAMIC_FEW_SHOTS to prevent prompt bloat
+      if (examples.length > MAX_DYNAMIC_FEW_SHOTS) {
+        console.warn(`Dynamic few-shots capped: ${examples.length} → ${MAX_DYNAMIC_FEW_SHOTS}`);
+        return examples.slice(0, MAX_DYNAMIC_FEW_SHOTS);
+      }
+      return examples;
     }
   } catch (e) {
     console.error('Failed to load dynamic few shots', e);

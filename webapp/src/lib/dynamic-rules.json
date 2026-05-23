@@ -1,8 +1,26 @@
 {
+  "version": 2,
+  "baselineAccuracy": 72.3,
+  "lastUpdated": "2026-05-23",
   "promptAdditions": [
-    "Pay close attention to the scope of each section. For example, the 'WATERMAIN' section is for mainline pipes only; do not include smaller, individual service connections. Similarly, structure descriptions should be simplified to their standard identifier (e.g., 'MH 1'), excluding utility types or accessories.",
-    "You must extract data from the engineering plan and profile views, and from specific data tables like 'Manhole Schedule' or 'Pipe Schedule'. Explicitly ignore any tables or lists related to cost estimates, bid items, or general construction notes unless they are directly labeling a component on the drawing itself.",
-    "Crucially, you are populating a bid sheet for the project's scope of work, not creating an inventory of everything on the drawing. Only extract quantities for *newly proposed* infrastructure or *modifications to existing* infrastructure. Ignore any existing items that are to remain untouched."
+    {
+      "rule": "Pay close attention to the scope of each section. For example, the 'WATERMAIN' section is for mainline pipes only; do not include smaller, individual service connections. Similarly, structure descriptions should be simplified to their standard identifier (e.g., 'MH 1'), excluding utility types or accessories.",
+      "addedBy": "manual",
+      "addedAt": "2026-05-15",
+      "accuracyDelta": null
+    },
+    {
+      "rule": "You must extract data from the engineering plan and profile views, and from specific data tables like 'Manhole Schedule' or 'Pipe Schedule'. Explicitly ignore any tables or lists related to cost estimates, bid items, or general construction notes unless they are directly labeling a component on the drawing itself.",
+      "addedBy": "manual",
+      "addedAt": "2026-05-15",
+      "accuracyDelta": null
+    },
+    {
+      "rule": "Crucially, you are populating a bid sheet for the project's scope of work, not creating an inventory of everything on the drawing. Only extract quantities for *newly proposed* infrastructure or *modifications to existing* infrastructure. Ignore any existing items that are to remain untouched.",
+      "addedBy": "manual",
+      "addedAt": "2026-05-15",
+      "accuracyDelta": null
+    }
   ],
   "heuristics": []
 }

@@ -1,8 +1,8 @@
 name: AutoInfra Optimization Flywheel
 
 on:
-  schedule:
-    - cron: '0 0 * * 0' # Run weekly on Sunday
+  # schedule:
+  #   - cron: '0 0 * * 0' # Run weekly on Sunday — DISABLED until accuracy gate is validated
   workflow_dispatch: # Allow manual trigger
 
 jobs:
@@ -60,25 +60,45 @@ jobs:
           echo 'Project,MH_Structures,MH_Catchbasins,Sewers,Watermain,Overall,TotalCells,MatchingCells' > scoreboards/combined.csv
           tail -q -n +2 scoreboards/evaluation_scoreboard_*.csv >> scoreboards/combined.csv
 
-      - name: Analyze Failures & Suggest Improvements
+      - name: Run Gated Flywheel Optimization
+        id: gate
         working-directory: webapp
         env:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           GCP_LOCATION: ${{ secrets.GCP_LOCATION }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
         run: |
-          npx tsx src/scripts/analyze-failures-cloud.ts scoreboards/combined.csv --limit 5
+          npx tsx src/scripts/flywheel-gate.ts scoreboards/combined.csv
+          
+          # Check if gate produced changes to commit
+          if [ -f flywheel-gate-result.json ]; then
+            PASSED=$(cat flywheel-gate-result.json | python3 -c "import sys,json; print(json.load(sys.stdin).get('passed', False))")
+            echo "gate_passed=$PASSED" >> $GITHUB_OUTPUT
+          else
+            echo "gate_passed=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: Pull latest changes to avoid push rejection
+        if: steps.gate.outputs.gate_passed == 'True'
         run: |
           # Fetch and rebase latest changes, stashing uncommitted modifications if any
           git pull --rebase --autostash origin master || true
 
       - name: Commit Automated Optimizations
+        if: steps.gate.outputs.gate_passed == 'True'
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "🤖 chore: apply automated pipeline optimizations"
-          file_pattern: 'webapp/src/lib/dynamic-rules.json webapp/few_shot_examples.json'
+          commit_message: "🤖 chore: apply gated flywheel optimizations (gate passed)"
+          file_pattern: 'webapp/src/lib/dynamic-rules.json few_shot_examples.json'
           branch: master
           commit_user_name: "AutoInfra Flywheel"
           commit_user_email: "bot@autoinfra.com"
+
+      - name: Log Gate Rejection
+        if: steps.gate.outputs.gate_passed != 'True'
+        run: |
+          echo "⛔ Flywheel gate did not pass — no changes committed."
+          if [ -f webapp/flywheel-gate-result.json ]; then
+            cat webapp/flywheel-gate-result.json
+          fi
+

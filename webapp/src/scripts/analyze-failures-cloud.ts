@@ -4,6 +4,14 @@
  * Identifies projects that failed the cloud batch evaluation,
  * downloads their truth/generated sheets from GCS, extracts diffs, 
  * uses the LLM to suggest improvements, and applies them.
+ *
+ * Modes:
+ *   --dry-run: Write candidate files instead of overwriting production
+ *   Default: Apply changes to production files (legacy behavior, discouraged)
+ *
+ * Caps:
+ *   - Max 5 prompt additions (FIFO eviction when full)
+ *   - Max 3 dynamic few-shot examples
  */
 
 import fs from 'fs';
@@ -18,6 +26,9 @@ const storage = new Storage();
 const BUCKET_NAME = process.env.GCS_BUCKET || 'autoinfra-ai-eval-data';
 const PROJECT_ID = process.env.GCP_PROJECT_ID || '';
 const LOCATION = process.env.GCP_LOCATION || 'us-central1';
+
+const MAX_PROMPT_ADDITIONS = 5;
+const MAX_DYNAMIC_FEW_SHOTS = 3;
 
 function getGenAI() {
   return new GoogleGenAI({
@@ -150,6 +161,13 @@ async function extractGtForFewShot(projectName: string, truthPath: string) {
     const length = getCellValue(swSheet, `C${r}`);
     const pipeDia = getCellValue(swSheet, `D${r}`);
     const isLineItem = !length && !pipeDia;
+
+    // Skip standard fee line items — they're added deterministically
+    const labelUpper = String(label).toUpperCase();
+    if (isLineItem && (labelUpper.includes('VIDEO') || labelUpper.includes('LAYOUT') || labelUpper.includes('AS BUILT'))) {
+      continue;
+    }
+
     result.sewers.push({
       runLabel: String(label),
       isLineItem,
@@ -169,34 +187,193 @@ async function extractGtForFewShot(projectName: string, truthPath: string) {
   return result;
 }
 
-function applyDynamicRule(action: string, rule: string) {
-  let p = path.resolve(__dirname, '../lib/dynamic-rules.json');
-  if (!fs.existsSync(p)) {
-    p = path.resolve(process.cwd(), 'src/lib/dynamic-rules.json');
+// ======================== RULE MANAGEMENT ========================
+
+interface DynamicRulesV2 {
+  version: number;
+  baselineAccuracy: number;
+  lastUpdated: string;
+  promptAdditions: { rule: string; addedBy: string; addedAt: string; accuracyDelta: number | null }[];
+  heuristics: { rule: string; addedBy: string; addedAt: string; accuracyDelta: number | null }[];
+}
+
+function loadDynamicRules(filePath: string): DynamicRulesV2 {
+  if (!fs.existsSync(filePath)) {
+    return {
+      version: 2,
+      baselineAccuracy: 0,
+      lastUpdated: new Date().toISOString().split('T')[0],
+      promptAdditions: [],
+      heuristics: [],
+    };
   }
-  const rules = JSON.parse(fs.readFileSync(p, 'utf8'));
+
+  const raw = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  
+  // Migrate v1 → v2 if needed
+  if (!raw.version || raw.version < 2) {
+    const migrated: DynamicRulesV2 = {
+      version: 2,
+      baselineAccuracy: raw.baselineAccuracy || 0,
+      lastUpdated: new Date().toISOString().split('T')[0],
+      promptAdditions: (raw.promptAdditions || []).map((r: string | { rule: string }) => ({
+        rule: typeof r === 'string' ? r : r.rule,
+        addedBy: 'migrated',
+        addedAt: new Date().toISOString().split('T')[0],
+        accuracyDelta: null,
+      })),
+      heuristics: (raw.heuristics || []).map((h: string | { rule: string }) => ({
+        rule: typeof h === 'string' ? h : h.rule,
+        addedBy: 'migrated',
+        addedAt: new Date().toISOString().split('T')[0],
+        accuracyDelta: null,
+      })),
+    };
+    return migrated;
+  }
+
+  return raw as DynamicRulesV2;
+}
+
+/**
+ * Check if a new rule is semantically similar to an existing one.
+ * Simple word-overlap heuristic to prevent near-duplicate rules.
+ */
+function isDuplicateRule(existingRules: string[], newRule: string): boolean {
+  const newWords = new Set(newRule.toLowerCase().split(/\W+/).filter(w => w.length > 3));
+  
+  for (const existing of existingRules) {
+    const existingWords = new Set(existing.toLowerCase().split(/\W+/).filter(w => w.length > 3));
+    let overlap = 0;
+    for (const w of newWords) {
+      if (existingWords.has(w)) overlap++;
+    }
+    const similarity = overlap / Math.max(newWords.size, existingWords.size);
+    if (similarity > 0.6) return true; // >60% word overlap = likely duplicate
+  }
+  return false;
+}
+
+function applyDynamicRule(rules: DynamicRulesV2, action: string, rule: string): { applied: boolean; reason: string } {
+  const today = new Date().toISOString().split('T')[0];
+  
   if (action === 'PROMPT_TUNING') {
-    rules.promptAdditions.push(rule);
+    const existingRules = rules.promptAdditions.map(r => r.rule);
+    if (isDuplicateRule(existingRules, rule)) {
+      return { applied: false, reason: 'Duplicate rule detected (>60% word overlap with existing)' };
+    }
+    
+    // FIFO eviction if at cap
+    if (rules.promptAdditions.length >= MAX_PROMPT_ADDITIONS) {
+      const evicted = rules.promptAdditions.shift()!;
+      console.log(`   ⚠️ Evicted oldest prompt rule: "${evicted.rule.slice(0, 60)}..."`);
+    }
+    
+    rules.promptAdditions.push({
+      rule,
+      addedBy: 'flywheel',
+      addedAt: today,
+      accuracyDelta: null,
+    });
+    return { applied: true, reason: 'Added prompt rule' };
+    
   } else if (action === 'ADD_HEURISTIC') {
-    rules.heuristics.push(rule);
+    const existingRules = rules.heuristics.map(h => h.rule);
+    if (isDuplicateRule(existingRules, rule)) {
+      return { applied: false, reason: 'Duplicate heuristic detected' };
+    }
+    
+    rules.heuristics.push({
+      rule,
+      addedBy: 'flywheel',
+      addedAt: today,
+      accuracyDelta: null,
+    });
+    return { applied: true, reason: 'Added heuristic' };
   }
-  fs.writeFileSync(p, JSON.stringify(rules, null, 2));
+  
+  return { applied: false, reason: `Unknown action: ${action}` };
 }
 
-function applyFewShot(gtData: any) {
-  let p = path.resolve(__dirname, '../../few_shot_examples.json');
-  if (!fs.existsSync(p)) {
-    p = path.resolve(process.cwd(), 'few_shot_examples.json');
+function applyFewShot(fewShotsPath: string, gtData: any): { applied: boolean; reason: string } {
+  let fewshots: any[] = [];
+  if (fs.existsSync(fewShotsPath)) {
+    fewshots = JSON.parse(fs.readFileSync(fewShotsPath, 'utf8'));
   }
-  let fewshots = [];
-  if (fs.existsSync(p)) {
-    fewshots = JSON.parse(fs.readFileSync(p, 'utf8'));
+  
+  // Cap check
+  if (fewshots.length >= MAX_DYNAMIC_FEW_SHOTS) {
+    return { applied: false, reason: `Dynamic few-shots at cap (${MAX_DYNAMIC_FEW_SHOTS}). Not adding more.` };
   }
+  
+  // Duplicate check by project name
+  const exists = fewshots.some((f: any) =>
+    f.projectName && gtData.projectName &&
+    f.projectName.toLowerCase() === gtData.projectName.toLowerCase()
+  );
+  if (exists) {
+    return { applied: false, reason: `Project "${gtData.projectName}" already in few-shots` };
+  }
+  
   fewshots.push(gtData);
-  fs.writeFileSync(p, JSON.stringify(fewshots, null, 2));
+  fs.writeFileSync(fewShotsPath, JSON.stringify(fewshots, null, 2));
+  return { applied: true, reason: `Added ${gtData.projectName} to few-shots` };
 }
 
-async function analyzeFailuresCloud(csvPath: string, limit: number = Infinity, targetProject: string | null = null) {
+// ======================== MAIN ANALYSIS ========================
+
+export interface AnalysisReport {
+  analyzedProjects: number;
+  changesApplied: number;
+  changesRejected: number;
+  details: { project: string; action: string; applied: boolean; reason: string }[];
+}
+
+export async function analyzeFailuresCloud(
+  csvPath: string,
+  options: {
+    limit?: number;
+    targetProject?: string | null;
+    dryRun?: boolean;
+    candidateRulesPath?: string;
+    candidateFewShotsPath?: string;
+  } = {}
+): Promise<AnalysisReport> {
+  const {
+    limit = Infinity,
+    targetProject = null,
+    dryRun = false,
+    candidateRulesPath,
+    candidateFewShotsPath,
+  } = options;
+
+  // Determine file paths
+  const productionRulesPath = path.resolve(__dirname, '../lib/dynamic-rules.json');
+  const productionFewShotsPath = path.resolve(__dirname, '../../few_shot_examples.json');
+
+  let rulesPath: string;
+  let fewShotsPath: string;
+
+  if (dryRun) {
+    rulesPath = candidateRulesPath || productionRulesPath.replace('.json', '.candidate.json');
+    fewShotsPath = candidateFewShotsPath || productionFewShotsPath.replace('.json', '.candidate.json');
+    
+    // Copy production → candidate as starting point
+    if (fs.existsSync(productionRulesPath)) {
+      fs.copyFileSync(productionRulesPath, rulesPath);
+    }
+    if (fs.existsSync(productionFewShotsPath)) {
+      fs.copyFileSync(productionFewShotsPath, fewShotsPath);
+    }
+    
+    console.log(`🔒 DRY RUN: Writing candidates to:`);
+    console.log(`   Rules: ${rulesPath}`);
+    console.log(`   Few-shots: ${fewShotsPath}`);
+  } else {
+    rulesPath = productionRulesPath;
+    fewShotsPath = productionFewShotsPath;
+  }
+
   let failedProjects = parseScoreboard(csvPath);
   
   if (targetProject) {
@@ -207,6 +384,16 @@ async function analyzeFailuresCloud(csvPath: string, limit: number = Infinity, t
   failedProjects.sort((a, b) => a.overall - b.overall);
   failedProjects = failedProjects.slice(0, limit);
   console.log(`Found ${failedProjects.length} projects with <95% accuracy after filtering.\n`);
+
+  const report: AnalysisReport = {
+    analyzedProjects: failedProjects.length,
+    changesApplied: 0,
+    changesRejected: 0,
+    details: [],
+  };
+
+  // Load rules once
+  const rules = loadDynamicRules(rulesPath);
 
   for (const { projectName, overall } of failedProjects) {
     console.log(`====================================================`);
@@ -236,14 +423,14 @@ async function analyzeFailuresCloud(csvPath: string, limit: number = Infinity, t
     const result = await compareSpreadsheets(truthPath, genPath, projectName);
     
     let diffsSummary = '';
-    for (const report of result.reports) {
-      if (report.diffs.length > 0) {
-        diffsSummary += `\nSection: ${report.sectionLabel}\n`;
-        for (const diff of report.diffs.slice(0, 10)) {
+    for (const rep of result.reports) {
+      if (rep.diffs.length > 0) {
+        diffsSummary += `\nSection: ${rep.sectionLabel}\n`;
+        for (const diff of rep.diffs.slice(0, 10)) {
           diffsSummary += `- Row ${diff.row} [${diff.colName}]: Ground Truth="${diff.truthValue}" vs Generated="${diff.genValue}"\n`;
         }
-        if (report.diffs.length > 10) {
-          diffsSummary += `  ...and ${report.diffs.length - 10} more similar mismatches.\n`;
+        if (rep.diffs.length > 10) {
+          diffsSummary += `  ...and ${rep.diffs.length - 10} more similar mismatches.\n`;
         }
       }
     }
@@ -257,36 +444,67 @@ async function analyzeFailuresCloud(csvPath: string, limit: number = Infinity, t
         console.log(`\n💡 AI Recommendation: [${suggestion.action}]`);
         console.log(`   Reasoning: ${suggestion.reasoning}`);
         
+        let applyResult: { applied: boolean; reason: string };
+        
         if (suggestion.action === 'ADD_FEW_SHOT') {
           const gt = await extractGtForFewShot(projectName, truthPath);
-          applyFewShot(gt);
-          console.log(`✅ Applied: Added ${projectName} to few_shot_examples.json`);
+          applyResult = applyFewShot(fewShotsPath, gt);
         } else if (suggestion.action === 'PROMPT_TUNING' && suggestion.promptAddition) {
-          applyDynamicRule('PROMPT_TUNING', suggestion.promptAddition);
-          console.log(`✅ Applied: Added rule to dynamic-rules.json`);
+          applyResult = applyDynamicRule(rules, 'PROMPT_TUNING', suggestion.promptAddition);
         } else if (suggestion.action === 'ADD_HEURISTIC' && suggestion.heuristicRule) {
-          applyDynamicRule('ADD_HEURISTIC', suggestion.heuristicRule);
-          console.log(`✅ Applied: Added heuristic to dynamic-rules.json`);
+          applyResult = applyDynamicRule(rules, 'ADD_HEURISTIC', suggestion.heuristicRule);
+        } else {
+          applyResult = { applied: false, reason: 'No actionable suggestion from AI' };
         }
+
+        if (applyResult.applied) {
+          report.changesApplied++;
+          console.log(`✅ ${applyResult.reason}`);
+        } else {
+          report.changesRejected++;
+          console.log(`⏭️ Skipped: ${applyResult.reason}`);
+        }
+
+        report.details.push({
+          project: projectName,
+          action: suggestion.action,
+          applied: applyResult.applied,
+          reason: applyResult.reason,
+        });
       } catch (e: any) {
         console.error(`Failed to get/apply suggestion: ${e.message}`);
+        report.details.push({
+          project: projectName,
+          action: 'ERROR',
+          applied: false,
+          reason: e.message,
+        });
       }
     }
     
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+
+  // Write updated rules
+  rules.lastUpdated = new Date().toISOString().split('T')[0];
+  fs.writeFileSync(rulesPath, JSON.stringify(rules, null, 2));
+
+  console.log(`\n📊 Analysis Report: ${report.changesApplied} applied, ${report.changesRejected} rejected out of ${report.analyzedProjects} projects`);
+  
+  return report;
 }
 
 async function main() {
   const args = process.argv.slice(2);
   if (args.length === 0) {
-    console.error('Usage: npx tsx src/scripts/analyze-failures-cloud.ts <path-to-evaluation_scoreboard.csv> [--limit N] [--project "name"]');
+    console.error('Usage: npx tsx src/scripts/analyze-failures-cloud.ts <path-to-evaluation_scoreboard.csv> [--limit N] [--project "name"] [--dry-run]');
     process.exit(1);
   }
   
   const csvPath = args[0];
   let limit = Infinity;
   let targetProject: string | null = null;
+  let dryRun = false;
   
   for (let i = 1; i < args.length; i++) {
     if (args[i] === '--limit' && args[i + 1]) {
@@ -295,10 +513,12 @@ async function main() {
     } else if (args[i] === '--project' && args[i + 1]) {
       targetProject = args[i + 1];
       i++;
+    } else if (args[i] === '--dry-run') {
+      dryRun = true;
     }
   }
   
-  await analyzeFailuresCloud(csvPath, limit, targetProject);
+  await analyzeFailuresCloud(csvPath, { limit, targetProject, dryRun });
 }
 
 if (require.main === module) {

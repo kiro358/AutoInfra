@@ -185,6 +185,33 @@ function valuesMatch(
   return String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
 }
 
+function keysMatch(keyA: string | number | null, keyB: string | number | null): boolean {
+  if (keyA === null || keyB === null) return false;
+  // Strip parenthetical notes (e.g. "(repl. DCBMH)" -> "") to avoid matching failures due to description comments
+  const cleanA = String(keyA).replace(/\(.*?\)/g, '').trim();
+  const cleanB = String(keyB).replace(/\(.*?\)/g, '').trim();
+  
+  const strA = cleanA.toLowerCase();
+  const strB = cleanB.toLowerCase();
+  
+  if (strA === strB) return true;
+  
+  const normA = strA.replace(/\s+/g, '').replace(/[^a-z0-9]/g, '');
+  const normB = strB.replace(/\s+/g, '').replace(/[^a-z0-9]/g, '');
+  
+  if (normA === normB) return true;
+  
+  // Fuzzy match: if one contains the other and they have the same numbers
+  if (normA.includes(normB) || normB.includes(normA)) {
+    const numA = normA.replace(/[^0-9]/g, '');
+    const numB = normB.replace(/[^0-9]/g, '');
+    if (numA === numB && numA.length > 0) return true;
+    if (numA.length === 0 && numB.length === 0) return true;
+  }
+  
+  return false;
+}
+
 function compareSheet(
   truthWb: ExcelJS.Workbook,
   genWb: ExcelJS.Workbook,
@@ -211,53 +238,98 @@ function compareSheet(
   const truthRows = readDataRows(truthSheet, config);
   const genRows = readDataRows(genSheet, config);
 
-  report.missingRows = Math.max(0, truthRows.length - genRows.length);
-  report.extraRows = Math.max(0, genRows.length - truthRows.length);
+  const keyColIdx = config.columns.indexOf(config.keyColumn);
 
-  const maxRows = Math.max(truthRows.length, genRows.length);
+  // We will pool the gen rows to match them
+  const genPool = genRows.map((row, idx) => ({
+    row,
+    originalIdx: idx,
+    matched: false,
+  }));
+
   let totalPctError = 0;
   let numericCount = 0;
 
-  for (let r = 0; r < maxRows; r++) {
+  for (let r = 0; r < truthRows.length; r++) {
+    const truthRow = truthRows[r];
+    const truthKey = truthRow[keyColIdx];
     const rowNum = config.dataStartRow + r;
 
-    for (let c = 0; c < config.columns.length; c++) {
-      const col = config.columns[c];
-      const colName = config.columnNames[c];
-      const truthVal = r < truthRows.length ? truthRows[r][c] : null;
-      const genVal = r < genRows.length ? genRows[r][c] : null;
+    // Find matching gen row
+    const genMatch = genPool.find(
+      g => !g.matched && keysMatch(truthKey, g.row[keyColIdx])
+    );
 
-      if (
-        (truthVal === null || truthVal === '' || truthVal === 0) &&
-        (genVal === null || genVal === '' || genVal === 0)
-      ) {
-        continue;
+    if (genMatch) {
+      genMatch.matched = true;
+      const genRow = genMatch.row;
+
+      for (let c = 0; c < config.columns.length; c++) {
+        const col = config.columns[c];
+        const colName = config.columnNames[c];
+        const truthVal = truthRow[c];
+        const genVal = genRow[c];
+
+        if (
+          (truthVal === null || truthVal === '' || truthVal === 0) &&
+          (genVal === null || genVal === '' || genVal === 0)
+        ) {
+          continue;
+        }
+
+        report.totalCells++;
+        const isMatch = valuesMatch(truthVal, genVal);
+        if (isMatch) report.matchingCells++;
+
+        let pctError: number | undefined;
+        if (typeof truthVal === 'number' && typeof genVal === 'number' && truthVal !== 0) {
+          pctError = Math.abs((genVal - truthVal) / truthVal) * 100;
+          totalPctError += pctError;
+          numericCount++;
+        }
+
+        if (!isMatch) {
+          report.diffs.push({
+            row: rowNum,
+            col,
+            colName,
+            truthValue: truthVal,
+            genValue: genVal,
+            isMatch,
+            pctError,
+          });
+        }
       }
+    } else {
+      // Truth row was missed entirely
+      report.missingRows++;
+      
+      // All non-null/non-empty cells in the truth row are counted as missed
+      for (let c = 0; c < config.columns.length; c++) {
+        const col = config.columns[c];
+        const colName = config.columnNames[c];
+        const truthVal = truthRow[c];
 
-      report.totalCells++;
-      const isMatch = valuesMatch(truthVal, genVal);
-      if (isMatch) report.matchingCells++;
+        if (truthVal === null || truthVal === '' || truthVal === 0) {
+          continue;
+        }
 
-      let pctError: number | undefined;
-      if (typeof truthVal === 'number' && typeof genVal === 'number' && truthVal !== 0) {
-        pctError = Math.abs((genVal - truthVal) / truthVal) * 100;
-        totalPctError += pctError;
-        numericCount++;
-      }
-
-      if (!isMatch) {
+        report.totalCells++;
         report.diffs.push({
           row: rowNum,
           col,
           colName,
           truthValue: truthVal,
-          genValue: genVal,
-          isMatch,
-          pctError,
+          genValue: null,
+          isMatch: false,
         });
       }
     }
   }
+
+  // Any unmatched gen rows are extra rows
+  const unmatchedGen = genPool.filter(g => !g.matched);
+  report.extraRows = unmatchedGen.length;
 
   report.avgPctError = numericCount > 0 ? totalPctError / numericCount : 0;
   return report;

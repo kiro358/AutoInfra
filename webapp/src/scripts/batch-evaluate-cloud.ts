@@ -42,7 +42,9 @@ async function findProjectsCloud(): Promise<ProjectInfo[]> {
       !f.toLowerCase().includes("bid") &&
       !f.toLowerCase().includes("geotechnical") &&
       !f.toLowerCase().includes("appendix 4") &&
-      !f.toLowerCase().includes("report")
+      !f.toLowerCase().includes("report") &&
+      !f.toLowerCase().includes("structural") &&
+      !f.toLowerCase().includes("architectural")
     );
 
     const xlsxFiles = basenameFiles.filter(f =>

@@ -354,8 +354,8 @@ export async function extractFromPDF(
           },
         };
 
-    console.log(`      [extraction.ts] Running Pass 1 (Structures)...`);
-    const response1 = await ai.models.generateContent({
+    console.log(`      [extraction.ts] Running Single-Pass Gemini Extraction...`);
+    const response = await ai.models.generateContent({
       model: 'gemini-2.5-pro',
       contents: [
         {
@@ -364,7 +364,7 @@ export async function extractFromPDF(
             { text: `Project: ${projectName}\n\n${getSystemPrompt(projectName)}${getDynamicPromptAdditions()}` },
             pdfPart,
             {
-              text: 'Analyze ALL the above drawing pages. Your task for Pass 1 is to extract ONLY MANHOLES AND CATCHBASINS (focusing on Schedule Tables and Plan views). Return empty arrays for sewers and watermain. Return ONLY valid JSON. Remember: read labels exactly from the drawings, count catchbasins by type, and include SANITARY section dividers.',
+              text: 'Analyze ALL the above drawing pages and extract the complete infrastructure data. Return ONLY valid JSON matching the schema. Remember: read labels exactly from the drawings, count catchbasins by type, include SANITARY section dividers, and do NOT extract standard fees like VIDEO, LAYOUT, or AS BUILT.',
             },
           ],
         },
@@ -375,44 +375,7 @@ export async function extractFromPDF(
       },
     });
 
-    const pass1Parsed = parseRawExtraction(response1.text || '{}', projectName);
-
-    console.log(`      [extraction.ts] Running Pass 2 (Pipes)...`);
-    const response2 = await ai.models.generateContent({
-      model: 'gemini-2.5-pro',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            { text: `Project: ${projectName}\n\n${getSystemPrompt(projectName)}${getDynamicPromptAdditions()}` },
-            pdfPart,
-            {
-              text: `Analyze ALL the above drawing pages. Your task for Pass 2 is to extract ONLY SEWERS AND WATERMAIN. 
-You must use the following structures (extracted in Pass 1) as a reference:
-${JSON.stringify({manholes: pass1Parsed.manholes, catchbasins: pass1Parsed.catchbasins}, null, 2)}
-
-DO NOT re-extract the structures. Return empty arrays for manholes and catchbasins. Return ONLY valid JSON.`,
-            },
-          ],
-        },
-      ],
-      config: {
-        temperature: 0,
-        responseMimeType: 'application/json',
-      },
-    });
-
-    const pass2Parsed = parseRawExtraction(response2.text || '{}', projectName);
-
-    let parsed: ExtractionResult = {
-      ...pass1Parsed,
-      sewers: pass2Parsed.sewers,
-      watermain: pass2Parsed.watermain,
-      watermainSpecials: pass2Parsed.watermainSpecials,
-      watermainValves: pass2Parsed.watermainValves,
-      confidence: (pass1Parsed.confidence + pass2Parsed.confidence) / 2,
-      warnings: [...pass1Parsed.warnings, ...pass2Parsed.warnings]
-    };
+    let parsed = parseRawExtraction(response.text || '{}', projectName);
 
     // Run heuristic validation
     parsed.warnings = [...parsed.warnings, ...validateExtraction(parsed)];
@@ -431,9 +394,9 @@ DO NOT re-extract the structures. Return empty arrays for manholes and catchbasi
         await storage.bucket(BUCKET_NAME).file(gcsPath).delete();
       } catch (cleanupErr: any) {
         console.error(`      [extraction.ts] GCS cleanup error:`, cleanupErr.message);
+      }
     }
   }
-}
 }
 
 function determineTemplateType(data: any): 'SHORT' | 'LONG' {

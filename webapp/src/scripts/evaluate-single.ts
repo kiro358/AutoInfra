@@ -16,7 +16,14 @@ async function main() {
   }
 
   const files = fs.readdirSync(projectDir);
-  const pdfFiles = files.filter(f => f.toLowerCase().endsWith('.pdf') && !f.toLowerCase().includes('quote') && !f.toLowerCase().includes('schedule') && !f.toLowerCase().includes('bid'));
+  const pdfFiles = files.filter(f => 
+    f.toLowerCase().endsWith('.pdf') && 
+    !f.toLowerCase().includes('quote') && 
+    !f.toLowerCase().includes('schedule') && 
+    !f.toLowerCase().includes('bid') &&
+    !f.toLowerCase().includes('structural') &&
+    !f.toLowerCase().includes('architectural')
+  );
   const xlsxFiles = files.filter(f => f.toLowerCase().endsWith('.xlsx'));
 
   if (pdfFiles.length === 0 || xlsxFiles.length === 0) {

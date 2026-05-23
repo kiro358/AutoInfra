@@ -39,6 +39,7 @@ const RE_EVAL_LIMIT = 5;
 interface ScoreboardEntry {
   projectName: string;
   overall: number;
+  totalCells: number;
 }
 
 function parseScoreboard(csvPath: string): ScoreboardEntry[] {
@@ -50,8 +51,9 @@ function parseScoreboard(csvPath: string): ScoreboardEntry[] {
     const parts = line.split(',');
     const projectName = parts[0].replace(/"/g, '');
     const overall = parseFloat(parts[5]);
-    return { projectName, overall };
-  }).filter(r => !isNaN(r.overall));
+    const totalCells = parts[6] ? parseInt(parts[6], 10) : 0;
+    return { projectName, overall, totalCells };
+  }).filter(r => !isNaN(r.overall) && !isNaN(r.totalCells) && r.totalCells > 0);
 }
 
 function computeBaselineAccuracy(entries: ScoreboardEntry[]): number {

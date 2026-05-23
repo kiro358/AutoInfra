@@ -47,10 +47,11 @@ function parseScoreboard(csvPath: string) {
     const parts = line.split(',');
     const projectName = parts[0].replace(/"/g, '');
     const overall = parseFloat(parts[5]);
-    return { projectName, overall };
+    const totalCells = parts[6] ? parseInt(parts[6], 10) : 0;
+    return { projectName, overall, totalCells };
   });
 
-  return results.filter(r => r.overall < 95);
+  return results.filter(r => r.overall < 95 && !isNaN(r.totalCells) && r.totalCells > 0);
 }
 
 async function suggestImprovements(diffsSummary: string, projectName: string) {

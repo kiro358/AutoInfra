@@ -117,6 +117,12 @@ async function main() {
     if (res) {
       console.log(`✅ Success! Accuracy: ${res.overallAccuracy.toFixed(1)}%`);
     }
+
+    // Rate limit throttling - pause 10s between projects to respect API quotas
+    if (i < GOLDEN_PROJECTS.length - 1) {
+      console.log(`   ⏳ Waiting 10s to respect API rate limits...`);
+      await new Promise(resolve => setTimeout(resolve, 10000));
+    }
   }
   
   const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);

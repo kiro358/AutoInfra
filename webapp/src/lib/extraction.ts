@@ -4,6 +4,7 @@ import { ExtractionResult } from './types';
 import { PIPE_DIAMETERS, MH_DIAMETERS } from './constants';
 import { buildFewShotPromptSection } from './few-shot-examples';
 import { setGlobalDispatcher, Agent } from 'undici';
+import crypto from 'crypto';
 
 // Globally override Undici's default 30-second headers/body timeout
 try {
@@ -329,6 +330,32 @@ function parseRawExtraction(text: string, projectName: string): ExtractionResult
   }
 }
 
+async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 3, initialDelay = 10000): Promise<T> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      attempt++;
+      const isRateLimit = err.status === 429 || (err.message && err.message.includes('429')) || (err.message && err.message.toLowerCase().includes('resource exhausted'));
+      const isAbort = err.name === 'AbortError' || err.message === 'This operation was aborted' || (err.message && err.message.toLowerCase().includes('abort'));
+      const isServerError = err.status >= 500 && err.status <= 599;
+      
+      if (attempt >= maxRetries || (!isRateLimit && !isAbort && !isServerError)) {
+        throw err;
+      }
+      
+      let errType = 'Timeout/Abort';
+      if (isRateLimit) errType = '429 Rate Limit';
+      else if (isServerError) errType = `${err.status || '5xx'} Server Error`;
+      
+      const delay = initialDelay * Math.pow(2, attempt - 1) + Math.random() * 2000;
+      console.warn(`      [extraction.ts] Attempt ${attempt} failed with ${errType}. Retrying in ${(delay / 1000).toFixed(1)}s...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+}
+
 export async function extractFromPDF(
   pdfBuffer: Buffer, // The raw PDF buffer
   projectName: string
@@ -336,21 +363,32 @@ export async function extractFromPDF(
   const ai = getGenAI();
   let gcsFileUri: string | null = null;
   let gcsPath: string | null = null;
+  let isCacheHit = false;
 
   try {
     // If the PDF buffer size is larger than 4MB, use GCS upload to avoid HTTP payload limits
     if (pdfBuffer.length > 4 * 1024 * 1024) {
-      const fileName = `temp-uploads/${Date.now()}-${Math.random().toString(36).substring(2, 9)}.pdf`;
-      console.log(`      [extraction.ts] File size (${(pdfBuffer.length / 1024 / 1024).toFixed(2)}MB) > 4MB. Uploading to GCS: gs://${BUCKET_NAME}/${fileName}`);
+      const hash = crypto.createHash('sha256').update(pdfBuffer).digest('hex');
+      const fileName = `cached-drawings/${hash}.pdf`;
       
       const bucket = storage.bucket(BUCKET_NAME);
       const file = bucket.file(fileName);
-      await file.save(pdfBuffer, {
-        contentType: 'application/pdf',
-        metadata: {
-          cacheControl: 'no-cache',
-        },
-      });
+      
+      console.log(`      [extraction.ts] File size (${(pdfBuffer.length / 1024 / 1024).toFixed(2)}MB) > 4MB. Checking GCS cache: gs://${BUCKET_NAME}/${fileName}`);
+      
+      const [exists] = await file.exists();
+      if (exists) {
+        console.log(`      [extraction.ts] ⚡ GCS Cache Hit! Reusing gs://${BUCKET_NAME}/${fileName}`);
+        isCacheHit = true;
+      } else {
+        console.log(`      [extraction.ts] Cache Miss. Uploading to GCS: gs://${BUCKET_NAME}/${fileName}`);
+        await file.save(pdfBuffer, {
+          contentType: 'application/pdf',
+          metadata: {
+            cacheControl: 'public, max-age=31536000', // Cache for 1 year
+          },
+        });
+      }
       
       gcsPath = fileName;
       gcsFileUri = `gs://${BUCKET_NAME}/${fileName}`;
@@ -371,24 +409,26 @@ export async function extractFromPDF(
         };
 
     console.log(`      [extraction.ts] Running Single-Pass Gemini Extraction...`);
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-pro',
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            { text: `Project: ${projectName}\n\n${getSystemPrompt(projectName)}${getDynamicPromptAdditions()}` },
-            pdfPart,
-            {
-              text: 'Analyze ALL the above drawing pages and extract the complete infrastructure data. Return ONLY valid JSON matching the schema. Remember: read labels exactly from the drawings, count catchbasins by type, include SANITARY section dividers, and do NOT extract standard fees like VIDEO, LAYOUT, or AS BUILT.',
-            },
-          ],
+    const response = await callWithRetry(async () => {
+      return await ai.models.generateContent({
+        model: 'gemini-2.5-pro',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: `Project: ${projectName}\n\n${getSystemPrompt(projectName)}${getDynamicPromptAdditions()}` },
+              pdfPart,
+              {
+                text: 'Analyze ALL the above drawing pages and extract the complete infrastructure data. Return ONLY valid JSON matching the schema. Remember: read labels exactly from the drawings, count catchbasins by type, include SANITARY section dividers, and do NOT extract standard fees like VIDEO, LAYOUT, or AS BUILT.',
+              },
+            ],
+          },
+        ],
+        config: {
+          temperature: 0,
+          responseMimeType: 'application/json',
         },
-      ],
-      config: {
-        temperature: 0,
-        responseMimeType: 'application/json',
-      },
+      });
     });
 
     let parsed = parseRawExtraction(response.text || '{}', projectName);
@@ -405,11 +445,10 @@ export async function extractFromPDF(
     throw err;
   } finally {
     if (gcsPath) {
-      try {
-        console.log(`      [extraction.ts] Cleaning up GCS file: gs://${BUCKET_NAME}/${gcsPath}`);
-        await storage.bucket(BUCKET_NAME).file(gcsPath).delete();
-      } catch (cleanupErr: any) {
-        console.error(`      [extraction.ts] GCS cleanup error:`, cleanupErr.message);
+      if (isCacheHit) {
+        console.log(`      [extraction.ts] Reused cached drawing: gs://${BUCKET_NAME}/${gcsPath}`);
+      } else {
+        console.log(`      [extraction.ts] Persisted new drawing in GCS cache: gs://${BUCKET_NAME}/${gcsPath}`);
       }
     }
   }

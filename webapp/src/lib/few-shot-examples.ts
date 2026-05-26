@@ -252,8 +252,8 @@ const EXAMPLE_3: FewShotExample = {
 export const FEW_SHOT_EXAMPLES: FewShotExample[] = [EXAMPLE_1, EXAMPLE_2, EXAMPLE_3];
 
 function calculateSimilarity(str1: string, str2: string): number {
-  const words1 = new Set(str1.toLowerCase().split(/\\W+/).filter(w => w.length > 2));
-  const words2 = new Set(str2.toLowerCase().split(/\\W+/).filter(w => w.length > 2));
+  const words1 = new Set(str1.toLowerCase().split(/\W+/).filter(w => w.length > 2));
+  const words2 = new Set(str2.toLowerCase().split(/\W+/).filter(w => w.length > 2));
   let intersection = 0;
   for (const w of words1) {
     if (words2.has(w)) intersection++;

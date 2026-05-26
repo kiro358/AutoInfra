@@ -194,7 +194,7 @@ interface DynamicRulesV2 {
   version: number;
   baselineAccuracy: number;
   lastUpdated: string;
-  promptAdditions: { rule: string; addedBy: string; addedAt: string; accuracyDelta: number | null }[];
+  promptAdditions: { rule: string; addedBy: string; addedAt: string; accuracyDelta: number | null; component?: 'manholes' | 'sewers' | 'watermain' | 'general' }[];
   heuristics: { rule: string; addedBy: string; addedAt: string; accuracyDelta: number | null }[];
 }
 

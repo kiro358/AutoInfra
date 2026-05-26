@@ -5,6 +5,7 @@ import { PIPE_DIAMETERS, MH_DIAMETERS } from './constants';
 import { buildFewShotPromptSection } from './few-shot-examples';
 import { setGlobalDispatcher, Agent } from 'undici';
 import crypto from 'crypto';
+import { LOCATOR_SYSTEM_PROMPT, getManholeAgentPrompt, getSewerAgentPrompt, getWatermainAgentPrompt } from './modular-prompts';
 
 // Globally override Undici's default 30-second headers/body timeout
 try {
@@ -144,17 +145,23 @@ Return ONLY valid JSON matching this schema:
 import fs from 'fs';
 import path from 'path';
 
-function getDynamicPromptAdditions(overridePath?: string): string {
+function getDynamicPromptAdditions(componentFilter?: 'manholes' | 'sewers' | 'watermain', overridePath?: string): string {
   try {
     const filePath = overridePath || path.resolve(__dirname, 'dynamic-rules.json');
     if (fs.existsSync(filePath)) {
       const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
       if (data.promptAdditions && data.promptAdditions.length > 0) {
-        // Support both v1 (plain strings) and v2 (objects with metadata)
-        const rules = data.promptAdditions.map((r: string | { rule: string }) =>
-          typeof r === 'string' ? r : r.rule
-        );
-        return '\n\n## DYNAMICALLY LEARNED RULES\n' + rules.map((r: string, i: number) => (i + 1) + '. ' + r).join('\n');
+        // Filter rules by component
+        const filtered = data.promptAdditions.filter((r: any) => {
+          if (typeof r === 'string') return true;
+          if (!componentFilter) return true;
+          return !r.component || r.component === 'general' || r.component === componentFilter;
+        });
+
+        if (filtered.length > 0) {
+          const rules = filtered.map((r: any) => typeof r === 'string' ? r : r.rule);
+          return '\n\n## DYNAMICALLY LEARNED RULES\n' + rules.map((r: string, i: number) => (i + 1) + '. ' + r).join('\n');
+        }
       }
     }
   } catch (e) {
@@ -408,30 +415,150 @@ export async function extractFromPDF(
           },
         };
 
-    console.log(`      [extraction.ts] Running Single-Pass Gemini Extraction...`);
-    const response = await callWithRetry(async () => {
+    console.log(`      [extraction.ts] Stage 1: Running Table Locator Agent...`);
+    const locatorResponse = await callWithRetry(async () => {
       return await ai.models.generateContent({
         model: 'gemini-2.5-pro',
         contents: [
           {
             role: 'user',
             parts: [
-              { text: `Project: ${projectName}\n\n${getSystemPrompt(projectName)}${getDynamicPromptAdditions()}` },
+              { text: LOCATOR_SYSTEM_PROMPT },
               pdfPart,
-              {
-                text: 'Analyze ALL the above drawing pages and extract the complete infrastructure data. Return ONLY valid JSON matching the schema. Remember: read labels exactly from the drawings, count catchbasins by type, include SANITARY section dividers, and do NOT extract standard fees like VIDEO, LAYOUT, or AS BUILT.',
-              },
-            ],
-          },
+              { text: 'Analyze the drawing pages and return the JSON index.' }
+            ]
+          }
         ],
         config: {
           temperature: 0,
-          responseMimeType: 'application/json',
-        },
+          responseMimeType: 'application/json'
+        }
       });
     });
 
-    let parsed = parseRawExtraction(response.text || '{}', projectName);
+    let locatorIndex = { manholePages: [] as number[], sewerPages: [] as number[], watermainPages: [] as number[] };
+    try {
+      locatorIndex = JSON.parse(locatorResponse.text || '{}');
+      console.log(`      [extraction.ts] Locator results:`, locatorIndex);
+    } catch (e) {
+      console.warn(`      [extraction.ts] Failed to parse locator response, falling back to all pages`, e);
+    }
+
+    // Helper to generate instructions for focusing on specific pages
+    const getPageInstructions = (pages: number[], desc: string) => {
+      if (pages && pages.length > 0) {
+        return `\nFocus ONLY on page(s) ${pages.join(', ')} of the provided PDF. These are the identified pages containing ${desc}. Do not extract from any other pages.`;
+      }
+      return '\nAnalyze the PDF to extract this data.';
+    };
+
+    console.log(`      [extraction.ts] Stage 2: Extracting Manholes & Catchbasins...`);
+    const manholesResponse = await callWithRetry(async () => {
+      const prompt = getManholeAgentPrompt(projectName, getDynamicPromptAdditions('manholes')) + getPageInstructions(locatorIndex.manholePages, 'manholes or catchbasins schedules/plans');
+      return await ai.models.generateContent({
+        model: 'gemini-2.5-pro',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: prompt },
+              pdfPart
+            ]
+          }
+        ],
+        config: {
+          temperature: 0,
+          responseMimeType: 'application/json'
+        }
+      });
+    });
+
+    let manholesData: any = { manholes: [], catchbasins: { groups: [], laborRates: {} } };
+    try {
+      manholesData = JSON.parse(manholesResponse.text || '{}');
+      console.log(`      [extraction.ts] Extracted ${manholesData.manholes?.length || 0} manholes, ${manholesData.catchbasins?.groups?.length || 0} catchbasin groups.`);
+    } catch (e) {
+      console.error(`      [extraction.ts] Failed to parse manholes response`, e);
+    }
+
+    console.log(`      [extraction.ts] Stage 3: Extracting Sewer Pipe Runs & Line Items...`);
+    const sewersResponse = await callWithRetry(async () => {
+      const prompt = getSewerAgentPrompt(projectName, getDynamicPromptAdditions('sewers')) + getPageInstructions(locatorIndex.sewerPages, 'sewer profile views or plan tables');
+      return await ai.models.generateContent({
+        model: 'gemini-2.5-pro',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: prompt },
+              pdfPart
+            ]
+          }
+        ],
+        config: {
+          temperature: 0,
+          responseMimeType: 'application/json'
+        }
+      });
+    });
+
+    let sewersData: any = { sewers: [] };
+    try {
+      sewersData = JSON.parse(sewersResponse.text || '{}');
+      console.log(`      [extraction.ts] Extracted ${sewersData.sewers?.length || 0} sewer items.`);
+    } catch (e) {
+      console.error(`      [extraction.ts] Failed to parse sewers response`, e);
+    }
+
+    console.log(`      [extraction.ts] Stage 4: Extracting Watermain Infrastructure...`);
+    const watermainResponse = await callWithRetry(async () => {
+      const prompt = getWatermainAgentPrompt(projectName, getDynamicPromptAdditions('watermain')) + getPageInstructions(locatorIndex.watermainPages, 'watermain tables/schedules');
+      return await ai.models.generateContent({
+        model: 'gemini-2.5-pro',
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: prompt },
+              pdfPart
+            ]
+          }
+        ],
+        config: {
+          temperature: 0,
+          responseMimeType: 'application/json'
+        }
+      });
+    });
+
+    let watermainData: any = { watermain: [], watermainSpecials: [], watermainValves: [] };
+    try {
+      watermainData = JSON.parse(watermainResponse.text || '{}');
+      console.log(`      [extraction.ts] Extracted ${watermainData.watermain?.length || 0} watermain runs.`);
+    } catch (e) {
+      console.error(`      [extraction.ts] Failed to parse watermain response`, e);
+    }
+
+    // Combine structured extraction outputs
+    const combinedText = JSON.stringify({
+      projectName: manholesData.projectName || sewersData.projectName || projectName,
+      jobNumber: manholesData.jobNumber || sewersData.jobNumber || '',
+      date: manholesData.date || sewersData.date || new Date().toISOString().split('T')[0],
+      manholes: manholesData.manholes || [],
+      catchbasins: manholesData.catchbasins || { groups: [], laborRates: {} },
+      sewers: sewersData.sewers || [],
+      watermain: watermainData.watermain || [],
+      watermainSpecials: watermainData.watermainSpecials || [],
+      watermainValves: watermainData.watermainValves || [],
+      confidence: (Number(manholesData.confidence) || 0.9 + Number(sewersData.confidence) || 0.9 + Number(watermainData.confidence) || 0.9) / 3,
+      warnings: [
+        ...(manholesData.warnings || []),
+        ...(sewersData.warnings || []),
+        ...(watermainData.warnings || [])
+      ]
+    });
+
+    let parsed = parseRawExtraction(combinedText, projectName);
 
     // Run heuristic validation
     parsed.warnings = [...parsed.warnings, ...validateExtraction(parsed)];

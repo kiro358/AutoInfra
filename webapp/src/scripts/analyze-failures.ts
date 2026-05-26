@@ -56,7 +56,7 @@ async function suggestImprovements(diffsSummary: string, projectName: string) {
 We just ran an evaluation pass and found mismatches between what our pipeline generated and what human estimators manually entered (Ground Truth).
 
 Your task is to analyze the following mismatches for a single project and suggest exactly ONE of the following fixes:
-1. "PROMPT_TUNING": If the pipeline misunderstood the schema or format, suggest what sentence to add to the SYSTEM_PROMPT.
+1. "PROMPT_TUNING": If the pipeline misunderstood the schema or format, suggest what sentence to add to the system prompt of the targeted component.
 2. "ADD_HEURISTIC": If it's a domain-specific default that isn't on the drawings, suggest a new post-processing heuristic rule.
 3. "ADD_FEW_SHOT": If the drawing is just too complex, recommend adding this project to the few-shot examples.
 
@@ -64,6 +64,7 @@ Explain your reasoning clearly.
 Return ONLY a JSON object matching this schema:
 {
   "action": "PROMPT_TUNING" | "ADD_HEURISTIC" | "ADD_FEW_SHOT",
+  "component": "manholes" | "sewers" | "watermain" | "general", // Target component if action is PROMPT_TUNING
   "reasoning": "Explanation here",
   "promptAddition": "Sentence to add to prompt (if PROMPT_TUNING)",
   "heuristicRule": "Description of rule (if ADD_HEURISTIC)"
@@ -188,7 +189,7 @@ interface DynamicRulesV2 {
   version: number;
   baselineAccuracy: number;
   lastUpdated: string;
-  promptAdditions: { rule: string; addedBy: string; addedAt: string; accuracyDelta: number | null }[];
+  promptAdditions: { rule: string; addedBy: string; addedAt: string; accuracyDelta: number | null; component?: 'manholes' | 'sewers' | 'watermain' | 'general' }[];
   heuristics: { rule: string; addedBy: string; addedAt: string; accuracyDelta: number | null }[];
 }
 
@@ -249,7 +250,7 @@ function isDuplicateRule(existingRules: string[], newRule: string): boolean {
   return false;
 }
 
-function applyDynamicRule(rules: DynamicRulesV2, action: string, rule: string): { applied: boolean; reason: string } {
+function applyDynamicRule(rules: DynamicRulesV2, action: string, rule: string, component?: string): { applied: boolean; reason: string } {
   const today = new Date().toISOString().split('T')[0];
   
   if (action === 'PROMPT_TUNING') {
@@ -269,8 +270,9 @@ function applyDynamicRule(rules: DynamicRulesV2, action: string, rule: string): 
       addedBy: 'flywheel',
       addedAt: today,
       accuracyDelta: null,
+      component: (component as any) || 'general'
     });
-    return { applied: true, reason: 'Added prompt rule' };
+    return { applied: true, reason: `Added prompt rule for [${component || 'general'}]` };
     
   } else if (action === 'ADD_HEURISTIC') {
     const existingRules = rules.heuristics.map(h => h.rule);
@@ -452,7 +454,7 @@ export async function analyzeFailuresLocal(
           const gt = await extractGtForFewShot(projectName, truthPath);
           applyResult = applyFewShot(fewShotsPath, gt);
         } else if (suggestion.action === 'PROMPT_TUNING' && suggestion.promptAddition) {
-          applyResult = applyDynamicRule(rules, 'PROMPT_TUNING', suggestion.promptAddition);
+          applyResult = applyDynamicRule(rules, 'PROMPT_TUNING', suggestion.promptAddition, suggestion.component);
         } else if (suggestion.action === 'ADD_HEURISTIC' && suggestion.heuristicRule) {
           applyResult = applyDynamicRule(rules, 'ADD_HEURISTIC', suggestion.heuristicRule);
         } else {

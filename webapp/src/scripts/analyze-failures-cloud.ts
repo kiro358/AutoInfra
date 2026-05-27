@@ -14,8 +14,11 @@
  *   - Max 3 dynamic few-shot examples
  */
 
-import fs from 'fs';
+import dotenv from 'dotenv';
 import path from 'path';
+dotenv.config({ path: path.resolve(__dirname, '../../.env.local') });
+
+import fs from 'fs';
 import os from 'os';
 import { Storage } from '@google-cloud/storage';
 import { GoogleGenAI } from '@google/genai';

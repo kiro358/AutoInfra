@@ -1,3 +1,7 @@
+import dotenv from 'dotenv';
+import path from 'path';
+dotenv.config({ path: path.resolve(__dirname, '../../.env.local') });
+
 import { GoogleGenAI } from '@google/genai';
 import { Storage } from '@google-cloud/storage';
 import { ExtractionResult } from './types';
@@ -143,7 +147,6 @@ Return ONLY valid JSON matching this schema:
 }
 
 import fs from 'fs';
-import path from 'path';
 
 function getDynamicPromptAdditions(componentFilter?: 'manholes' | 'sewers' | 'watermain', overridePath?: string): string {
   try {

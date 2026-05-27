@@ -8,8 +8,11 @@
  * Upgraded with V2 metadata schema, deduplication, FIFO evictions, and strict caps.
  */
 
-import fs from 'fs';
+import dotenv from 'dotenv';
 import path from 'path';
+dotenv.config({ path: path.resolve(__dirname, '../../.env.local') });
+
+import fs from 'fs';
 import { GoogleGenAI } from '@google/genai';
 import { compareSpreadsheets } from './compare-sheets';
 import ExcelJS from 'exceljs';

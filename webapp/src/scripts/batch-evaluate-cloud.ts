@@ -10,10 +10,41 @@ import { compareSpreadsheets, CompareResult } from './compare-sheets';
 const storage = new Storage();
 const BUCKET_NAME = process.env.GCS_BUCKET || 'autoinfra-ai-eval-data';
 
+interface ProjectFile {
+  name: string;      // Full GCS path, e.g. "2026-009/Subdir/file.pdf"
+  basename: string;  // Basename, e.g. "file.pdf"
+  sizeBytes: number;
+}
+
 interface ProjectInfo {
   folder: string;
-  pdfFiles: string[];
+  pdfFiles: ProjectFile[];
   truthFile: string;
+}
+
+// Simple concurrency helper
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = [];
+  const executing: Promise<any>[] = [];
+  
+  for (const item of items) {
+    const p = Promise.resolve().then(() => fn(item));
+    results.push(p as any);
+    
+    if (limit < items.length) {
+      const e: Promise<any> = p.then(() => executing.splice(executing.indexOf(e), 1));
+      executing.push(e);
+      if (executing.length >= limit) {
+        await Promise.race(executing);
+      }
+    }
+  }
+  
+  return Promise.all(results);
 }
 
 async function findProjectsCloud(): Promise<ProjectInfo[]> {
@@ -47,37 +78,58 @@ async function findProjectsCloud(): Promise<ProjectInfo[]> {
 
   for (const folder of folders) {
     const folderFiles = fileNames.filter(f => f.startsWith(`${folder}/`));
-    const basenameFiles = folderFiles.map(f => path.basename(f));
-
-    const xlsxFiles = basenameFiles.filter(f =>
-      f.toLowerCase().endsWith('.xlsx') &&
-      !f.toLowerCase().includes('quote') &&
-      !f.toLowerCase().includes('budget') &&
-      !f.toLowerCase().includes('backup') &&
-      !f.toLowerCase().includes('sand') &&
-      !f.toLowerCase().includes('appendix') &&
-      !f.toLowerCase().includes('estimate') &&
-      !f.toLowerCase().includes('additional') &&
-      !f.toLowerCase().includes('eval_')
-    );
+    
+    // Find the ground truth XLSX (using full relative path in the bucket)
+    const xlsxFiles = folderFiles.filter(f => {
+      const name = path.basename(f).toLowerCase();
+      return name.endsWith('.xlsx') &&
+        !name.includes('quote') &&
+        !name.includes('budget') &&
+        !name.includes('backup') &&
+        !name.includes('sand') &&
+        !name.includes('appendix') &&
+        !name.includes('estimate') &&
+        !name.includes('additional') &&
+        !name.includes('eval_')
+    });
 
     if (xlsxFiles.length === 0) continue;
 
+    // Check manual override
     if (manualOverrides[folder]) {
-      projects.push({
-        folder,
-        pdfFiles: manualOverrides[folder],
-        truthFile: xlsxFiles[0],
-      });
+      const projectFiles: ProjectFile[] = [];
+      for (const overridePdf of manualOverrides[folder]) {
+        // Resolve manual overrides (could be a basename or full path)
+        const matchedFile = folderFiles.find(f => 
+          f === overridePdf || f === `${folder}/${overridePdf}` || f.endsWith(`/${overridePdf}`)
+        );
+        if (matchedFile) {
+          const fileObj = files.find(f => f.name === matchedFile);
+          const sizeBytes = parseInt(fileObj?.metadata.size?.toString() || '0', 10);
+          projectFiles.push({
+            name: matchedFile,
+            basename: path.basename(matchedFile),
+            sizeBytes,
+          });
+        }
+      }
+      if (projectFiles.length > 0) {
+        projects.push({
+          folder,
+          pdfFiles: projectFiles,
+          truthFile: xlsxFiles[0], // Keep full GCS path for truthFile
+        });
+      }
       continue;
     }
 
-    const pdfFiles = basenameFiles.filter(f =>
-      f.toLowerCase().endsWith(".pdf") &&
-      !blocklist.some(b => f.toLowerCase().includes(b))
-    );
+    // Filter drawing PDFs preserving full relative paths
+    const pdfPaths = folderFiles.filter(f => {
+      const name = path.basename(f).toLowerCase();
+      return name.endsWith(".pdf") && !blocklist.some(b => name.includes(b));
+    });
 
-    if (pdfFiles.length > 0) {
+    if (pdfPaths.length > 0) {
       const scorePDF = (filename: string): number => {
         const name = filename.toLowerCase();
         let score = 0;
@@ -90,22 +142,31 @@ async function findProjectsCloud(): Promise<ProjectInfo[]> {
         return score;
       };
 
-      const sortedPdfs = pdfFiles.sort((a, b) => {
+      const sortedPdfPaths = pdfPaths.sort((a, b) => {
         const scoreA = scorePDF(a);
         const scoreB = scorePDF(b);
         if (scoreA !== scoreB) return scoreB - scoreA;
         
-        // Find size in GCS files
-        const fileAObj = files.find(f => f.name === `${folder}/${a}`);
-        const fileBObj = files.find(f => f.name === `${folder}/${b}`);
+        const fileAObj = files.find(f => f.name === a);
+        const fileBObj = files.find(f => f.name === b);
         const sizeA = parseInt(fileAObj?.metadata.size?.toString() || '0', 10);
         const sizeB = parseInt(fileBObj?.metadata.size?.toString() || '0', 10);
         return sizeB - sizeA;
       });
 
+      const projectFiles: ProjectFile[] = sortedPdfPaths.map(pdfPath => {
+        const fileObj = files.find(f => f.name === pdfPath);
+        const sizeBytes = parseInt(fileObj?.metadata.size?.toString() || '0', 10);
+        return {
+          name: pdfPath,
+          basename: path.basename(pdfPath),
+          sizeBytes,
+        };
+      });
+
       projects.push({
         folder,
-        pdfFiles: sortedPdfs,
+        pdfFiles: projectFiles,
         truthFile: xlsxFiles[0],
       });
     }
@@ -121,36 +182,34 @@ async function processProjectCloud(project: ProjectInfo): Promise<CompareResult 
     console.log(`\n${'═'.repeat(70)}`);
     console.log(`📂 ${project.folder}`);
     console.log(`   PDFs (${project.pdfFiles.length}):`);
-    project.pdfFiles.forEach((f, i) => console.log(`     ${i + 1}. ${f}`));
-    console.log(`   Truth: ${project.truthFile}`);
+    project.pdfFiles.forEach((f, i) => console.log(`     ${i + 1}. ${f.basename} (${(f.sizeBytes / 1024 / 1024).toFixed(1)} MB)`));
+    console.log(`   Truth: ${path.basename(project.truthFile)}`);
 
     // Download Truth
-    const truthDest = path.join(tmpDir, project.truthFile);
-    await storage.bucket(BUCKET_NAME).file(`${project.folder}/${project.truthFile}`).download({ destination: truthDest });
+    const truthDest = path.join(tmpDir, path.basename(project.truthFile));
+    await storage.bucket(BUCKET_NAME).file(project.truthFile).download({ destination: truthDest });
 
     const pdfBuffers: Buffer[] = [];
     let totalSizeMB = 0;
-    for (const pdfFile of project.pdfFiles) {
-      // Find GCS file path. Note that pdfFile might contain folder prefix or be a basename
-      // If it starts with folder name, use it. Otherwise prefix with folder.
-      let gcsPath = pdfFile;
-      if (!gcsPath.startsWith(`${project.folder}/`)) {
-        gcsPath = `${project.folder}/${pdfFile}`;
+    for (const fileInfo of project.pdfFiles) {
+      const sizeMB = fileInfo.sizeBytes / 1024 / 1024;
+      
+      // Cap at 48MB to stay strictly under Gemini's 50MB PDF upload size limit
+      if (totalSizeMB + sizeMB > 48) {
+        console.log(`   ⚠️ Capping PDF merge: skipping ${fileInfo.basename} (${sizeMB.toFixed(1)} MB) to stay under 48MB limit.`);
+        continue;
       }
       
-      const destFilename = path.basename(pdfFile);
-      const pdfDest = path.join(tmpDir, destFilename);
-      
-      await storage.bucket(BUCKET_NAME).file(gcsPath).download({ destination: pdfDest });
+      const pdfDest = path.join(tmpDir, fileInfo.basename);
+      await storage.bucket(BUCKET_NAME).file(fileInfo.name).download({ destination: pdfDest });
       const buf = fs.readFileSync(pdfDest);
       totalSizeMB += buf.length / 1024 / 1024;
       pdfBuffers.push(buf);
     }
 
-    console.log(`   Total PDF size: ${totalSizeMB.toFixed(1)} MB (${pdfBuffers.length} files)`);
-
-    if (totalSizeMB > 80) {
-      console.log(`   ⚠️ Skipping: Combined PDFs too large (${totalSizeMB.toFixed(1)} MB)`);
+    console.log(`   Total PDF size merged: ${totalSizeMB.toFixed(1)} MB (${pdfBuffers.length} files)`);
+    if (pdfBuffers.length === 0) {
+      console.log(`   ❌ No valid PDFs found under size limits.`);
       return null;
     }
 
@@ -198,7 +257,6 @@ async function processProjectCloud(project: ProjectInfo): Promise<CompareResult 
 }
 
 async function main() {
-  // If running in Cloud Run Jobs, we can get CLOUD_RUN_TASK_INDEX
   const taskIndex = process.env.CLOUD_RUN_TASK_INDEX ? parseInt(process.env.CLOUD_RUN_TASK_INDEX) : null;
   const taskCount = process.env.CLOUD_RUN_TASK_COUNT ? parseInt(process.env.CLOUD_RUN_TASK_COUNT) : 1;
 
@@ -210,7 +268,6 @@ async function main() {
   console.log(`Found ${projects.length} projects with PDF + XLSX in GCS\n`);
 
   if (taskIndex !== null) {
-    // Process only a slice for this task
     projects = projects.filter((_, i) => i % taskCount === taskIndex);
     console.log(`Task ${taskIndex}/${taskCount} processing ${projects.length} projects`);
   }
@@ -219,7 +276,11 @@ async function main() {
   let processed = 0;
   let failed = 0;
 
-  for (const project of projects) {
+  // Optimised runtime: process 4 projects in parallel in the cloud using Gemini 2.5 Flash
+  const CONCURRENCY_LIMIT = 4;
+  console.log(`🚀 Starting execution of ${projects.length} projects with concurrency = ${CONCURRENCY_LIMIT}...\n`);
+
+  await runWithConcurrency(projects, CONCURRENCY_LIMIT, async (project) => {
     const result = await processProjectCloud(project);
     if (result) {
       results.push(result);
@@ -227,12 +288,9 @@ async function main() {
     } else {
       failed++;
     }
+  });
 
-    if (projects.indexOf(project) < projects.length - 1 && taskIndex === null) {
-      console.log(`   ⏳ Waiting 5s before next project...`);
-      await new Promise(r => setTimeout(r, 5000));
-    }
-  }
+  console.log(`\n🏁 Completed batch run: ${processed} succeeded, ${failed} failed.\n`);
 
   // Upload scoreboard to GCS
   if (results.length > 0) {

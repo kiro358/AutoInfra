@@ -618,7 +618,7 @@ export async function extractFromPDF(
     console.log(`      [extraction.ts] Stage 1: Running Table Locator Agent...`);
     const locatorResponse = await callWithRetry(async () => {
       return await ai.models.generateContent({
-        model: 'gemini-2.5-pro',
+        model: 'gemini-2.5-flash',
         contents: [
           {
             role: 'user',
@@ -710,7 +710,7 @@ export async function extractFromPDF(
       const manholesResponse = await callWithRetry(async () => {
         const prompt = getManholeAgentPrompt(projectName, getDynamicPromptAdditions('manholes')) + getPageInstructions(targetPages, 'manholes or catchbasins schedules/plans', isSliced);
         return await ai.models.generateContent({
-          model: 'gemini-2.5-pro',
+          model: 'gemini-2.5-flash',
           contents: [
             {
               role: 'user',
@@ -757,7 +757,7 @@ export async function extractFromPDF(
         const sewersResponse = await callWithRetry(async () => {
           const prompt = getSewerAgentPrompt(projectName, getDynamicPromptAdditions('sewers')) + getPageInstructions(targetPages, 'sewer profile views or plan tables', isSliced);
           return await ai.models.generateContent({
-            model: 'gemini-2.5-pro',
+            model: 'gemini-2.5-flash',
             contents: [
               {
                 role: 'user',
@@ -796,7 +796,7 @@ export async function extractFromPDF(
         const watermainResponse = await callWithRetry(async () => {
           const prompt = getWatermainAgentPrompt(projectName, getDynamicPromptAdditions('watermain')) + getPageInstructions(targetPages, 'watermain tables/schedules', isSliced);
           return await ai.models.generateContent({
-            model: 'gemini-2.5-pro',
+            model: 'gemini-2.5-flash',
             contents: [
               {
                 role: 'user',

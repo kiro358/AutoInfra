@@ -37,7 +37,7 @@ const GOLDEN_PROJECTS = [
 
 interface ProjectInfo {
   folder: string;
-  pdfFile: string;
+  pdfFiles: string[];  // All drawing PDFs (will be merged)
   truthFile: string;
 }
 
@@ -52,19 +52,20 @@ function findProjects(): ProjectInfo[] {
 
   const projects: ProjectInfo[] = [];
 
-  const manualOverrides: Record<string, string> = {
-    "2026-059 LAY BY INSTALLATION": "Issued for Tender Drawings_13.pdf",
-    "2026-061 SUNUP REALTY-57 ANDERSON BLVD": "April 22'26 2026-061 Sunup Realty - 57 Anderson Blvd (Industrial Development) Package.pdf",
-    "2026-068 HOLIDAY INN,TRENTON": "05-Civil Drawings & Specs.pdf",
-    "2026-069 RIOCAN GEORGIAN MALL": "1. Bid Invitation - Drawings/RioCan, Georgian Mall, Redemise, Barrie, ON/(8) Civil/509 Bayfield Street_2026-04-07.pdf",
-    "2026-060 PROPOSED COMMERCIAL DEVELOPMENT": "3. 24133 - SS-1.pdf",
+  // Manual overrides: specify a single PDF when the project has a known best drawing file
+  const manualOverrides: Record<string, string[]> = {
+    "2026-059 LAY BY INSTALLATION": ["Issued for Tender Drawings_13.pdf"],
+    "2026-061 SUNUP REALTY-57 ANDERSON BLVD": ["April 22'26 2026-061 Sunup Realty - 57 Anderson Blvd (Industrial Development) Package.pdf"],
+    "2026-068 HOLIDAY INN,TRENTON": ["05-Civil Drawings & Specs.pdf"],
+    "2026-069 RIOCAN GEORGIAN MALL": ["1. Bid Invitation - Drawings/RioCan, Georgian Mall, Redemise, Barrie, ON/(8) Civil/509 Bayfield Street_2026-04-07.pdf"],
+    "2026-060 PROPOSED COMMERCIAL DEVELOPMENT": ["3. 24133 - SS-1.pdf"],
   };
 
   const blocklist = [
     "quote", "quotation", "schedule", "bid", "geotechnical", "geotech", "appendix 4",
     "report", "proposal", "estimate", "pricing", "breakdown", "budget", "letter",
     "backup", "specifications", "specs", "rpt", "contracting", "invoice", "addendum",
-    "tender_form"
+    "tender_form", "tender form", "tipp", "landscape", "cover sheet", "appendix"
   ];
 
   for (const folder of folders) {
@@ -80,7 +81,8 @@ function findProjects(): ProjectInfo[] {
       !f.toLowerCase().includes('sand') &&
       !f.toLowerCase().includes('appendix') &&
       !f.toLowerCase().includes('estimate') &&
-      !f.toLowerCase().includes('additional')
+      !f.toLowerCase().includes('additional') &&
+      !f.toLowerCase().includes('eval_run')
     );
 
     if (xlsxFiles.length === 0) continue;
@@ -89,49 +91,44 @@ function findProjects(): ProjectInfo[] {
     if (manualOverrides[folder]) {
       projects.push({
         folder,
-        pdfFile: manualOverrides[folder],
+        pdfFiles: manualOverrides[folder],
         truthFile: xlsxFiles[0],
       });
       continue;
     }
 
-    // Find the best PDF (service drawings, not quotes/schedules/bids)
+    // Find ALL drawing PDFs (not quotes/schedules/bids)
     const pdfFiles = files.filter(f => {
       const name = f.toLowerCase();
       return name.endsWith(".pdf") && !blocklist.some(b => name.includes(b));
     });
 
     if (pdfFiles.length > 0) {
-      const pdfSizes = pdfFiles.map(f => ({
-        name: f,
-        size: fs.statSync(path.join(dir, f)).size,
-      }));
-
-      // Prefer civil/servicing/drainage/plan over structural/detail/spec
+      // Sort by relevance: civil/servicing/drainage first, then by size
       const scorePDF = (filename: string): number => {
         const name = filename.toLowerCase();
         let score = 0;
-        if (name.includes('civil') || name.includes('servicing') || name.includes('drainage') || name.includes('plan')) {
+        if (name.includes('civil') || name.includes('servicing') || name.includes('drainage') || name.includes('plan') || name.includes('pnp') || name.includes('storm') || name.includes('sewer') || name.includes('water')) {
           score += 1000;
         }
-        if (name.includes('structural') || name.includes('detail') || name.includes('spec') || name.includes('det-')) {
+        if (name.includes('structural') || name.includes('detail') || name.includes('spec') || name.includes('det-') || name.includes('notes')) {
           score -= 500;
         }
         return score;
       };
 
-      pdfSizes.sort((a, b) => {
-        const scoreA = scorePDF(a.name);
-        const scoreB = scorePDF(b.name);
-        if (scoreA !== scoreB) {
-          return scoreB - scoreA;
-        }
-        return b.size - a.size;
+      const sortedPdfs = pdfFiles.sort((a, b) => {
+        const scoreA = scorePDF(a);
+        const scoreB = scorePDF(b);
+        if (scoreA !== scoreB) return scoreB - scoreA;
+        const sizeA = fs.statSync(path.join(dir, a)).size;
+        const sizeB = fs.statSync(path.join(dir, b)).size;
+        return sizeB - sizeA;
       });
 
       projects.push({
         folder,
-        pdfFile: pdfSizes[0].name,
+        pdfFiles: sortedPdfs,  // ALL drawing PDFs, sorted by relevance
         truthFile: xlsxFiles[0],
       });
     }
@@ -142,30 +139,51 @@ function findProjects(): ProjectInfo[] {
 
 async function processProject(project: ProjectInfo): Promise<CompareResult | null> {
   const projectDir = path.join(TRAINING_DIR, project.folder);
-  const pdfPath = path.join(projectDir, project.pdfFile);
   const truthPath = path.join(projectDir, project.truthFile);
 
   console.log(`\n${'═'.repeat(70)}`);
   console.log(`📂 ${project.folder}`);
-  console.log(`   PDF: ${project.pdfFile}`);
+  console.log(`   Drawing PDFs (${project.pdfFiles.length}):`);
+  project.pdfFiles.forEach((f, i) => {
+    const size = fs.existsSync(path.join(projectDir, f)) 
+      ? (fs.statSync(path.join(projectDir, f)).size / 1024 / 1024).toFixed(1) + ' MB'
+      : 'NOT FOUND';
+    console.log(`     ${i + 1}. ${f} (${size})`);
+  });
   console.log(`   Truth: ${project.truthFile}`);
 
   try {
-    // Read PDF
-    const pdfBuffer = fs.readFileSync(pdfPath);
-    const pdfSizeMB = (pdfBuffer.length / 1024 / 1024).toFixed(1);
-    console.log(`   PDF size: ${pdfSizeMB} MB`);
+    // Read ALL PDF buffers
+    const pdfBuffers: Buffer[] = [];
+    let totalSizeMB = 0;
+    for (const pdfFile of project.pdfFiles) {
+      const pdfPath = path.join(projectDir, pdfFile);
+      if (!fs.existsSync(pdfPath)) {
+        console.warn(`   ⚠️ PDF not found, skipping: ${pdfFile}`);
+        continue;
+      }
+      const buf = fs.readFileSync(pdfPath);
+      totalSizeMB += buf.length / 1024 / 1024;
+      pdfBuffers.push(buf);
+    }
 
-    // Skip very large PDFs (>50MB) to avoid timeout
-    if (pdfBuffer.length > 50 * 1024 * 1024) {
-      console.log(`   ⚠️ Skipping: PDF too large (${pdfSizeMB} MB)`);
+    if (pdfBuffers.length === 0) {
+      console.log(`   ❌ No valid PDFs found`);
       return null;
     }
 
-    // Extract data
+    console.log(`   Total PDF size: ${totalSizeMB.toFixed(1)} MB (${pdfBuffers.length} files)`);
+
+    // Skip very large combined PDFs (>80MB) to avoid timeout
+    if (totalSizeMB > 80) {
+      console.log(`   ⚠️ Skipping: Combined PDFs too large (${totalSizeMB.toFixed(1)} MB)`);
+      return null;
+    }
+
+    // Extract data — extractFromPDF handles merging internally
     console.log(`   🤖 Extracting data via Gemini...`);
     const startTime = Date.now();
-    const result = await extractFromPDF(pdfBuffer, project.folder);
+    const result = await extractFromPDF(pdfBuffers, project.folder);
     const extractTime = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`   ✅ Extraction complete in ${extractTime}s`);
     console.log(`      MH: ${result.manholes.length} | SW: ${result.sewers.length} | WM: ${result.watermain.length} | CB groups: ${result.catchbasins?.groups?.length || 0}`);

@@ -12,7 +12,7 @@ const BUCKET_NAME = process.env.GCS_BUCKET || 'autoinfra-ai-eval-data';
 
 interface ProjectInfo {
   folder: string;
-  pdfFile: string;
+  pdfFiles: string[];
   truthFile: string;
 }
 
@@ -30,22 +30,24 @@ async function findProjectsCloud(): Promise<ProjectInfo[]> {
 
   const projects: ProjectInfo[] = [];
 
+  const manualOverrides: Record<string, string[]> = {
+    "2026-059 LAY BY INSTALLATION": ["Issued for Tender Drawings_13.pdf"],
+    "2026-061 SUNUP REALTY-57 ANDERSON BLVD": ["April 22'26 2026-061 Sunup Realty - 57 Anderson Blvd (Industrial Development) Package.pdf"],
+    "2026-068 HOLIDAY INN,TRENTON": ["05-Civil Drawings & Specs.pdf"],
+    "2026-069 RIOCAN GEORGIAN MALL": ["1. Bid Invitation - Drawings/RioCan, Georgian Mall, Redemise, Barrie, ON/(8) Civil/509 Bayfield Street_2026-04-07.pdf"],
+    "2026-060 PROPOSED COMMERCIAL DEVELOPMENT": ["3. 24133 - SS-1.pdf"],
+  };
+
+  const blocklist = [
+    "quote", "quotation", "schedule", "bid", "geotechnical", "geotech", "appendix 4",
+    "report", "proposal", "estimate", "pricing", "breakdown", "budget", "letter",
+    "backup", "specifications", "specs", "rpt", "contracting", "invoice", "addendum",
+    "tender_form", "tender form", "tipp", "landscape", "cover sheet", "appendix"
+  ];
+
   for (const folder of folders) {
     const folderFiles = fileNames.filter(f => f.startsWith(`${folder}/`));
     const basenameFiles = folderFiles.map(f => path.basename(f));
-
-    const pdfFiles = basenameFiles.filter(f =>
-      f.toLowerCase().endsWith(".pdf") &&
-      !f.toLowerCase().includes("quote") &&
-      !f.toLowerCase().includes("quotation") &&
-      !f.toLowerCase().includes("schedule") &&
-      !f.toLowerCase().includes("bid") &&
-      !f.toLowerCase().includes("geotechnical") &&
-      !f.toLowerCase().includes("appendix 4") &&
-      !f.toLowerCase().includes("report") &&
-      !f.toLowerCase().includes("structural") &&
-      !f.toLowerCase().includes("architectural")
-    );
 
     const xlsxFiles = basenameFiles.filter(f =>
       f.toLowerCase().endsWith('.xlsx') &&
@@ -56,25 +58,54 @@ async function findProjectsCloud(): Promise<ProjectInfo[]> {
       !f.toLowerCase().includes('appendix') &&
       !f.toLowerCase().includes('estimate') &&
       !f.toLowerCase().includes('additional') &&
-      !f.includes('eval_') // Exclude previously generated sheets
+      !f.toLowerCase().includes('eval_')
     );
 
-    if (pdfFiles.length > 0 && xlsxFiles.length > 0) {
-      // Find the largest PDF
-      let largestPdf = pdfFiles[0];
-      let maxSize = 0;
-      for (const pdf of pdfFiles) {
-        const fileObj = files.find(f => f.name === `${folder}/${pdf}`);
-        const size = parseInt(fileObj?.metadata.size?.toString() || '0', 10);
-        if (size > maxSize) {
-          maxSize = size;
-          largestPdf = pdf;
+    if (xlsxFiles.length === 0) continue;
+
+    if (manualOverrides[folder]) {
+      projects.push({
+        folder,
+        pdfFiles: manualOverrides[folder],
+        truthFile: xlsxFiles[0],
+      });
+      continue;
+    }
+
+    const pdfFiles = basenameFiles.filter(f =>
+      f.toLowerCase().endsWith(".pdf") &&
+      !blocklist.some(b => f.toLowerCase().includes(b))
+    );
+
+    if (pdfFiles.length > 0) {
+      const scorePDF = (filename: string): number => {
+        const name = filename.toLowerCase();
+        let score = 0;
+        if (name.includes('civil') || name.includes('servicing') || name.includes('drainage') || name.includes('plan') || name.includes('pnp') || name.includes('storm') || name.includes('sewer') || name.includes('water')) {
+          score += 1000;
         }
-      }
+        if (name.includes('structural') || name.includes('detail') || name.includes('spec') || name.includes('det-') || name.includes('notes')) {
+          score -= 500;
+        }
+        return score;
+      };
+
+      const sortedPdfs = pdfFiles.sort((a, b) => {
+        const scoreA = scorePDF(a);
+        const scoreB = scorePDF(b);
+        if (scoreA !== scoreB) return scoreB - scoreA;
+        
+        // Find size in GCS files
+        const fileAObj = files.find(f => f.name === `${folder}/${a}`);
+        const fileBObj = files.find(f => f.name === `${folder}/${b}`);
+        const sizeA = parseInt(fileAObj?.metadata.size?.toString() || '0', 10);
+        const sizeB = parseInt(fileBObj?.metadata.size?.toString() || '0', 10);
+        return sizeB - sizeA;
+      });
 
       projects.push({
         folder,
-        pdfFile: largestPdf,
+        pdfFiles: sortedPdfs,
         truthFile: xlsxFiles[0],
       });
     }
@@ -89,29 +120,43 @@ async function processProjectCloud(project: ProjectInfo): Promise<CompareResult 
   try {
     console.log(`\n${'═'.repeat(70)}`);
     console.log(`📂 ${project.folder}`);
-    console.log(`   PDF: ${project.pdfFile}`);
+    console.log(`   PDFs (${project.pdfFiles.length}):`);
+    project.pdfFiles.forEach((f, i) => console.log(`     ${i + 1}. ${f}`));
     console.log(`   Truth: ${project.truthFile}`);
 
-    // Download PDF
-    const pdfDest = path.join(tmpDir, project.pdfFile);
-    await storage.bucket(BUCKET_NAME).file(`${project.folder}/${project.pdfFile}`).download({ destination: pdfDest });
-    
     // Download Truth
     const truthDest = path.join(tmpDir, project.truthFile);
     await storage.bucket(BUCKET_NAME).file(`${project.folder}/${project.truthFile}`).download({ destination: truthDest });
 
-    const pdfBuffer = fs.readFileSync(pdfDest);
-    const pdfSizeMB = (pdfBuffer.length / 1024 / 1024).toFixed(1);
-    console.log(`   PDF size: ${pdfSizeMB} MB`);
+    const pdfBuffers: Buffer[] = [];
+    let totalSizeMB = 0;
+    for (const pdfFile of project.pdfFiles) {
+      // Find GCS file path. Note that pdfFile might contain folder prefix or be a basename
+      // If it starts with folder name, use it. Otherwise prefix with folder.
+      let gcsPath = pdfFile;
+      if (!gcsPath.startsWith(`${project.folder}/`)) {
+        gcsPath = `${project.folder}/${pdfFile}`;
+      }
+      
+      const destFilename = path.basename(pdfFile);
+      const pdfDest = path.join(tmpDir, destFilename);
+      
+      await storage.bucket(BUCKET_NAME).file(gcsPath).download({ destination: pdfDest });
+      const buf = fs.readFileSync(pdfDest);
+      totalSizeMB += buf.length / 1024 / 1024;
+      pdfBuffers.push(buf);
+    }
 
-    if (pdfBuffer.length > 50 * 1024 * 1024) {
-      console.log(`   ⚠️ Skipping: PDF too large (${pdfSizeMB} MB)`);
+    console.log(`   Total PDF size: ${totalSizeMB.toFixed(1)} MB (${pdfBuffers.length} files)`);
+
+    if (totalSizeMB > 80) {
+      console.log(`   ⚠️ Skipping: Combined PDFs too large (${totalSizeMB.toFixed(1)} MB)`);
       return null;
     }
 
     console.log(`   🤖 Extracting data via Gemini...`);
     const startTime = Date.now();
-    const result = await extractFromPDF(pdfBuffer, project.folder);
+    const result = await extractFromPDF(pdfBuffers, project.folder);
     const extractTime = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`   ✅ Extraction complete in ${extractTime}s`);
     console.log(`      Confidence: ${result.confidence}`);
@@ -133,10 +178,6 @@ async function processProjectCloud(project: ProjectInfo): Promise<CompareResult 
     console.log(`   ☁️ Uploaded generated sheet to GCS: ${gcsGenPath}`);
 
     console.log(`   🔍 Comparing against ground truth...`);
-    // Note: compareSpreadsheets needs the actual files on disk
-    // But since the template might be needed, we must ensure it can find it.
-    // However, compareSpreadsheets itself looks for templates? No, it compares 2 files.
-    // wait, compareSpreadsheets takes truthPath and genPath.
     const compareResult = await compareSpreadsheets(truthDest, genPath, project.folder);
 
     for (const report of compareResult.reports) {

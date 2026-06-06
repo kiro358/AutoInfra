@@ -28,6 +28,15 @@ const GOLDEN_PROJECTS = [
   { folder: '2026-004 SHN CENTENNIAL EMERGENCY DEPARTMENT REDEVELOPMENT', label: '5. SHN Centennial (Site specials)' }
 ];
 
+const PDF_BLOCKLIST = [
+  'quote', 'quotation', 'schedule', 'bid', 'geotechnical', 'geotech',
+  'report', 'proposal', 'estimate', 'pricing', 'breakdown', 'budget',
+  'letter', 'backup', 'specifications', 'specs', 'rpt', 'contracting',
+  'invoice', 'addendum', 'tender_form', 'tender form', 'tipp',
+  'structural', 'architectural', 'hydrogeological', 'landscape',
+  'cover sheet', 'appendix'
+];
+
 async function evaluateProject(folderName: string): Promise<CompareResult | null> {
   const projectDir = path.join(TRAINING_DIR, folderName);
   if (!fs.existsSync(projectDir)) {
@@ -36,46 +45,63 @@ async function evaluateProject(folderName: string): Promise<CompareResult | null
   }
 
   const files = fs.readdirSync(projectDir);
-  const pdfFiles = files.filter(f => 
-    f.toLowerCase().endsWith('.pdf') && 
-    !f.toLowerCase().includes('quote') && 
-    !f.toLowerCase().includes('quotation') && 
-    !f.toLowerCase().includes('schedule') && 
-    !f.toLowerCase().includes('bid') && 
-    !f.toLowerCase().includes('geotechnical') && 
-    !f.toLowerCase().includes('report') &&
-    !f.toLowerCase().includes('granular') &&
-    !f.toLowerCase().includes('structural') &&
-    !f.toLowerCase().includes('architectural')
+  const pdfFiles = files.filter(f => {
+    const name = f.toLowerCase();
+    return name.endsWith('.pdf') && !PDF_BLOCKLIST.some(b => name.includes(b));
+  });
+  const xlsxFiles = files.filter(f => 
+    f.toLowerCase().endsWith('.xlsx') && 
+    !f.toLowerCase().includes('eval_run_') &&
+    !f.toLowerCase().includes('backup') &&
+    !f.toLowerCase().includes('quote') &&
+    !f.toLowerCase().includes('sand') &&
+    !f.toLowerCase().includes('budget')
   );
-  const xlsxFiles = files.filter(f => f.toLowerCase().endsWith('.xlsx') && !f.toLowerCase().includes('eval_run_'));
 
   if (pdfFiles.length === 0 || xlsxFiles.length === 0) {
     console.warn(`⚠️ Skipping ${folderName}: missing PDF or XLSX`);
     return null;
   }
 
-  // Find the largest drawing PDF to process the main plan set
-  let selectedPdf = pdfFiles[0];
-  let maxSize = 0;
-  for (const pdf of pdfFiles) {
-    const filePath = path.join(projectDir, pdf);
-    const stat = fs.statSync(filePath);
-    if (stat.size > maxSize) {
-      maxSize = stat.size;
-      selectedPdf = pdf;
+  // Sort PDFs by relevance
+  const scorePDF = (filename: string): number => {
+    const name = filename.toLowerCase();
+    let score = 0;
+    if (name.includes('civil') || name.includes('servicing') || name.includes('drainage') || name.includes('plan') || name.includes('pnp') || name.includes('storm') || name.includes('sewer') || name.includes('water')) {
+      score += 1000;
     }
-  }
+    if (name.includes('detail') || name.includes('det-') || name.includes('notes')) {
+      score -= 200;
+    }
+    return score;
+  };
 
-  const pdfPath = path.join(projectDir, selectedPdf);
+  const sortedPdfs = pdfFiles.sort((a, b) => {
+    const scoreA = scorePDF(a);
+    const scoreB = scorePDF(b);
+    if (scoreA !== scoreB) return scoreB - scoreA;
+    const sizeA = fs.statSync(path.join(projectDir, a)).size;
+    const sizeB = fs.statSync(path.join(projectDir, b)).size;
+    return sizeB - sizeA;
+  });
+
   const truthPath = path.join(projectDir, xlsxFiles[0]);
 
   try {
-    const pdfBuffer = fs.readFileSync(pdfPath);
-    console.log(`   [evaluate-golden] Processing PDF: ${selectedPdf} (${(pdfBuffer.length / 1024 / 1024).toFixed(2)} MB)`);
+    // Read ALL drawing PDF buffers
+    const pdfBuffers: Buffer[] = [];
+    let totalSizeMB = 0;
+    for (const pdf of sortedPdfs) {
+      const buf = fs.readFileSync(path.join(projectDir, pdf));
+      totalSizeMB += buf.length / 1024 / 1024;
+      pdfBuffers.push(buf);
+    }
+
+    console.log(`   [evaluate-golden] Processing ${pdfBuffers.length} PDFs (${totalSizeMB.toFixed(1)} MB total):`);
+    sortedPdfs.forEach((f, i) => console.log(`     ${i + 1}. ${f}`));
     
-    // Extract using the restored single-pass pipeline
-    const result = await extractFromPDF(pdfBuffer, folderName);
+    // Extract using merged multi-PDF pipeline
+    const result = await extractFromPDF(pdfBuffers, folderName);
 
     // Populate standard spreadsheet template
     const genBuffer = await populateTemplate(result, DEFAULT_PARAMS as any);

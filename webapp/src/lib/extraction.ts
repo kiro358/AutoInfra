@@ -218,10 +218,10 @@ function applyDeterministicHeuristics(data: ExtractionResult): ExtractionResult 
     const diameters: number[] = [];
     const normalizedMH = (mhDesc || '').trim().toUpperCase().replace(/\s+/g, '');
     if (!normalizedMH) return [];
-    
+
     for (const sw of data.sewers) {
       if (sw.isLineItem || !sw.runLabel || !sw.pipeDiameter) continue;
-      
+
       const parts = getCleanMHTokens(sw.runLabel);
       if (parts.includes(normalizedMH)) {
         diameters.push(sw.pipeDiameter);
@@ -233,8 +233,8 @@ function applyDeterministicHeuristics(data: ExtractionResult): ExtractionResult 
   // 1. Manholes post-processing
   data.manholes = data.manholes.map(mh => {
     let depth = mh.depth;
-    const inv = (mh.lowInvert !== null && mh.highInvert !== null) 
-      ? Math.min(mh.lowInvert, mh.highInvert) 
+    const inv = (mh.lowInvert !== null && mh.highInvert !== null)
+      ? Math.min(mh.lowInvert, mh.highInvert)
       : (mh.lowInvert !== null ? mh.lowInvert : mh.highInvert);
     if (mh.topElevation !== null && inv !== null) {
       const calcDepth = Math.round((mh.topElevation - inv) * 100) / 100;
@@ -242,21 +242,21 @@ function applyDeterministicHeuristics(data: ExtractionResult): ExtractionResult 
         depth = calcDepth;
       }
     }
-    
+
     // Determine diameter:
     // Find connected sewers
     const connectedDists = getConnectedSewerDiameters(mh.description);
     const maxPipeDia = connectedDists.length > 0 ? Math.max(...connectedDists) : 0;
     const effectivePipeOutDia = Math.max(mh.pipeOutDiameter || 0, maxPipeDia);
-    
+
     let diameter = mh.diameter;
     if (diameter === null || diameter === 0) {
       diameter = snapToMHSize(effectivePipeOutDia);
     }
-    
+
     let addMaterials = mh.addMaterials;
     let addLE = mh.addLE;
-    
+
     if (addMaterials === 0) {
       const desc = mh.description.toUpperCase();
       if (desc.includes('DCBMH')) {
@@ -271,12 +271,12 @@ function applyDeterministicHeuristics(data: ExtractionResult): ExtractionResult 
         addLE = 3000;
       }
     }
-    
-    return { 
-      ...mh, 
-      depth, 
-      diameter, 
-      addMaterials, 
+
+    return {
+      ...mh,
+      depth,
+      diameter,
+      addMaterials,
       addLE,
       pipeOutDiameter: effectivePipeOutDia || mh.pipeOutDiameter
     };
@@ -297,7 +297,7 @@ function applyDeterministicHeuristics(data: ExtractionResult): ExtractionResult 
   data.sewers = data.sewers.map(sw => {
     let addMaterials = sw.addMaterials;
     let addLE = sw.addLE;
-    
+
     if (sw.length && !sw.isLineItem) {
       const label = sw.runLabel.toUpperCase();
       if (label.includes('/INS') && addMaterials === 0) {
@@ -324,7 +324,7 @@ function applyDeterministicHeuristics(data: ExtractionResult): ExtractionResult 
   // 5. Append standard line items if there are any sewers
   if (data.sewers.length > 0) {
     const videoCost = totalSewerLength * 25; // $25/m
-    
+
     const hasVideo = data.sewers.some(s => s.runLabel.toUpperCase().includes('VIDEO'));
     if (!hasVideo) {
       data.sewers.push({
@@ -341,7 +341,7 @@ function applyDeterministicHeuristics(data: ExtractionResult): ExtractionResult 
         addLE: 0
       });
     }
-    
+
     const hasLayout = data.sewers.some(s => s.runLabel.toUpperCase().includes('LAYOUT'));
     if (!hasLayout) {
       data.sewers.push({
@@ -358,7 +358,7 @@ function applyDeterministicHeuristics(data: ExtractionResult): ExtractionResult 
         addLE: 0
       });
     }
-    
+
     const hasAsBuilt = data.sewers.some(s => s.runLabel.toUpperCase().includes('AS BUILT'));
     if (!hasAsBuilt) {
       data.sewers.push({
@@ -482,16 +482,16 @@ async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 3, initialDel
       const isAbort = err.name === 'AbortError' || err.message === 'This operation was aborted' || (err.message && err.message.toLowerCase().includes('abort'));
       const isServerError = err.status >= 500 && err.status <= 599;
       const isCancelled = err.status === 499 || (err.message && err.message.includes('499')) || (err.message && err.message.toLowerCase().includes('cancel'));
-      
+
       if (attempt >= maxRetries || (!isRateLimit && !isAbort && !isServerError && !isCancelled)) {
         throw err;
       }
-      
+
       let errType = 'Timeout/Abort';
       if (isRateLimit) errType = '429 Rate Limit';
       else if (isCancelled) errType = '499 Cancelled';
       else if (isServerError) errType = `${err.status || '5xx'} Server Error`;
-      
+
       const delay = initialDelay * Math.pow(2, attempt - 1) + Math.random() * 2000;
       console.warn(`      [extraction.ts] Attempt ${attempt} failed with ${errType}. Retrying in ${(delay / 1000).toFixed(1)}s...`);
       await new Promise(resolve => setTimeout(resolve, delay));
@@ -512,14 +512,14 @@ async function extractPagesFromPDF(pdfBuffer: Buffer, pages: number[]): Promise<
     const validIndices = pages
       .map(p => p - 1)
       .filter(idx => idx >= 0 && idx < totalPages);
-      
+
     if (validIndices.length === 0) {
       return pdfBuffer;
     }
-    
+
     const copiedPages = await dstDoc.copyPages(srcDoc, validIndices);
     copiedPages.forEach(page => dstDoc.addPage(page));
-    
+
     const pdfBytes = await dstDoc.save();
     return Buffer.from(pdfBytes);
   } catch (e) {
@@ -535,10 +535,10 @@ async function extractPagesFromPDF(pdfBuffer: Buffer, pages: number[]): Promise<
 export async function mergePDFs(buffers: Buffer[]): Promise<Buffer> {
   if (buffers.length === 0) throw new Error('No PDF buffers to merge');
   if (buffers.length === 1) return buffers[0];
-  
+
   console.log(`      [extraction.ts] Merging ${buffers.length} PDFs...`);
   const mergedDoc = await PDFDocument.create();
-  
+
   for (let i = 0; i < buffers.length; i++) {
     try {
       const srcDoc = await PDFDocument.load(buffers[i]);
@@ -551,10 +551,10 @@ export async function mergePDFs(buffers: Buffer[]): Promise<Buffer> {
       console.warn(`      [extraction.ts]   PDF ${i + 1}: FAILED to merge, skipping:`, e);
     }
   }
-  
+
   const totalPages = mergedDoc.getPageCount();
   console.log(`      [extraction.ts] Merged PDF total: ${totalPages} pages`);
-  
+
   const pdfBytes = await mergedDoc.save();
   return Buffer.from(pdfBytes);
 }
@@ -577,12 +577,12 @@ export async function extractFromPDF(
     if (pdfBuffer.length > 4 * 1024 * 1024) {
       const hash = crypto.createHash('sha256').update(pdfBuffer).digest('hex');
       const fileName = `cached-drawings/${hash}.pdf`;
-      
+
       const bucket = storage.bucket(BUCKET_NAME);
       const file = bucket.file(fileName);
-      
+
       console.log(`      [extraction.ts] File size (${(pdfBuffer.length / 1024 / 1024).toFixed(2)}MB) > 4MB. Checking GCS cache: gs://${BUCKET_NAME}/${fileName}`);
-      
+
       const [exists] = await file.exists();
       if (exists) {
         console.log(`      [extraction.ts] ⚡ GCS Cache Hit! Reusing gs://${BUCKET_NAME}/${fileName}`);
@@ -596,24 +596,24 @@ export async function extractFromPDF(
           },
         });
       }
-      
+
       gcsPath = fileName;
       gcsFileUri = `gs://${BUCKET_NAME}/${fileName}`;
     }
 
-    const pdfPart = gcsFileUri 
+    const pdfPart = gcsFileUri
       ? {
-          fileData: {
-            fileUri: gcsFileUri,
-            mimeType: 'application/pdf',
-          },
-        }
+        fileData: {
+          fileUri: gcsFileUri,
+          mimeType: 'application/pdf',
+        },
+      }
       : {
-          inlineData: {
-            mimeType: 'application/pdf',
-            data: pdfBuffer.toString('base64'),
-          },
-        };
+        inlineData: {
+          mimeType: 'application/pdf',
+          data: pdfBuffer.toString('base64'),
+        },
+      };
 
     console.log(`      [extraction.ts] Stage 1: Running Table Locator Agent...`);
     const locatorResponse = await callWithRetry(async () => {

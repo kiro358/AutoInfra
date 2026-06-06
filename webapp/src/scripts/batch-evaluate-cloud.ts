@@ -5,7 +5,7 @@ import os from 'os';
 import { extractFromPDF } from '../lib/extraction';
 import { populateTemplate } from '../lib/spreadsheet';
 import { DEFAULT_PARAMS } from '../lib/constants';
-import { compareSpreadsheets, CompareResult } from './compare-sheets';
+import { compareSpreadsheets, CompareResult, formatCompareResult } from './compare-sheets';
 
 const storage = new Storage();
 const BUCKET_NAME = process.env.GCS_BUCKET || 'autoinfra-ai-eval-data';
@@ -243,9 +243,31 @@ async function processProjectCloud(project: ProjectInfo): Promise<CompareResult 
       if (report.totalCells > 0) {
         const acc = ((report.matchingCells / report.totalCells) * 100).toFixed(1);
         console.log(`      ${report.sectionLabel}: ${acc}% (${report.matchingCells}/${report.totalCells})`);
+        
+        // Print the first 15 mismatches to stdout
+        if (report.diffs.length > 0) {
+          console.log(`         ❌ ${report.diffs.length} mismatches:`);
+          for (const d of report.diffs.slice(0, 15)) {
+            const errStr = d.pctError !== undefined ? ` (${d.pctError.toFixed(1)}% err)` : '';
+            console.log(`            Row ${d.row} [${d.colName}]: truth="${d.truthValue}" vs gen="${d.genValue}"${errStr}`);
+          }
+          if (report.diffs.length > 15) {
+            console.log(`            ... and ${report.diffs.length - 15} more`);
+          }
+        }
       }
     }
     console.log(`   📊 Overall: ${compareResult.overallAccuracy.toFixed(1)}%`);
+
+    // Write text report of diffs and upload to GCS next to generated spreadsheet
+    const diffReport = formatCompareResult(compareResult);
+    const diffFilename = `eval_${timestamp}_diff.txt`;
+    const diffPath = path.join(tmpDir, diffFilename);
+    fs.writeFileSync(diffPath, diffReport);
+
+    const gcsDiffPath = `${project.folder}/generated_spreadsheets/${diffFilename}`;
+    await storage.bucket(BUCKET_NAME).upload(diffPath, { destination: gcsDiffPath });
+    console.log(`   ☁️ Uploaded discrepancy report to GCS: ${gcsDiffPath}`);
 
     return compareResult;
   } catch (e: any) {
@@ -276,8 +298,8 @@ async function main() {
   let processed = 0;
   let failed = 0;
 
-  // Optimised runtime: process 4 projects in parallel in the cloud using Gemini 2.5 Flash
-  const CONCURRENCY_LIMIT = 4;
+  // Optimised runtime: process 8 projects in parallel in the cloud using Gemini 2.5 Flash
+  const CONCURRENCY_LIMIT = 8;
   console.log(`🚀 Starting execution of ${projects.length} projects with concurrency = ${CONCURRENCY_LIMIT}...\n`);
 
   await runWithConcurrency(projects, CONCURRENCY_LIMIT, async (project) => {

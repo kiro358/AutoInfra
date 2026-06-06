@@ -370,6 +370,40 @@ export async function compareSpreadsheets(
   };
 }
 
+export function formatCompareResult(result: CompareResult): string {
+  let out = '';
+  out += `${'='.repeat(80)}\n`;
+  out += `🔬 PROJECT: ${result.projectName}\n`;
+  out += `   Truth Sheet: ${result.truthFile} | Generated: ${result.genFile}\n`;
+  out += `${'='.repeat(80)}\n`;
+
+  for (const report of result.reports) {
+    const accuracy =
+      report.totalCells > 0
+        ? ((report.matchingCells / report.totalCells) * 100).toFixed(1) + '%'
+        : 'N/A';
+
+    out += `\n📊 Section: ${report.sectionLabel}\n`;
+    out += `   Accuracy: ${accuracy} (${report.matchingCells}/${report.totalCells} cells matching)\n`;
+    out += `   Missing rows: ${report.missingRows} | Extra rows: ${report.extraRows}\n`;
+
+    if (report.diffs.length > 0) {
+      out += `   ❌ ${report.diffs.length} discrepancy details:\n`;
+      for (const d of report.diffs) {
+        const errStr = d.pctError !== undefined ? ` (${d.pctError.toFixed(1)}% error)` : '';
+        out += `      Row ${d.row} [${d.colName}]: Truth="${d.truthValue}" vs Generated="${d.genValue}"${errStr}\n`;
+      }
+    } else {
+      out += `   ✅ 100% matched.\n`;
+    }
+  }
+
+  out += `\n${'─'.repeat(60)}\n`;
+  out += `📊 OVERALL SYSTEM ACCURACY: ${result.overallAccuracy.toFixed(1)}% (${result.totalMatching}/${result.totalCells} cells matching)\n`;
+  out += `${'─'.repeat(60)}\n`;
+  return out;
+}
+
 function printCompareResult(result: CompareResult) {
   console.log(`\n${'='.repeat(80)}`);
   console.log(`🔬 ${result.projectName}`);

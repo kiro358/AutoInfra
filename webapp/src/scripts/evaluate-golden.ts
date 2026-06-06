@@ -15,7 +15,7 @@ import path from 'path';
 import { extractFromPDF } from '../lib/extraction';
 import { populateTemplate } from '../lib/spreadsheet';
 import { DEFAULT_PARAMS } from '../lib/constants';
-import { compareSpreadsheets, CompareResult } from './compare-sheets';
+import { compareSpreadsheets, CompareResult, formatCompareResult } from './compare-sheets';
 
 const TRAINING_DIR = path.resolve(__dirname, '../../..', 'existing_projects_training_data');
 
@@ -115,6 +115,31 @@ async function evaluateProject(folderName: string): Promise<CompareResult | null
 
     // Compare generated sheet vs ground truth
     const compareResult = await compareSpreadsheets(truthPath, genPath, folderName);
+
+    // Save and print detailed discrepancies
+    const diffReport = formatCompareResult(compareResult);
+    const diffPath = path.join(genDir, genFilename.replace('.xlsx', '_diff.txt'));
+    fs.writeFileSync(diffPath, diffReport);
+
+    console.log(`\n🔍 Cell-Level Discrepancy Log (Saved to: ${path.basename(diffPath)}):`);
+    for (const report of compareResult.reports) {
+      if (report.totalCells > 0) {
+        const acc = ((report.matchingCells / report.totalCells) * 100).toFixed(1);
+        console.log(`   📊 ${report.sectionLabel}: ${acc}% (${report.matchingCells}/${report.totalCells})`);
+        if (report.diffs.length > 0) {
+          console.log(`      ❌ ${report.diffs.length} mismatches:`);
+          for (const d of report.diffs.slice(0, 15)) {
+            const errStr = d.pctError !== undefined ? ` (${d.pctError.toFixed(1)}% err)` : '';
+            console.log(`         Row ${d.row} [${d.colName}]: truth="${d.truthValue}" vs gen="${d.genValue}"${errStr}`);
+          }
+          if (report.diffs.length > 15) {
+            console.log(`         ... and ${report.diffs.length - 15} more`);
+          }
+        }
+      }
+    }
+    console.log('');
+
     return compareResult;
   } catch (e: any) {
     console.error(`❌ Error evaluating project ${folderName}:`, e.message);

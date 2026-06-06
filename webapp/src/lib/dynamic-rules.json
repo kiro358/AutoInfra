@@ -1,20 +1,8 @@
 {
   "version": 2,
-  "baselineAccuracy": 42.3257575757576,
-  "lastUpdated": "2026-06-01",
+  "baselineAccuracy": 37.910000000000025,
+  "lastUpdated": "2026-06-06",
   "promptAdditions": [
-    {
-      "rule": "You must extract data from the engineering plan and profile views, and from specific data tables like 'Manhole Schedule' or 'Pipe Schedule'. Explicitly ignore any tables or lists related to cost estimates, bid items, or general construction notes unless they are directly labeling a component on the drawing itself.",
-      "addedBy": "manual",
-      "addedAt": "2026-05-15",
-      "accuracyDelta": null
-    },
-    {
-      "rule": "Crucially, you are populating a bid sheet for the project's scope of work, not creating an inventory of everything on the drawing. Only extract quantities for *newly proposed* infrastructure or *modifications to existing* infrastructure. Ignore any existing items that are to remain untouched.",
-      "addedBy": "manual",
-      "addedAt": "2026-05-15",
-      "accuracyDelta": null
-    },
     {
       "rule": "Only populate fields for 'Additional Materials' or 'Add Mtrls' if the drawing explicitly and separately itemizes a cost for them. Do not infer these costs from general notes or other values. If no explicit, separate cost for additional materials is listed for an item, the value should be null or 0.",
       "addedBy": "flywheel",
@@ -33,6 +21,18 @@
       "addedAt": "2026-06-01",
       "accuracyDelta": null,
       "component": "sewers"
+    },
+    {
+      "rule": "If an item is explicitly marked as 'Not In Contract' (NIC), 'By Others', 'Future', or 'For Information Only', its quantity and all associated costs must be set to zero or null.",
+      "addedBy": "flywheel",
+      "addedAt": "2026-06-06",
+      "accuracyDelta": null
+    },
+    {
+      "rule": "Only extract quantities and costs for items explicitly listed as a 'Pay Item' in the bid schedule or notes. If an item is shown on the drawing but is not a distinct pay item, its quantity and cost should be considered incidental and set to null or zero.",
+      "addedBy": "flywheel",
+      "addedAt": "2026-06-06",
+      "accuracyDelta": null
     }
   ],
   "heuristics": []

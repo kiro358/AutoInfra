@@ -153,6 +153,8 @@ function getDynamicPromptAdditions(componentFilter?: 'manholes' | 'sewers' | 'wa
     const filePath = overridePath || path.resolve(__dirname, 'dynamic-rules.json');
     if (fs.existsSync(filePath)) {
       const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      let output = '';
+      
       if (data.promptAdditions && data.promptAdditions.length > 0) {
         // Filter rules by component
         const filtered = data.promptAdditions.filter((r: any) => {
@@ -163,9 +165,16 @@ function getDynamicPromptAdditions(componentFilter?: 'manholes' | 'sewers' | 'wa
 
         if (filtered.length > 0) {
           const rules = filtered.map((r: any) => typeof r === 'string' ? r : r.rule);
-          return '\n\n## DYNAMICALLY LEARNED RULES\n' + rules.map((r: string, i: number) => (i + 1) + '. ' + r).join('\n');
+          output += '\n\n## DYNAMICALLY LEARNED RULES\n' + rules.map((r: string, i: number) => (i + 1) + '. ' + r).join('\n');
         }
       }
+
+      if (data.heuristics && data.heuristics.length > 0) {
+        const rules = data.heuristics.map((h: any) => typeof h === 'string' ? h : h.rule);
+        output += '\n\n## DYNAMICALLY LEARNED HEURISTICS (ESTIMATOR PREFERENCES)\n' + rules.map((r: string, i: number) => (i + 1) + '. ' + r).join('\n');
+      }
+
+      return output;
     }
   } catch (e) {
     console.error('Failed to load dynamic rules', e);

@@ -18,7 +18,7 @@ import fs from 'fs';
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 const FILES_TO_ROLLBACK = [
   'webapp/src/lib/dynamic-rules.json',
-  'few_shot_examples.json',
+  'webapp/few_shot_examples.json',
 ];
 
 function run(cmd: string): string {
@@ -61,7 +61,7 @@ function rollback(targetCommit?: string) {
   // Clean up candidate files if they exist
   const candidateFiles = [
     'webapp/src/lib/dynamic-rules.candidate.json',
-    'few_shot_examples.candidate.json',
+    'webapp/few_shot_examples.candidate.json',
   ];
   for (const f of candidateFiles) {
     const fullPath = path.join(REPO_ROOT, f);

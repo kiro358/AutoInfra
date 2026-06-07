@@ -408,7 +408,7 @@ export async function analyzeFailuresCloud(
     const fileNames = files.map(f => f.name);
     
     const truthFile = fileNames.find(f => f.endsWith('.xlsx') && !f.includes('eval_') && !f.includes('generated_spreadsheets'));
-    const genFiles = fileNames.filter(f => f.includes('generated_spreadsheets/eval_')).sort();
+    const genFiles = fileNames.filter(f => f.endsWith('.xlsx') && f.includes('generated_spreadsheets/eval_')).sort();
     
     if (!truthFile || genFiles.length === 0) {
       console.log(`Missing truth file or generated file in GCS. Skipping.`);
@@ -421,8 +421,10 @@ export async function analyzeFailuresCloud(
     const truthPath = path.join(tmpDir, 'truth.xlsx');
     const genPath = path.join(tmpDir, 'gen.xlsx');
     
-    await storage.bucket(BUCKET_NAME).file(truthFile).download({ destination: truthPath });
-    await storage.bucket(BUCKET_NAME).file(genFile).download({ destination: genPath });
+    await Promise.all([
+      storage.bucket(BUCKET_NAME).file(truthFile).download({ destination: truthPath }),
+      storage.bucket(BUCKET_NAME).file(genFile).download({ destination: genPath })
+    ]);
 
     const result = await compareSpreadsheets(truthPath, genPath, projectName);
     

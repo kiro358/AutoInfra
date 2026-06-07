@@ -189,7 +189,7 @@ async function processProjectCloud(project: ProjectInfo): Promise<CompareResult 
     const truthDest = path.join(tmpDir, path.basename(project.truthFile));
     await storage.bucket(BUCKET_NAME).file(project.truthFile).download({ destination: truthDest });
 
-    const pdfBuffers: Buffer[] = [];
+    const filesToDownload: typeof project.pdfFiles = [];
     let totalSizeMB = 0;
     for (const fileInfo of project.pdfFiles) {
       const sizeMB = fileInfo.sizeBytes / 1024 / 1024;
@@ -200,12 +200,17 @@ async function processProjectCloud(project: ProjectInfo): Promise<CompareResult 
         continue;
       }
       
-      const pdfDest = path.join(tmpDir, fileInfo.basename);
-      await storage.bucket(BUCKET_NAME).file(fileInfo.name).download({ destination: pdfDest });
-      const buf = fs.readFileSync(pdfDest);
-      totalSizeMB += buf.length / 1024 / 1024;
-      pdfBuffers.push(buf);
+      totalSizeMB += sizeMB;
+      filesToDownload.push(fileInfo);
     }
+
+    const pdfBuffers = await Promise.all(
+      filesToDownload.map(async (fileInfo) => {
+        const pdfDest = path.join(tmpDir, fileInfo.basename);
+        await storage.bucket(BUCKET_NAME).file(fileInfo.name).download({ destination: pdfDest });
+        return fs.readFileSync(pdfDest);
+      })
+    );
 
     console.log(`   Total PDF size merged: ${totalSizeMB.toFixed(1)} MB (${pdfBuffers.length} files)`);
     if (pdfBuffers.length === 0) {

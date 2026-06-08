@@ -708,115 +708,117 @@ export async function extractFromPDF(
     // Helper to add a delay before starting an agent (stagger to avoid simultaneous rate limit hits)
     const stagger = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+    // --- PARALLEL AGENT EXECUTION WITH STAGGER ---
+    const agentTasks: Promise<void>[] = [];
+
     let manholesData: any = { manholes: [], catchbasins: { groups: [], laborRates: {} } };
+    let sewersData: any = { sewers: [] };
+    let watermainData: any = { watermain: [], watermainSpecials: [], watermainValves: [] };
+
     if (shouldRunManholes) {
-      console.log(`      [extraction.ts] Stage 2: Slicing and Extracting Manholes & Catchbasins...`);
-      const targetPages = locatorIndex?.manholePages || [];
-      
-      const CHUNK_SIZE = 5;
-      const chunks: number[][] = [];
-      for (let i = 0; i < targetPages.length; i += CHUNK_SIZE) {
-        chunks.push(targetPages.slice(i, i + CHUNK_SIZE));
-      }
-      if (chunks.length === 0) {
-        chunks.push([]);
-      }
-
-      console.log(`      [extraction.ts] Extracting manholes in ${chunks.length} parallel chunk(s)...`);
-      const chunkPromises = chunks.map(async (chunk, chunkIdx) => {
-        const slicedBuffer = await extractPagesFromPDF(pdfBuffer, chunk);
-        const isSliced = slicedBuffer !== pdfBuffer;
-        const subPdfPart = await preparePdfPart(slicedBuffer);
-
-        const response = await callWithRetry(async () => {
-          const fewShots = buildFewShotPromptSection(
-            projectName,
-            { name: projectName, hasWatermain: shouldRunWatermain, hasSanitary: shouldRunSewers },
-            'manholes'
-          );
-          const prompt = getManholeAgentPrompt(projectName, getDynamicPromptAdditions('manholes')) + '\n' + fewShots + getPageInstructions(chunk, 'manholes or catchbasins schedules/plans', isSliced);
-          return await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: [
-              {
-                role: 'user',
-                parts: [
-                  { text: prompt },
-                  subPdfPart
-                ]
-              }
-            ],
-            config: {
-              temperature: 0,
-              responseMimeType: 'application/json'
-            }
-          });
-        });
+      agentTasks.push((async () => {
+        console.log(`      [extraction.ts] Stage 2: Slicing and Extracting Manholes & Catchbasins...`);
+        const targetPages = locatorIndex?.manholePages || [];
         
-        try {
-          const text = response.text || '{}';
-          const parsed = tryParseJSONWithRepair(text);
-          return parsed;
-        } catch (e: any) {
-          console.error(`      [extraction.ts] Failed to parse manholes response for chunk ${chunkIdx + 1}: ${e.message}`);
-          if (response.candidates?.[0]) {
-            console.error(`      [extraction.ts] FinishReason: ${response.candidates[0].finishReason} | Text length: ${response.text?.length || 0}`);
-            console.error(`      [extraction.ts] Snippet: ${response.text?.slice(0, 200)} ... ${response.text?.slice(-200)}`);
+        const CHUNK_SIZE = 5;
+        const chunks: number[][] = [];
+        for (let i = 0; i < targetPages.length; i += CHUNK_SIZE) {
+          chunks.push(targetPages.slice(i, i + CHUNK_SIZE));
+        }
+        if (chunks.length === 0) {
+          chunks.push([]);
+        }
+
+        console.log(`      [extraction.ts] Extracting manholes in ${chunks.length} parallel chunk(s)...`);
+        const chunkPromises = chunks.map(async (chunk, chunkIdx) => {
+          const slicedBuffer = await extractPagesFromPDF(pdfBuffer, chunk);
+          const isSliced = slicedBuffer !== pdfBuffer;
+          const subPdfPart = await preparePdfPart(slicedBuffer);
+
+          const response = await callWithRetry(async () => {
+            const fewShots = buildFewShotPromptSection(
+              projectName,
+              { name: projectName, hasWatermain: shouldRunWatermain, hasSanitary: shouldRunSewers },
+              'manholes'
+            );
+            const prompt = getManholeAgentPrompt(projectName, getDynamicPromptAdditions('manholes')) + '\n' + fewShots + getPageInstructions(chunk, 'manholes or catchbasins schedules/plans', isSliced);
+            return await ai.models.generateContent({
+              model: 'gemini-2.5-flash',
+              contents: [
+                {
+                  role: 'user',
+                  parts: [
+                    { text: prompt },
+                    subPdfPart
+                  ]
+                }
+              ],
+              config: {
+                temperature: 0,
+                responseMimeType: 'application/json'
+              }
+            });
+          });
+          
+          try {
+            const text = response.text || '{}';
+            const parsed = tryParseJSONWithRepair(text);
+            return parsed;
+          } catch (e: any) {
+            console.error(`      [extraction.ts] Failed to parse manholes response for chunk ${chunkIdx + 1}: ${e.message}`);
+            if (response.candidates?.[0]) {
+              console.error(`      [extraction.ts] FinishReason: ${response.candidates[0].finishReason} | Text length: ${response.text?.length || 0}`);
+              console.error(`      [extraction.ts] Snippet: ${response.text?.slice(0, 200)} ... ${response.text?.slice(-200)}`);
+            }
+            return {};
           }
-          return {};
-        }
-      });
+        });
 
-      const chunkResults = await Promise.all(chunkPromises);
-      const rawManholes: any[] = [];
-      const cbGroupsMap = new Map<string, any>();
-      let scbLabor = 200, dcbLabor = 250, dicbFC = 465, ddicbFC = 715;
+        const chunkResults = await Promise.all(chunkPromises);
+        const rawManholes: any[] = [];
+        const cbGroupsMap = new Map<string, any>();
+        let scbLabor = 200, dcbLabor = 250, dicbFC = 465, ddicbFC = 715;
 
-      for (const res of chunkResults) {
-        if (Array.isArray(res.manholes)) {
-          rawManholes.push(...res.manholes);
-        }
-        if (res.catchbasins?.groups) {
-          for (const g of res.catchbasins.groups) {
-            const type = g.type || 'SINGLE_CB';
-            const existing = cbGroupsMap.get(type);
-            if (!existing) {
-              cbGroupsMap.set(type, { ...g });
-            } else {
-              existing.quantity = (existing.quantity || 0) + (g.quantity || 0);
+        for (const res of chunkResults) {
+          if (Array.isArray(res.manholes)) {
+            rawManholes.push(...res.manholes);
+          }
+          if (res.catchbasins?.groups) {
+            for (const g of res.catchbasins.groups) {
+              const type = g.type || 'SINGLE_CB';
+              const existing = cbGroupsMap.get(type);
+              if (!existing) {
+                cbGroupsMap.set(type, { ...g });
+              } else {
+                existing.quantity = (existing.quantity || 0) + (g.quantity || 0);
+              }
             }
           }
+          if (res.catchbasins?.laborRates) {
+            const lr = res.catchbasins.laborRates;
+            if (lr.scbLabor) scbLabor = lr.scbLabor;
+            if (lr.dcbLabor) dcbLabor = lr.dcbLabor;
+            if (lr.dicbFC) dicbFC = lr.dicbFC;
+            if (lr.ddicbFC) ddicbFC = lr.ddicbFC;
+          }
         }
-        if (res.catchbasins?.laborRates) {
-          const lr = res.catchbasins.laborRates;
-          if (lr.scbLabor) scbLabor = lr.scbLabor;
-          if (lr.dcbLabor) dcbLabor = lr.dcbLabor;
-          if (lr.dicbFC) dicbFC = lr.dicbFC;
-          if (lr.ddicbFC) ddicbFC = lr.ddicbFC;
-        }
-      }
 
-      manholesData = {
-        manholes: deduplicateManholes(rawManholes),
-        catchbasins: {
-          groups: Array.from(cbGroupsMap.values()),
-          laborRates: { scbLabor, dcbLabor, dicbFC, ddicbFC }
-        }
-      };
-      console.log(`      [extraction.ts] Combined manholes extraction: ${manholesData.manholes.length} manholes, ${manholesData.catchbasins.groups.length} catchbasin groups.`);
+        manholesData = {
+          manholes: deduplicateManholes(rawManholes),
+          catchbasins: {
+            groups: Array.from(cbGroupsMap.values()),
+            laborRates: { scbLabor, dcbLabor, dicbFC, ddicbFC }
+          }
+        };
+        console.log(`      [extraction.ts] Combined manholes extraction: ${manholesData.manholes.length} manholes, ${manholesData.catchbasins.groups.length} catchbasin groups.`);
+      })());
     } else {
       console.log(`      [extraction.ts] Stage 2: Skipping Manholes & Catchbasins (no pages located).`);
     }
 
-    // --- PARALLEL AGENT EXECUTION WITH STAGGER ---
-    const agentTasks: Promise<void>[] = [];
-
-    let sewersData: any = { sewers: [] };
-    let watermainData: any = { watermain: [], watermainSpecials: [], watermainValves: [] };
-
     if (shouldRunSewers) {
       agentTasks.push((async () => {
-        await stagger(5000); // 5s after manholes starts
+        await stagger(2000); // 2s after manholes starts
         console.log(`      [extraction.ts] Stage 3: Slicing and Extracting Sewer Pipe Runs & Line Items...`);
         const targetPages = locatorIndex?.sewerPages || [];
         
@@ -887,7 +889,7 @@ export async function extractFromPDF(
 
     if (shouldRunWatermain) {
       agentTasks.push((async () => {
-        await stagger(10000); // 10s after manholes starts
+        await stagger(4000); // 4s after manholes starts
         console.log(`      [extraction.ts] Stage 4: Slicing and Extracting Watermain Infrastructure...`);
         const targetPages = locatorIndex?.watermainPages || [];
         

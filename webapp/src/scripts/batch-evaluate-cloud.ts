@@ -185,11 +185,15 @@ export async function processProjectCloud(project: ProjectInfo): Promise<Compare
     project.pdfFiles.forEach((f, i) => console.log(`     ${i + 1}. ${f.basename} (${(f.sizeBytes / 1024 / 1024).toFixed(1)} MB)`));
     console.log(`   Truth: ${project.truthFile ? path.basename(project.truthFile) : 'None (Unsupervised Run)'}`);
 
+    const downloadPromises: Promise<any>[] = [];
+
     // Download Truth if exists
     let truthDest: string | null = null;
     if (project.truthFile) {
       truthDest = path.join(tmpDir, path.basename(project.truthFile));
-      await storage.bucket(BUCKET_NAME).file(project.truthFile).download({ destination: truthDest });
+      downloadPromises.push(
+        storage.bucket(BUCKET_NAME).file(project.truthFile).download({ destination: truthDest })
+      );
     }
 
     const filesToDownload: typeof project.pdfFiles = [];
@@ -207,13 +211,17 @@ export async function processProjectCloud(project: ProjectInfo): Promise<Compare
       filesToDownload.push(fileInfo);
     }
 
-    const pdfBuffers = await Promise.all(
-      filesToDownload.map(async (fileInfo) => {
-        const pdfDest = path.join(tmpDir, fileInfo.basename);
-        await storage.bucket(BUCKET_NAME).file(fileInfo.name).download({ destination: pdfDest });
-        return fs.readFileSync(pdfDest);
-      })
-    );
+    const pdfBuffers: Buffer[] = new Array(filesToDownload.length);
+    filesToDownload.forEach((fileInfo, index) => {
+      const pdfDest = path.join(tmpDir, fileInfo.basename);
+      downloadPromises.push(
+        storage.bucket(BUCKET_NAME).file(fileInfo.name).download({ destination: pdfDest }).then(() => {
+          pdfBuffers[index] = fs.readFileSync(pdfDest);
+        })
+      );
+    });
+
+    await Promise.all(downloadPromises);
 
     console.log(`   Total PDF size merged: ${totalSizeMB.toFixed(1)} MB (${pdfBuffers.length} files)`);
     if (pdfBuffers.length === 0) {

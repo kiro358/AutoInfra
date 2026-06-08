@@ -729,7 +729,12 @@ export async function extractFromPDF(
         const subPdfPart = await preparePdfPart(slicedBuffer);
 
         const response = await callWithRetry(async () => {
-          const prompt = getManholeAgentPrompt(projectName, getDynamicPromptAdditions('manholes')) + getPageInstructions(chunk, 'manholes or catchbasins schedules/plans', isSliced);
+          const fewShots = buildFewShotPromptSection(
+            projectName,
+            { name: projectName, hasWatermain: shouldRunWatermain, hasSanitary: shouldRunSewers },
+            'manholes'
+          );
+          const prompt = getManholeAgentPrompt(projectName, getDynamicPromptAdditions('manholes')) + '\n' + fewShots + getPageInstructions(chunk, 'manholes or catchbasins schedules/plans', isSliced);
           return await ai.models.generateContent({
             model: 'gemini-2.5-flash',
             contents: [
@@ -831,7 +836,12 @@ export async function extractFromPDF(
           const subPdfPart = await preparePdfPart(slicedBuffer);
 
           const response = await callWithRetry(async () => {
-            const prompt = getSewerAgentPrompt(projectName, getDynamicPromptAdditions('sewers')) + getPageInstructions(chunk, 'sewer profile views or plan tables', isSliced);
+            const fewShots = buildFewShotPromptSection(
+              projectName,
+              { name: projectName, hasWatermain: shouldRunWatermain, hasSanitary: shouldRunSewers },
+              'sewers'
+            );
+            const prompt = getSewerAgentPrompt(projectName, getDynamicPromptAdditions('sewers')) + '\n' + fewShots + getPageInstructions(chunk, 'sewer profile views or plan tables', isSliced);
             return await ai.models.generateContent({
               model: 'gemini-2.5-flash',
               contents: [
@@ -897,7 +907,12 @@ export async function extractFromPDF(
           const subPdfPart = await preparePdfPart(slicedBuffer);
 
           const response = await callWithRetry(async () => {
-            const prompt = getWatermainAgentPrompt(projectName, getDynamicPromptAdditions('watermain')) + getPageInstructions(chunk, 'watermain tables/schedules', isSliced);
+            const fewShots = buildFewShotPromptSection(
+              projectName,
+              { name: projectName, hasWatermain: shouldRunWatermain, hasSanitary: shouldRunSewers },
+              'watermain'
+            );
+            const prompt = getWatermainAgentPrompt(projectName, getDynamicPromptAdditions('watermain')) + '\n' + fewShots + getPageInstructions(chunk, 'watermain tables/schedules', isSliced);
             return await ai.models.generateContent({
               model: 'gemini-2.5-flash',
               contents: [
@@ -1033,6 +1048,11 @@ function normalizeSlope(slope: number): number {
 function validateExtraction(data: ExtractionResult): string[] {
   const warnings: string[] = [];
 
+  // Filter out catchbasin groups with zero quantity to prevent false warnings
+  if (data.catchbasins?.groups) {
+    data.catchbasins.groups = data.catchbasins.groups.filter(g => g.quantity > 0);
+  }
+
   // Validate sewers
   for (const sw of data.sewers) {
     if (sw.isLineItem) continue;
@@ -1162,12 +1182,24 @@ export function deduplicateManholes(manholes: any[]): any[] {
     if (!key) continue;
     const existing = seen.get(key);
     if (!existing) {
-      seen.set(key, mh);
+      seen.set(key, { ...mh });
     } else {
+      // Merge complementary properties
+      for (const k of Object.keys(mh)) {
+        if (existing[k] == null && mh[k] != null) {
+          existing[k] = mh[k];
+        }
+      }
       const existingScore = (existing.depth != null ? 1 : 0) + (existing.topElevation != null ? 1 : 0);
       const currentScore = (mh.depth != null ? 1 : 0) + (mh.topElevation != null ? 1 : 0);
       if (currentScore > existingScore) {
-        seen.set(key, mh);
+        const merged = { ...existing, ...mh };
+        for (const k of Object.keys(merged)) {
+          if (merged[k] == null && existing[k] != null) {
+            merged[k] = existing[k];
+          }
+        }
+        seen.set(key, merged);
       }
     }
   }
@@ -1181,12 +1213,24 @@ export function deduplicateSewers(sewers: any[]): any[] {
     if (!key) continue;
     const existing = seen.get(key);
     if (!existing) {
-      seen.set(key, sw);
+      seen.set(key, { ...sw });
     } else {
+      // Merge complementary properties
+      for (const k of Object.keys(sw)) {
+        if (existing[k] == null && sw[k] != null) {
+          existing[k] = sw[k];
+        }
+      }
       const existingScore = (existing.length != null ? 1 : 0) + (existing.pipeDiameter != null ? 1 : 0);
       const currentScore = (sw.length != null ? 1 : 0) + (sw.pipeDiameter != null ? 1 : 0);
       if (currentScore > existingScore) {
-        seen.set(key, sw);
+        const merged = { ...existing, ...sw };
+        for (const k of Object.keys(merged)) {
+          if (merged[k] == null && existing[k] != null) {
+            merged[k] = existing[k];
+          }
+        }
+        seen.set(key, merged);
       }
     }
   }

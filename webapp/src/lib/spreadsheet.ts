@@ -153,9 +153,10 @@ function fillSewers(
 
   // Fill data rows (starting at row 14)
   const startRow = 14;
+  const limitRow = extraction.templateType === 'LONG' ? 300 : 55;
   extraction.sewers.forEach((sw, idx) => {
     const row = startRow + idx;
-    if (row > 55) return;
+    if (row > limitRow) return;
 
     setCellValue(sheet, `B${row}`, sw.runLabel);
     setCellValue(sheet, `C${row}`, sw.length || undefined);

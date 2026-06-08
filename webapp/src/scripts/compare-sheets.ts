@@ -32,8 +32,8 @@ const SHEET_CONFIGS: SheetConfig[] = [
     headerRow: 10,
     dataStartRow: 11,
     dataEndRow: 50,
-    columns: ['B', 'H', 'I'],
-    columnNames: ['Description', 'Add Mtrls', 'Add L&E'],
+    columns: ['B', 'H', 'I', 'J', 'K', 'L'],
+    columnNames: ['Description', 'Add Mtrls', 'Add L&E', 'Depth', 'Drop', 'Diameter'],
     keyColumn: 'B',
   },
   {
@@ -42,8 +42,8 @@ const SHEET_CONFIGS: SheetConfig[] = [
     headerRow: 52,
     dataStartRow: 53,
     dataEndRow: 56,
-    columns: ['B', 'C', 'E', 'F', 'G'],
-    columnNames: ['CB Type', 'QNTY', 'DPTHm', '$GT ea', '$/ADDMAT'],
+    columns: ['B', 'C', 'D', 'E', 'F', 'G'],
+    columnNames: ['CB Type', 'QNTY', 'Wall Thickness', 'DPTHm', '$GT ea', '$/ADDMAT'],
     keyColumn: 'B',
   },
   {
@@ -51,7 +51,7 @@ const SHEET_CONFIGS: SheetConfig[] = [
     sectionLabel: 'SEWERS',
     headerRow: 13,
     dataStartRow: 14,
-    dataEndRow: 55,
+    dataEndRow: 300,
     columns: ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'],
     columnNames: ['Run Label', 'Length', 'Pipe Dia', 'Type/Class', 'Slope', 'Depth', 'Add Mtrls', 'Add L&E'],
     keyColumn: 'B',
@@ -156,6 +156,7 @@ function readDataRows(
   for (let r = config.dataStartRow; r <= config.dataEndRow; r++) {
     const keyVal = getCellValue(sheet, `${config.keyColumn}${r}`);
     if (keyVal === null || keyVal === '' || keyVal === 0) continue;
+    if (typeof keyVal === 'string' && keyVal.toUpperCase().includes('TOTAL')) continue;
 
     const row: (string | number | null)[] = [];
     for (const col of config.columns) {

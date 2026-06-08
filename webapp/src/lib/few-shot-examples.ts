@@ -23,8 +23,9 @@ export interface FewShotExample {
 import fs from 'fs';
 import path from 'path';
 
-const STANDARD_FEE_LABELS = ['VIDEO', 'LAYOUT', 'AS BUILT'];
-const MAX_DYNAMIC_FEW_SHOTS = 3;
+const STANDARD_FEE_LABELS = ['VIDEO', 'LAYOUT', 'AS BUILTconst STANDARD_FEE_LABELS = ['VIDEO', 'LAYOUT', 'AS BUILT'];
+const MAX_STORED_FEW_SHOTS = 15;
+const MAX_PROMPT_FEW_SHOTS = 3;
 
 function isStandardFeeLine(label: string): boolean {
   const upper = label.toUpperCase();
@@ -63,10 +64,10 @@ function loadDynamicFewShots(overridePath?: string): FewShotExample[] {
         });
       }
 
-      // Cap at MAX_DYNAMIC_FEW_SHOTS to prevent prompt bloat
-      if (examples.length > MAX_DYNAMIC_FEW_SHOTS) {
-        console.warn(`Dynamic few-shots capped: ${examples.length} → ${MAX_DYNAMIC_FEW_SHOTS}`);
-        return examples.slice(0, MAX_DYNAMIC_FEW_SHOTS);
+      // Cap at MAX_STORED_FEW_SHOTS to prevent prompt bloat in database
+      if (examples.length > MAX_STORED_FEW_SHOTS) {
+        console.warn(`Dynamic few-shots capped: ${examples.length} → ${MAX_STORED_FEW_SHOTS}`);
+        return examples.slice(0, MAX_STORED_FEW_SHOTS);
       }
       return examples;
     }
@@ -249,7 +250,7 @@ const EXAMPLE_3: FewShotExample = {
   },
 };
 
-export const FEW_SHOT_EXAMPLES: FewShotExample[] = [EXAMPLE_1, EXAMPLE_2, EXAMPLE_3];
+export const FE_SHOT_EXAMPLES: FewShotExample[] = [EXAMPLE_1, EXAMPLE_2, EXAMPLE_3];
 
 function calculateSimilarity(str1: string, str2: string): number {
   const words1 = new Set(str1.toLowerCase().split(/\W+/).filter(w => w.length > 2));
@@ -261,16 +262,53 @@ function calculateSimilarity(str1: string, str2: string): number {
   return intersection;
 }
 
+export function getFeatureSimilarity(
+  target: { name: string; hasWatermain: boolean; hasSanitary: boolean },
+  example: FewShotExample
+): number {
+  let score = 0;
+  const exOutput = example.expectedOutput as any;
+
+  // 1. Watermain Matching (Crucial to prevent hallucinations/misses)
+  const exHasWatermain = exOutput.watermain && exOutput.watermain.length > 0;
+  if (target.hasWatermain === exHasWatermain) {
+    score += 10; // High alignment boost
+  }
+
+  // 2. Sanitary Divider Matching
+  const exHasSanitary = exOutput.sewers && exOutput.sewers.some((s: any) => s.runLabel === 'SANITARY');
+  if (target.hasSanitary === exHasSanitary) {
+    score += 5;
+  }
+
+  // 3. Keyword Match (e.g. "tank", "chamber", "ogs", "rip", "pond", "school", "hangar", "subdivision")
+  const targetWords = new Set(target.name.toLowerCase().split(/\W+/));
+  const exWords = new Set(example.projectName.toLowerCase().concat(" ", example.description || "").split(/\W+/));
+  
+  for (const word of ['tank', 'chamber', 'ogs', 'rip', 'pond', 'school', 'hangar', 'subdivision']) {
+    if (targetWords.has(word) && exWords.has(word)) {
+      score += 8; // Heavy boost for structural keywords
+    }
+  }
+
+  // 4. Fallback on basic string similarity
+  score += calculateSimilarity(target.name, example.projectName) * 1.0;
+
+  return score;
+}
+
 /**
  * Builds the few-shot portion of the prompt as a string.
  * Each example includes the project context and the exact JSON output expected.
  */
-export function buildFewShotPromptSection(targetProjectName: string): string {
+export function buildFewShotPromptSection(
+  targetProjectName: string,
+  targetFeatures?: { name: string; hasWatermain: boolean; hasSanitary: boolean },
+  component?: 'manholes' | 'sewers' | 'watermain'
+): string {
   const dynamicFewShots = loadDynamicFewShots();
-  const examples = [...FEW_SHOT_EXAMPLES, ...dynamicFewShots];
+  const examples = [...FE_SHOT_EXAMPLES, ...dynamicFewShots];
 
-  // Filter out standard fees from the expected output so they don't contradict the prompt rules
-  // AND exclude the target project itself to prevent the model from cheating
   const validExamples: FewShotExample[] = [];
   examples.forEach(ex => {
     // If the project name is heavily similar to the target, it's the same project. Skip it.
@@ -278,34 +316,62 @@ export function buildFewShotPromptSection(targetProjectName: string): string {
       return;
     }
 
-    const out = ex.expectedOutput as any;
-    if (out && out.sewers && Array.isArray(out.sewers)) {
+    const out = JSON.parse(JSON.stringify(ex.expectedOutput));
+    
+    // Filter out standard fees from sewers
+    if (out.sewers && Array.isArray(out.sewers)) {
       out.sewers = out.sewers.filter((s: any) => {
         if (!s.runLabel) return true;
         const lbl = s.runLabel.toUpperCase();
         return !lbl.includes('VIDEO') && !lbl.includes('LAYOUT') && !lbl.includes('AS BUILT');
       });
     }
-    validExamples.push(ex);
+
+    // Filter properties based on component to avoid token waste
+    let filteredOutput: any = {
+      projectName: out.projectName,
+      jobNumber: out.jobNumber,
+      date: out.date,
+    };
+
+    if (component === 'manholes') {
+      filteredOutput.manholes = out.manholes || [];
+      filteredOutput.catchbasins = out.catchbasins || { groups: [], laborRates: {} };
+    } else if (component === 'sewers') {
+      filteredOutput.sewers = out.sewers || [];
+    } else if (component === 'watermain') {
+      filteredOutput.watermain = out.watermain || [];
+      filteredOutput.watermainSpecials = out.watermainSpecials || [];
+      filteredOutput.watermainValves = out.watermainValves || [];
+    } else {
+      filteredOutput = out;
+    }
+
+    validExamples.push({
+      projectName: ex.projectName,
+      description: ex.description,
+      expectedOutput: filteredOutput,
+    });
   });
 
   const scoredExamples = validExamples.map(ex => {
-    let score = calculateSimilarity(targetProjectName, ex.projectName);
-    score += calculateSimilarity(targetProjectName, ex.description) * 0.5;
+    const score = targetFeatures 
+      ? getFeatureSimilarity(targetFeatures, ex)
+      : (calculateSimilarity(targetProjectName, ex.projectName) + calculateSimilarity(targetProjectName, ex.description) * 0.5);
     return { example: ex, score };
   });
 
   scoredExamples.sort((a, b) => b.score - a.score);
-  const selectedExamples = scoredExamples.slice(0, 3).map(s => s.example);
+  const selectedExamples = scoredExamples.slice(0, MAX_PROMPT_FEW_SHOTS).map(s => s.example);
 
   const parts: string[] = [];
-  parts.push(`\\n## FEW-SHOT EXAMPLES\\nThe following are real projects with their CORRECT extraction outputs. Study these carefully — your output must match this format exactly.\\n`);
+  parts.push(`\n## FEW-SHOT EXAMPLES\nThe following are real projects with their CORRECT extraction outputs. Study these carefully — your output must match this format exactly.\n`);
 
   for (let i = 0; i < selectedExamples.length; i++) {
     const ex = selectedExamples[i];
     parts.push(`### EXAMPLE ${i + 1}: ${ex.projectName}`);
     parts.push(`Context: ${ex.description}`);
-    parts.push(`CORRECT OUTPUT:\\n\`\`\`json\\n${JSON.stringify(ex.expectedOutput, null, 2)}\\n\`\`\`\\n`);
+    parts.push(`CORRECT OUTPUT:\n\`\`\`json\n${JSON.stringify(ex.expectedOutput, null, 2)}\n\`\`\`\n`);
   }
 
   parts.push(`### KEY PATTERNS TO LEARN FROM THESE EXAMPLES:`);

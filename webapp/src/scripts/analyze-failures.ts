@@ -22,7 +22,7 @@ const PROJECT_ID = process.env.GCP_PROJECT_ID || '';
 const LOCATION = process.env.GCP_LOCATION || 'us-central1';
 
 const MAX_PROMPT_ADDITIONS = 5;
-const MAX_DYNAMIC_FEW_SHOTS = 3;
+const MAX_DYNAMIC_FEW_SHOTS = 15;
 
 function getGenAI() {
   return new GoogleGenAI({
@@ -183,6 +183,53 @@ async function extractGtForFewShot(projectName: string, truthPath: string) {
   result.watermain = [];
   result.watermainSpecials = [];
   result.watermainValves = [];
+
+  const wmSheet = wb.getWorksheet('WATERMAIN (1)');
+  if (wmSheet) {
+    // Read watermain runs (rows 13-19)
+    for (let r = 13; r <= 19; r++) {
+      const sizeAndType = getCellValue(wmSheet, `B${r}`);
+      if (!sizeAndType) continue;
+      result.watermain.push({
+        sizeAndType: String(sizeAndType),
+        length: getCellValue(wmSheet, `C${r}`) != null ? Number(getCellValue(wmSheet, `C${r}`)) : null,
+        pipeDiameter: getCellValue(wmSheet, `D${r}`) != null ? Number(getCellValue(wmSheet, `D${r}`)) : null,
+        ocSc: String(getCellValue(wmSheet, `F${r}`) || 'OC'),
+        addMaterials: Number(getCellValue(wmSheet, `G${r}`)) || 0,
+        addLE: Number(getCellValue(wmSheet, `H${r}`)) || 0,
+        avgCover: getCellValue(wmSheet, `J${r}`) != null ? Number(getCellValue(wmSheet, `J${r}`)) : null,
+      });
+    }
+
+    // Read watermain specials (rows 24-40)
+    for (let r = 24; r <= 40; r++) {
+      const specialName = getCellValue(wmSheet, `B${r}`);
+      if (!specialName) continue;
+      result.watermainSpecials.push({
+        specialName: String(specialName),
+        quantity: getCellValue(wmSheet, `C${r}`) != null ? Number(getCellValue(wmSheet, `C${r}`)) : null,
+        costEach: getCellValue(wmSheet, `D${r}`) != null ? Number(getCellValue(wmSheet, `D${r}`)) : null,
+        thrustBlock: getCellValue(wmSheet, `E${r}`) != null ? Number(getCellValue(wmSheet, `E${r}`)) : null,
+        anodeCost: getCellValue(wmSheet, `F${r}`) != null ? Number(getCellValue(wmSheet, `F${r}`)) : null,
+        laborEach: getCellValue(wmSheet, `G${r}`) != null ? Number(getCellValue(wmSheet, `G${r}`)) : null,
+      });
+    }
+
+    // Read watermain valves (rows 24-40)
+    for (let r = 24; r <= 40; r++) {
+      const valveSize = getCellValue(wmSheet, `O${r}`);
+      if (!valveSize) continue;
+      result.watermainValves.push({
+        valveSize: String(valveSize),
+        quantity: getCellValue(wmSheet, `P${r}`) != null ? Number(getCellValue(wmSheet, `P${r}`)) : null,
+        valveCost: getCellValue(wmSheet, `Q${r}`) != null ? Number(getCellValue(wmSheet, `Q${r}`)) : null,
+        boxCost: getCellValue(wmSheet, `R${r}`) != null ? Number(getCellValue(wmSheet, `R${r}`)) : null,
+        anodeCost: getCellValue(wmSheet, `S${r}`) != null ? Number(getCellValue(wmSheet, `S${r}`)) : null,
+        laborPerValve: getCellValue(wmSheet, `T${r}`) != null ? Number(getCellValue(wmSheet, `T${r}`)) : null,
+      });
+    }
+  }
+
   return result;
 }
 
@@ -301,9 +348,10 @@ function applyFewShot(fewShotsPath: string, gtData: any): { applied: boolean; re
     fewshots = JSON.parse(fs.readFileSync(fewShotsPath, 'utf8'));
   }
   
-  // Cap check
+  // Evict oldest (FIFO) if at cap
   if (fewshots.length >= MAX_DYNAMIC_FEW_SHOTS) {
-    return { applied: false, reason: `Dynamic few-shots at cap (${MAX_DYNAMIC_FEW_SHOTS}). Not adding more.` };
+    const evicted = fewshots.shift();
+    console.log(`[analyze-failures.ts] Cap reached (${MAX_DYNAMIC_FEW_SHOTS}). Evicted oldest few-shot: ${evicted?.projectName}`);
   }
   
   // Duplicate check by project name

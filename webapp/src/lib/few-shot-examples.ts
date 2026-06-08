@@ -23,7 +23,7 @@ export interface FewShotExample {
 import fs from 'fs';
 import path from 'path';
 
-const STANDARD_FEE_LABELS = ['VIDEO', 'LAYOUT', 'AS BUILTconst STANDARD_FEE_LABELS = ['VIDEO', 'LAYOUT', 'AS BUILT'];
+const STANDARD_FEE_LABELS = ['VIDEO', 'LAYOUT', 'AS BUILT'];
 const MAX_STORED_FEW_SHOTS = 15;
 const MAX_PROMPT_FEW_SHOTS = 3;
 

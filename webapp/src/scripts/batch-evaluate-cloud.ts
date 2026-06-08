@@ -303,8 +303,8 @@ async function main() {
   let processed = 0;
   let failed = 0;
 
-  // Optimised runtime: process 8 projects in parallel in the cloud using Gemini 2.5 Flash
-  const CONCURRENCY_LIMIT = 8;
+  // Optimised runtime: process 5 projects in parallel in the cloud using Gemini 2.5 Flash
+  const CONCURRENCY_LIMIT = 5;
   console.log(`🚀 Starting execution of ${projects.length} projects with concurrency = ${CONCURRENCY_LIMIT}...\n`);
 
   await runWithConcurrency(projects, CONCURRENCY_LIMIT, async (project) => {

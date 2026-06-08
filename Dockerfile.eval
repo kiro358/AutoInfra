@@ -36,4 +36,4 @@ COPY --from=builder --chown=evaluser:nodejs /app/webapp ./
 
 USER evaluser
 
-CMD ["npx", "tsx", "src/scripts/batch-evaluate-cloud.ts"]
+CMD ["npx", "--no-install", "tsx", "src/scripts/batch-evaluate-cloud.ts"]

@@ -20,4 +20,4 @@ COPY src ./src
 COPY .env* ./
 
 # Command to run the batch evaluation and analysis loop
-CMD ["npx", "tsx", "src/scripts/flywheel.ts"]
+CMD ["npx", "--no-install", "tsx", "src/scripts/flywheel.ts"]

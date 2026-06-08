@@ -108,6 +108,7 @@ export interface CompareResult {
   overallAccuracy: number;
   totalCells: number;
   totalMatching: number;
+  warnings?: string[];
 }
 
 // ======================== CORE FUNCTIONS ========================
@@ -213,13 +214,31 @@ function keysMatch(keyA: string | number | null, keyB: string | number | null): 
   return false;
 }
 
+function getWorksheetFlex(wb: ExcelJS.Workbook, name: string): ExcelJS.Worksheet | undefined {
+  let ws = wb.getWorksheet(name);
+  if (ws) return ws;
+
+  const cleanName = name.replace(/\s*\(1\)$/, '');
+  ws = wb.getWorksheet(cleanName);
+  if (ws) return ws;
+
+  ws = wb.worksheets.find(s => s.name.toUpperCase() === name.toUpperCase()) ||
+       wb.worksheets.find(s => s.name.toUpperCase() === cleanName.toUpperCase());
+       
+  if (!ws) {
+    console.warn(`      ⚠️ getWorksheetFlex: Could not find sheet "${name}" or "${cleanName}" (case-insensitive) in workbook. Available sheets: [${wb.worksheets.map(w => w.name).join(', ')}]`);
+  }
+  return ws;
+}
+
 function compareSheet(
   truthWb: ExcelJS.Workbook,
   genWb: ExcelJS.Workbook,
-  config: SheetConfig
+  config: SheetConfig,
+  warningsList: string[]
 ): SheetReport {
-  const truthSheet = truthWb.getWorksheet(config.sheetName);
-  const genSheet = genWb.getWorksheet(config.sheetName);
+  const truthSheet = getWorksheetFlex(truthWb, config.sheetName);
+  const genSheet = getWorksheetFlex(genWb, config.sheetName);
 
   const report: SheetReport = {
     sheetName: config.sheetName,
@@ -231,6 +250,17 @@ function compareSheet(
     diffs: [],
     avgPctError: 0,
   };
+
+  if (!truthSheet) {
+    const msg = `Sheet "${config.sheetName}" not found in Ground Truth workbook.`;
+    console.warn(`      ⚠️ ${msg}`);
+    warningsList.push(msg);
+  }
+  if (!genSheet) {
+    const msg = `Sheet "${config.sheetName}" not found in Generated workbook.`;
+    console.warn(`      ⚠️ ${msg}`);
+    warningsList.push(msg);
+  }
 
   if (!truthSheet || !genSheet) {
     return report;
@@ -351,9 +381,10 @@ export async function compareSpreadsheets(
   const genWb = new ExcelJS.Workbook();
   await genWb.xlsx.readFile(genPath);
 
+  const warnings: string[] = [];
   const reports: SheetReport[] = [];
   for (const config of SHEET_CONFIGS) {
-    reports.push(compareSheet(truthWb, genWb, config));
+    reports.push(compareSheet(truthWb, genWb, config, warnings));
   }
 
   const totalCells = reports.reduce((s, r) => s + r.totalCells, 0);
@@ -368,6 +399,7 @@ export async function compareSpreadsheets(
     overallAccuracy,
     totalCells,
     totalMatching,
+    warnings,
   };
 }
 

@@ -21,8 +21,6 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env.local') });
 import fs from 'fs';
 import os from 'os';
 import { Storage } from '@google-cloud/storage';
-import { GoogleGenAI } from '@google/genai';
-import { compareSpreadsheets } from './compare-sheets';
 import ExcelJS from 'exceljs';
 
 const storage = new Storage();
@@ -33,70 +31,31 @@ const LOCATION = process.env.GCP_LOCATION || 'us-central1';
 const MAX_PROMPT_ADDITIONS = 5;
 const MAX_DYNAMIC_FEW_SHOTS = 15;
 
-function getGenAI() {
-  return new GoogleGenAI({
-    vertexai: true,
-    project: PROJECT_ID,
-    location: LOCATION
-  });
-}
+
 
 function parseScoreboard(csvPath: string) {
   const content = fs.readFileSync(csvPath, 'utf8');
   const lines = content.split('\n').filter(l => l.trim().length > 0);
   const dataLines = lines.slice(1);
   
-  const results = dataLines.map(line => {
+  const seen = new Map<string, { projectName: string; overall: number; totalCells: number }>();
+  for (const line of dataLines) {
     const parts = line.split(',');
-    const projectName = parts[0].replace(/"/g, '');
+    if (parts.length < 6) continue;
+    const projectName = parts[0].replace(/"/g, '').trim();
     const overall = parseFloat(parts[5]);
     const totalCells = parts[6] ? parseInt(parts[6], 10) : 0;
-    return { projectName, overall, totalCells };
-  });
+    if (!projectName || isNaN(overall)) continue;
+    
+    // Always overwrite with the last seen entry (latest date)
+    seen.set(projectName.toLowerCase(), { projectName, overall, totalCells });
+  }
 
+  const results = Array.from(seen.values());
   return results.filter(r => r.overall < 95 && !isNaN(r.totalCells) && r.totalCells > 0);
 }
 
-async function suggestImprovements(diffsSummary: string, projectName: string) {
-  const ai = getGenAI();
-  
-  const systemPrompt = `You are an expert AI optimization engineer. We have a data extraction pipeline that pulls civil engineering infrastructure data from PDF drawings and populates an Excel spreadsheet.
-  
-We just ran an evaluation pass and found mismatches between what our pipeline generated and what human estimators manually entered (Ground Truth).
 
-Your task is to analyze the following mismatches for a single project and suggest exactly ONE of the following fixes:
-1. "PROMPT_TUNING": If the pipeline misunderstood the schema or format, suggest what sentence to add to the SYSTEM_PROMPT.
-2. "ADD_HEURISTIC": If it's a domain-specific default that isn't on the drawings, suggest a new post-processing heuristic rule.
-3. "ADD_FEW_SHOT": If the drawing is just too complex, recommend adding this project to the few-shot examples.
-
-Explain your reasoning clearly.
-Return ONLY a JSON object matching this schema:
-{
-  "action": "PROMPT_TUNING" | "ADD_HEURISTIC" | "ADD_FEW_SHOT",
-  "reasoning": "Explanation here",
-  "promptAddition": "Sentence to add to prompt (if PROMPT_TUNING)",
-  "heuristicRule": "Description of rule (if ADD_HEURISTIC)"
-}`;
-
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.5-pro',
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          { text: systemPrompt },
-          { text: `\n\nProject: ${projectName}\n\nHere are the mismatches:\n${diffsSummary}` }
-        ]
-      }
-    ],
-    config: {
-      temperature: 0.2,
-      responseMimeType: 'application/json'
-    }
-  });
-
-  return JSON.parse(response.text || '{}');
-}
 
 function getCellValue(sheet: any, ref: string) {
   const cell = sheet.getCell(ref);
@@ -109,12 +68,25 @@ function getCellValue(sheet: any, ref: string) {
   return cell.value;
 }
 
+function getWorksheetFlex(wb: ExcelJS.Workbook, name: string): ExcelJS.Worksheet | undefined {
+  let ws = wb.getWorksheet(name);
+  if (ws) return ws;
+
+  const cleanName = name.replace(/\s*\(1\)$/, '');
+  ws = wb.getWorksheet(cleanName);
+  if (ws) return ws;
+
+  ws = wb.worksheets.find(s => s.name.toUpperCase() === name.toUpperCase()) ||
+       wb.worksheets.find(s => s.name.toUpperCase() === cleanName.toUpperCase());
+  return ws;
+}
+
 async function extractGtForFewShot(projectName: string, truthPath: string) {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(truthPath);
 
-  const mhSheet = wb.getWorksheet('MANHOLES (1)');
-  const swSheet = wb.getWorksheet('SEWERS (1)');
+  const mhSheet = getWorksheetFlex(wb, 'MANHOLES (1)');
+  const swSheet = getWorksheetFlex(wb, 'SEWERS (1)');
   if (!mhSheet || !swSheet) throw new Error('Missing tabs');
 
   const result: any = { 
@@ -189,7 +161,7 @@ async function extractGtForFewShot(projectName: string, truthPath: string) {
   result.watermainSpecials = [];
   result.watermainValves = [];
 
-  const wmSheet = wb.getWorksheet('WATERMAIN (1)');
+  const wmSheet = getWorksheetFlex(wb, 'WATERMAIN (1)');
   if (wmSheet) {
     // Read watermain runs (rows 13-19)
     for (let r = 13; r <= 19; r++) {
@@ -456,84 +428,44 @@ export async function analyzeFailuresCloud(
     const fileNames = files.map(f => f.name);
     
     const truthFile = fileNames.find(f => f.endsWith('.xlsx') && !f.includes('eval_') && !f.includes('generated_spreadsheets'));
-    const genFiles = fileNames.filter(f => f.endsWith('.xlsx') && f.includes('generated_spreadsheets/eval_')).sort();
     
-    if (!truthFile || genFiles.length === 0) {
-      console.log(`Missing truth file or generated file in GCS. Skipping.`);
+    if (!truthFile) {
+      console.log(`Missing truth file in GCS. Skipping.`);
       continue;
     }
     
-    const genFile = genFiles[genFiles.length - 1]; // latest
-    
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'analyzer-'));
     const truthPath = path.join(tmpDir, 'truth.xlsx');
-    const genPath = path.join(tmpDir, 'gen.xlsx');
     
-    await Promise.all([
-      storage.bucket(BUCKET_NAME).file(truthFile).download({ destination: truthPath }),
-      storage.bucket(BUCKET_NAME).file(genFile).download({ destination: genPath })
-    ]);
+    await storage.bucket(BUCKET_NAME).file(truthFile).download({ destination: truthPath });
 
-    const result = await compareSpreadsheets(truthPath, genPath, projectName);
-    
-    let diffsSummary = '';
-    for (const rep of result.reports) {
-      if (rep.diffs.length > 0) {
-        diffsSummary += `\nSection: ${rep.sectionLabel}\n`;
-        for (const diff of rep.diffs.slice(0, 10)) {
-          diffsSummary += `- Row ${diff.row} [${diff.colName}]: Ground Truth="${diff.truthValue}" vs Generated="${diff.genValue}"\n`;
-        }
-        if (rep.diffs.length > 10) {
-          diffsSummary += `  ...and ${rep.diffs.length - 10} more similar mismatches.\n`;
-        }
+    console.log(`🤖 Automatically extracting Ground Truth as a few-shot candidate...`);
+    try {
+      const gt = await extractGtForFewShot(projectName, truthPath);
+      const applyResult = applyFewShot(fewShotsPath, gt);
+
+      if (applyResult.applied) {
+        report.changesApplied++;
+        console.log(`✅ ${applyResult.reason}`);
+      } else {
+        report.changesRejected++;
+        console.log(`⏭️ Skipped: ${applyResult.reason}`);
       }
-    }
 
-    if (!diffsSummary) {
-      console.log(`No diffs summary available.`);
-    } else {
-      console.log(`🤖 Asking AI for recommendations...`);
-      try {
-        const suggestion = await suggestImprovements(diffsSummary, projectName);
-        console.log(`\n💡 AI Recommendation: [${suggestion.action}]`);
-        console.log(`   Reasoning: ${suggestion.reasoning}`);
-        
-        let applyResult: { applied: boolean; reason: string };
-        
-        if (suggestion.action === 'ADD_FEW_SHOT') {
-          const gt = await extractGtForFewShot(projectName, truthPath);
-          applyResult = applyFewShot(fewShotsPath, gt);
-        } else if (suggestion.action === 'PROMPT_TUNING' && suggestion.promptAddition) {
-          applyResult = applyDynamicRule(rules, 'PROMPT_TUNING', suggestion.promptAddition);
-        } else if (suggestion.action === 'ADD_HEURISTIC' && suggestion.heuristicRule) {
-          applyResult = applyDynamicRule(rules, 'ADD_HEURISTIC', suggestion.heuristicRule);
-        } else {
-          applyResult = { applied: false, reason: 'No actionable suggestion from AI' };
-        }
-
-        if (applyResult.applied) {
-          report.changesApplied++;
-          console.log(`✅ ${applyResult.reason}`);
-        } else {
-          report.changesRejected++;
-          console.log(`⏭️ Skipped: ${applyResult.reason}`);
-        }
-
-        report.details.push({
-          project: projectName,
-          action: suggestion.action,
-          applied: applyResult.applied,
-          reason: applyResult.reason,
-        });
-      } catch (e: any) {
-        console.error(`Failed to get/apply suggestion: ${e.message}`);
-        report.details.push({
-          project: projectName,
-          action: 'ERROR',
-          applied: false,
-          reason: e.message,
-        });
-      }
+      report.details.push({
+        project: projectName,
+        action: 'ADD_FEW_SHOT',
+        applied: applyResult.applied,
+        reason: applyResult.reason,
+      });
+    } catch (e: any) {
+      console.error(`Failed to extract/apply few-shot: ${e.message}`);
+      report.details.push({
+        project: projectName,
+        action: 'ERROR',
+        applied: false,
+        reason: e.message,
+      });
     }
     
     fs.rmSync(tmpDir, { recursive: true, force: true });

@@ -48,13 +48,35 @@ function parseScoreboard(csvPath: string): ScoreboardEntry[] {
   const lines = content.split('\n').filter(l => l.trim().length > 0);
   const dataLines = lines.slice(1);
   
-  return dataLines.map(line => {
+  const seen = new Map<string, ScoreboardEntry>();
+  for (const line of dataLines) {
     const parts = line.split(',');
-    const projectName = parts[0].replace(/"/g, '');
+    if (parts.length < 6) continue;
+    const projectName = parts[0].replace(/"/g, '').trim();
     const overall = parseFloat(parts[5]);
     const totalCells = parts[6] ? parseInt(parts[6], 10) : 0;
-    return { projectName, overall, totalCells };
-  }).filter(r => !isNaN(r.overall) && !isNaN(r.totalCells) && r.totalCells > 0);
+    if (!projectName || isNaN(overall)) continue;
+    
+    seen.set(projectName.toLowerCase(), { projectName, overall, totalCells });
+  }
+
+  return Array.from(seen.values()).filter(r => !isNaN(r.overall) && !isNaN(r.totalCells) && r.totalCells > 0);
+}
+
+function restoreBackups(backupRules: Buffer | null, backupFewShots: Buffer | null) {
+  if (backupRules) {
+    fs.writeFileSync(PRODUCTION_RULES_PATH, backupRules);
+    console.log(`   📄 Restored: dynamic-rules.json backup`);
+  } else if (fs.existsSync(PRODUCTION_RULES_PATH)) {
+    fs.unlinkSync(PRODUCTION_RULES_PATH);
+  }
+  if (backupFewShots) {
+    fs.writeFileSync(PRODUCTION_FEW_SHOTS_PATH, backupFewShots);
+    console.log(`   📄 Restored: few_shot_examples.json backup`);
+  } else if (fs.existsSync(PRODUCTION_FEW_SHOTS_PATH)) {
+    fs.unlinkSync(PRODUCTION_FEW_SHOTS_PATH);
+  }
+  cleanup();
 }
 
 function computeBaselineAccuracy(entries: ScoreboardEntry[]): number {
@@ -141,50 +163,108 @@ async function runGate(csvPath: string, skipReEval: boolean, localMode: boolean)
   }
 
   console.log('━'.repeat(60));
-  console.log('Phase 2: Candidate validation\n');
+  console.log('Phase 2: Golden Suite validation recheck\n');
   
-  // Heuristic gate: require that at least 30% of suggestions were applied
-  // (not duplicates or capped out). If most suggestions are rejected,
-  // the candidate isn't different enough from production to warrant promotion.
-  const applyRate = analysisReport.changesApplied / 
-    (analysisReport.changesApplied + analysisReport.changesRejected);
-  
-  if (applyRate < 0.3) {
-    console.log(`⛔ Gate FAILED: Only ${(applyRate * 100).toFixed(0)}% of suggestions were applied (threshold: 30%)`);
-    console.log('   Most suggestions were duplicates or capped — candidate is not meaningfully different.');
+  // Backup production configs
+  const backupRules = fs.existsSync(PRODUCTION_RULES_PATH) ? fs.readFileSync(PRODUCTION_RULES_PATH) : null;
+  const backupFewShots = fs.existsSync(PRODUCTION_FEW_SHOTS_PATH) ? fs.readFileSync(PRODUCTION_FEW_SHOTS_PATH) : null;
+
+  try {
+    // Swap candidates to production paths
+    if (fs.existsSync(CANDIDATE_RULES_PATH)) {
+      fs.copyFileSync(CANDIDATE_RULES_PATH, PRODUCTION_RULES_PATH);
+    }
+    if (fs.existsSync(CANDIDATE_FEW_SHOTS_PATH)) {
+      fs.copyFileSync(CANDIDATE_FEW_SHOTS_PATH, PRODUCTION_FEW_SHOTS_PATH);
+    }
+
+    console.log(`Re-evaluating Golden Suite projects with candidate pool...\n`);
+
+    let goldenProjInfos: any[] = [];
+    if (localMode) {
+      const { findProjects, GOLDEN_PROJECTS } = require('./batch-evaluate');
+      const allProjects = findProjects();
+      goldenProjInfos = allProjects.filter((p: any) => GOLDEN_PROJECTS.includes(p.folder));
+    } else {
+      const { findProjectsCloud } = require('./batch-evaluate-cloud');
+      const { GOLDEN_PROJECTS } = require('./batch-evaluate');
+      const allProjects = await findProjectsCloud();
+      goldenProjInfos = allProjects.filter((p: any) => GOLDEN_PROJECTS.includes(p.folder));
+    }
+
+    let totalBaseline = 0;
+    let totalCandidate = 0;
+    let count = 0;
+
+    for (const projInfo of goldenProjInfos) {
+      const entry = scoreboard.find(e => e.projectName.toLowerCase() === projInfo.folder.toLowerCase());
+      const baselineScore = entry ? entry.overall : 0;
+      
+      console.log(`   🔄 Re-evaluating Golden Project: ${projInfo.folder} (Baseline: ${baselineScore.toFixed(1)}%)`);
+      let candidateScore = 0;
+      
+      if (localMode) {
+        const { processProject } = require('./batch-evaluate');
+        const res = await processProject(projInfo);
+        if (res) candidateScore = res.overallAccuracy;
+      } else {
+        const { processProjectCloud } = require('./batch-evaluate-cloud');
+        const res = await processProjectCloud(projInfo);
+        if (res) candidateScore = res.overallAccuracy;
+      }
+
+      console.log(`      ✨ Candidate Score: ${candidateScore.toFixed(1)}%`);
+      
+      totalBaseline += baselineScore;
+      totalCandidate += candidateScore;
+      count++;
+    }
+
+    const avgBaseline = count > 0 ? totalBaseline / count : 0;
+    const avgCandidate = count > 0 ? totalCandidate / count : 0;
+    const delta = avgCandidate - avgBaseline;
+
+    console.log(`\n📈 Golden Suite Recheck Results:`);
+    console.log(`   Average Baseline:  ${avgBaseline.toFixed(1)}%`);
+    console.log(`   Average Candidate: ${avgCandidate.toFixed(1)}%`);
+    console.log(`   Delta:             ${delta >= 0 ? '+' : ''}${delta.toFixed(1)}%`);
+
+    if (delta < 0) {
+      console.log(`⛔ Gate FAILED: Candidate accuracy regressed on the Golden Suite (delta: ${delta.toFixed(1)}% < 0)`);
+      restoreBackups(backupRules, backupFewShots);
+      return {
+        passed: false,
+        baselineAccuracy,
+        candidateAccuracy: avgCandidate,
+        analysisReport,
+        reason: `Regressed accuracy on Golden Suite: delta ${delta.toFixed(1)}% < 0`,
+      };
+    }
+
+    console.log(`\n✅ Gate PASSED — promoting candidates to production`);
+    // Candidates are already in production paths. Just clean up candidate files.
     cleanup();
+
+    // Update baseline accuracy in the production rules if it exists
+    if (fs.existsSync(PRODUCTION_RULES_PATH)) {
+      const rules = JSON.parse(fs.readFileSync(PRODUCTION_RULES_PATH, 'utf8'));
+      rules.baselineAccuracy = baselineAccuracy;
+      fs.writeFileSync(PRODUCTION_RULES_PATH, JSON.stringify(rules, null, 2));
+    }
+
     return {
-      passed: false,
+      passed: true,
       baselineAccuracy,
-      candidateAccuracy: null,
+      candidateAccuracy: avgCandidate,
       analysisReport,
-      reason: `Low apply rate: ${(applyRate * 100).toFixed(0)}% < 30% threshold`,
+      reason: `Accuracy improved/maintained by ${delta.toFixed(1)}% (average: ${avgCandidate.toFixed(1)}%)`,
     };
+
+  } catch (err: any) {
+    console.error(`Error during Golden Suite re-evaluation:`, err);
+    restoreBackups(backupRules, backupFewShots);
+    throw err;
   }
-
-  // Log candidate diff for review
-  console.log('📝 Candidate changes summary:');
-  for (const detail of analysisReport.details) {
-    const icon = detail.applied ? '✅' : '⏭️';
-    console.log(`   ${icon} [${detail.action}] ${detail.project}: ${detail.reason}`);
-  }
-
-  // Promote candidate
-  console.log('\n✅ Gate PASSED — promoting candidates to production');
-  promoteCandidate();
-
-  // Update baseline accuracy in the production rules
-  const rules = JSON.parse(fs.readFileSync(PRODUCTION_RULES_PATH, 'utf8'));
-  rules.baselineAccuracy = baselineAccuracy;
-  fs.writeFileSync(PRODUCTION_RULES_PATH, JSON.stringify(rules, null, 2));
-
-  return {
-    passed: true,
-    baselineAccuracy,
-    candidateAccuracy: null, // Would be filled by full re-eval
-    analysisReport,
-    reason: `Gate passed: ${analysisReport.changesApplied} changes promoted`,
-  };
 }
 
 function promoteCandidate() {

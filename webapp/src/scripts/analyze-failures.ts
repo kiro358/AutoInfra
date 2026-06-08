@@ -40,14 +40,20 @@ function parseScoreboard(csvPath: string) {
   const lines = content.split('\n').filter(l => l.trim().length > 0);
   const dataLines = lines.slice(1);
   
-  const results = dataLines.map(line => {
+  const seen = new Map<string, { projectName: string; overall: number; totalCells: number }>();
+  for (const line of dataLines) {
     const parts = line.split(',');
-    const projectName = parts[0].replace(/"/g, '');
+    if (parts.length < 6) continue;
+    const projectName = parts[0].replace(/"/g, '').trim();
     const overall = parseFloat(parts[5]);
     const totalCells = parts[6] ? parseInt(parts[6], 10) : 0;
-    return { projectName, overall, totalCells };
-  });
+    if (!projectName || isNaN(overall)) continue;
+    
+    // Always overwrite with the last seen entry (latest date)
+    seen.set(projectName.toLowerCase(), { projectName, overall, totalCells });
+  }
 
+  const results = Array.from(seen.values());
   return results.filter(r => r.overall < 95 && !isNaN(r.totalCells) && r.totalCells > 0);
 }
 
@@ -104,12 +110,25 @@ function getCellValue(sheet: any, ref: string) {
   return cell.value;
 }
 
+function getWorksheetFlex(wb: ExcelJS.Workbook, name: string): ExcelJS.Worksheet | undefined {
+  let ws = wb.getWorksheet(name);
+  if (ws) return ws;
+
+  const cleanName = name.replace(/\s*\(1\)$/, '');
+  ws = wb.getWorksheet(cleanName);
+  if (ws) return ws;
+
+  ws = wb.worksheets.find(s => s.name.toUpperCase() === name.toUpperCase()) ||
+       wb.worksheets.find(s => s.name.toUpperCase() === cleanName.toUpperCase());
+  return ws;
+}
+
 async function extractGtForFewShot(projectName: string, truthPath: string) {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(truthPath);
 
-  const mhSheet = wb.getWorksheet('MANHOLES (1)');
-  const swSheet = wb.getWorksheet('SEWERS (1)');
+  const mhSheet = getWorksheetFlex(wb, 'MANHOLES (1)');
+  const swSheet = getWorksheetFlex(wb, 'SEWERS (1)');
   if (!mhSheet || !swSheet) throw new Error('Missing tabs');
 
   const result: any = { 
@@ -184,7 +203,7 @@ async function extractGtForFewShot(projectName: string, truthPath: string) {
   result.watermainSpecials = [];
   result.watermainValves = [];
 
-  const wmSheet = wb.getWorksheet('WATERMAIN (1)');
+  const wmSheet = getWorksheetFlex(wb, 'WATERMAIN (1)');
   if (wmSheet) {
     // Read watermain runs (rows 13-19)
     for (let r = 13; r <= 19; r++) {
@@ -473,72 +492,39 @@ export async function analyzeFailuresLocal(
     }
 
     const truthPath = path.join(projectDir, truthFiles[0]);
-    const genPath = path.join(genDir, genFiles[genFiles.length - 1]); // use latest
 
-    const result = await compareSpreadsheets(truthPath, genPath, projectName);
-    
-    let diffsSummary = '';
-    for (const rep of result.reports) {
-      if (rep.diffs.length > 0) {
-        diffsSummary += `\nSection: ${rep.sectionLabel}\n`;
-        for (const diff of rep.diffs.slice(0, 10)) {
-          diffsSummary += `- Row ${diff.row} [${diff.colName}]: Ground Truth="${diff.truthValue}" vs Generated="${diff.genValue}"\n`;
-        }
-        if (rep.diffs.length > 10) {
-          diffsSummary += `  ...and ${rep.diffs.length - 10} more similar mismatches.\n`;
-        }
+
+    console.log(`🤖 Automatically extracting Ground Truth as a few-shot candidate...`);
+    try {
+      const gt = await extractGtForFewShot(projectName, truthPath);
+      const applyResult = applyFewShot(fewShotsPath, gt);
+
+      if (applyResult.applied) {
+        report.changesApplied++;
+        console.log(`✅ ${applyResult.reason}`);
+      } else {
+        report.changesRejected++;
+        console.log(`⏭️ Skipped: ${applyResult.reason}`);
       }
-    }
 
-    if (!diffsSummary) {
-      console.log(`No diffs summary available.`);
-    } else {
-      console.log(`🤖 Asking AI for recommendations...`);
-      try {
-        const suggestion = await suggestImprovements(diffsSummary, projectName);
-        console.log(`\n💡 AI Recommendation: [${suggestion.action}]`);
-        console.log(`   Reasoning: ${suggestion.reasoning}`);
-        
-        let applyResult: { applied: boolean; reason: string };
-        
-        if (suggestion.action === 'ADD_FEW_SHOT') {
-          const gt = await extractGtForFewShot(projectName, truthPath);
-          applyResult = applyFewShot(fewShotsPath, gt);
-        } else if (suggestion.action === 'PROMPT_TUNING' && suggestion.promptAddition) {
-          applyResult = applyDynamicRule(rules, 'PROMPT_TUNING', suggestion.promptAddition, suggestion.component);
-        } else if (suggestion.action === 'ADD_HEURISTIC' && suggestion.heuristicRule) {
-          applyResult = applyDynamicRule(rules, 'ADD_HEURISTIC', suggestion.heuristicRule);
-        } else {
-          applyResult = { applied: false, reason: 'No actionable suggestion from AI' };
-        }
-
-        if (applyResult.applied) {
-          report.changesApplied++;
-          console.log(`✅ ${applyResult.reason}`);
-        } else {
-          report.changesRejected++;
-          console.log(`⏭️ Skipped: ${applyResult.reason}`);
-        }
-
-        report.details.push({
-          project: projectName,
-          action: suggestion.action,
-          applied: applyResult.applied,
-          reason: applyResult.reason,
-        });
-      } catch (e: any) {
-        console.error(`Failed to get/apply suggestion: ${e.message}`);
-        report.details.push({
-          project: projectName,
-          action: 'ERROR',
-          applied: false,
-          reason: e.message,
-        });
-      }
+      report.details.push({
+        project: projectName,
+        action: 'ADD_FEW_SHOT',
+        applied: applyResult.applied,
+        reason: applyResult.reason,
+      });
+    } catch (e: any) {
+      console.error(`Failed to extract/apply few-shot: ${e.message}`);
+      report.details.push({
+        project: projectName,
+        action: 'ERROR',
+        applied: false,
+        reason: e.message,
+      });
     }
   }
 
-  // Write updated rules
+  // Write updated rules (even if empty, keep it clean)
   rules.lastUpdated = new Date().toISOString().split('T')[0];
   fs.writeFileSync(rulesPath, JSON.stringify(rules, null, 2));
 

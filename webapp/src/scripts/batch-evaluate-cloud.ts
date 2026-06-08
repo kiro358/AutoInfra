@@ -10,16 +10,16 @@ import { compareSpreadsheets, CompareResult, formatCompareResult } from './compa
 const storage = new Storage();
 const BUCKET_NAME = process.env.GCS_BUCKET || 'autoinfra-ai-eval-data';
 
-interface ProjectFile {
-  name: string;      // Full GCS path, e.g. "2026-009/Subdir/file.pdf"
-  basename: string;  // Basename, e.g. "file.pdf"
+export interface ProjectFile {
+  name: string;
+  basename: string;
   sizeBytes: number;
 }
 
-interface ProjectInfo {
+export interface ProjectInfo {
   folder: string;
   pdfFiles: ProjectFile[];
-  truthFile: string;
+  truthFile?: string;
 }
 
 // Simple concurrency helper
@@ -47,7 +47,7 @@ async function runWithConcurrency<T, R>(
   return Promise.all(results);
 }
 
-async function findProjectsCloud(): Promise<ProjectInfo[]> {
+export async function findProjectsCloud(): Promise<ProjectInfo[]> {
   const [files] = await storage.bucket(BUCKET_NAME).getFiles();
   const fileNames = files.map(f => f.name);
   
@@ -93,7 +93,7 @@ async function findProjectsCloud(): Promise<ProjectInfo[]> {
         !name.includes('eval_')
     });
 
-    if (xlsxFiles.length === 0) continue;
+    const truthFile = xlsxFiles.length > 0 ? xlsxFiles[0] : undefined;
 
     // Check manual override
     if (manualOverrides[folder]) {
@@ -117,7 +117,7 @@ async function findProjectsCloud(): Promise<ProjectInfo[]> {
         projects.push({
           folder,
           pdfFiles: projectFiles,
-          truthFile: xlsxFiles[0], // Keep full GCS path for truthFile
+          truthFile, // Keep full GCS path for truthFile
         });
       }
       continue;
@@ -167,7 +167,7 @@ async function findProjectsCloud(): Promise<ProjectInfo[]> {
       projects.push({
         folder,
         pdfFiles: projectFiles,
-        truthFile: xlsxFiles[0],
+        truthFile,
       });
     }
   }
@@ -175,7 +175,7 @@ async function findProjectsCloud(): Promise<ProjectInfo[]> {
   return projects;
 }
 
-async function processProjectCloud(project: ProjectInfo): Promise<CompareResult | null> {
+export async function processProjectCloud(project: ProjectInfo): Promise<CompareResult | null> {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autoinfra-eval-'));
   
   try {
@@ -183,11 +183,14 @@ async function processProjectCloud(project: ProjectInfo): Promise<CompareResult 
     console.log(`📂 ${project.folder}`);
     console.log(`   PDFs (${project.pdfFiles.length}):`);
     project.pdfFiles.forEach((f, i) => console.log(`     ${i + 1}. ${f.basename} (${(f.sizeBytes / 1024 / 1024).toFixed(1)} MB)`));
-    console.log(`   Truth: ${path.basename(project.truthFile)}`);
+    console.log(`   Truth: ${project.truthFile ? path.basename(project.truthFile) : 'None (Unsupervised Run)'}`);
 
-    // Download Truth
-    const truthDest = path.join(tmpDir, path.basename(project.truthFile));
-    await storage.bucket(BUCKET_NAME).file(project.truthFile).download({ destination: truthDest });
+    // Download Truth if exists
+    let truthDest: string | null = null;
+    if (project.truthFile) {
+      truthDest = path.join(tmpDir, path.basename(project.truthFile));
+      await storage.bucket(BUCKET_NAME).file(project.truthFile).download({ destination: truthDest });
+    }
 
     const filesToDownload: typeof project.pdfFiles = [];
     let totalSizeMB = 0;
@@ -241,40 +244,74 @@ async function processProjectCloud(project: ProjectInfo): Promise<CompareResult 
     await storage.bucket(BUCKET_NAME).upload(genPath, { destination: gcsGenPath });
     console.log(`   ☁️ Uploaded generated sheet to GCS: ${gcsGenPath}`);
 
-    console.log(`   🔍 Comparing against ground truth...`);
-    const compareResult = await compareSpreadsheets(truthDest, genPath, project.folder);
+    if (truthDest) {
+      console.log(`   🔍 Comparing against ground truth...`);
+      const compareResult = await compareSpreadsheets(truthDest, genPath, project.folder);
 
-    for (const report of compareResult.reports) {
-      if (report.totalCells > 0) {
-        const acc = ((report.matchingCells / report.totalCells) * 100).toFixed(1);
-        console.log(`      ${report.sectionLabel}: ${acc}% (${report.matchingCells}/${report.totalCells})`);
-        
-        // Print the first 15 mismatches to stdout
-        if (report.diffs.length > 0) {
-          console.log(`         ❌ ${report.diffs.length} mismatches:`);
-          for (const d of report.diffs.slice(0, 15)) {
-            const errStr = d.pctError !== undefined ? ` (${d.pctError.toFixed(1)}% err)` : '';
-            console.log(`            Row ${d.row} [${d.colName}]: truth="${d.truthValue}" vs gen="${d.genValue}"${errStr}`);
-          }
-          if (report.diffs.length > 15) {
-            console.log(`            ... and ${report.diffs.length - 15} more`);
+      for (const report of compareResult.reports) {
+        if (report.totalCells > 0) {
+          const acc = ((report.matchingCells / report.totalCells) * 100).toFixed(1);
+          console.log(`      ${report.sectionLabel}: ${acc}% (${report.matchingCells}/${report.totalCells})`);
+          
+          // Print the first 15 mismatches to stdout
+          if (report.diffs.length > 0) {
+            console.log(`         ❌ ${report.diffs.length} mismatches:`);
+            for (const d of report.diffs.slice(0, 15)) {
+              const errStr = d.pctError !== undefined ? ` (${d.pctError.toFixed(1)}% err)` : '';
+              console.log(`            Row ${d.row} [${d.colName}]: truth="${d.truthValue}" vs gen="${d.genValue}"${errStr}`);
+            }
+            if (report.diffs.length > 15) {
+              console.log(`            ... and ${report.diffs.length - 15} more`);
+            }
           }
         }
       }
+      console.log(`   📊 Overall: ${compareResult.overallAccuracy.toFixed(1)}%`);
+
+      // Write text report of diffs and upload to GCS next to generated spreadsheet
+      const diffReport = formatCompareResult(compareResult);
+      const diffFilename = `eval_${timestamp}_diff.txt`;
+      const diffPath = path.join(tmpDir, diffFilename);
+      fs.writeFileSync(diffPath, diffReport);
+
+      const gcsDiffPath = `${project.folder}/generated_spreadsheets/${diffFilename}`;
+      await storage.bucket(BUCKET_NAME).upload(diffPath, { destination: gcsDiffPath });
+      console.log(`   ☁️ Uploaded discrepancy report to GCS: ${gcsDiffPath}`);
+
+      // Upload metadata to GCS
+      const metadataFilename = `eval_${timestamp}_metadata.json`;
+      const metadataPath = path.join(tmpDir, metadataFilename);
+      fs.writeFileSync(metadataPath, JSON.stringify({
+        confidence: result.confidence,
+        warnings: result.warnings,
+        extractTime,
+        overallAccuracy: compareResult.overallAccuracy
+      }, null, 2));
+
+      const gcsMetadataPath = `${project.folder}/generated_spreadsheets/${metadataFilename}`;
+      await storage.bucket(BUCKET_NAME).upload(metadataPath, { destination: gcsMetadataPath });
+      console.log(`   ☁️ Uploaded metadata to GCS: ${gcsMetadataPath}`);
+
+      return compareResult;
+    } else {
+      console.log(`   📊 Unsupervised Run: Generated spreadsheet successfully (no Ground Truth available).`);
+      
+      // Upload metadata to GCS
+      const metadataFilename = `eval_${timestamp}_metadata.json`;
+      const metadataPath = path.join(tmpDir, metadataFilename);
+      fs.writeFileSync(metadataPath, JSON.stringify({
+        confidence: result.confidence,
+        warnings: result.warnings,
+        extractTime,
+        overallAccuracy: null
+      }, null, 2));
+
+      const gcsMetadataPath = `${project.folder}/generated_spreadsheets/${metadataFilename}`;
+      await storage.bucket(BUCKET_NAME).upload(metadataPath, { destination: gcsMetadataPath });
+      console.log(`   ☁️ Uploaded metadata to GCS: ${gcsMetadataPath}`);
+
+      return null;
     }
-    console.log(`   📊 Overall: ${compareResult.overallAccuracy.toFixed(1)}%`);
-
-    // Write text report of diffs and upload to GCS next to generated spreadsheet
-    const diffReport = formatCompareResult(compareResult);
-    const diffFilename = `eval_${timestamp}_diff.txt`;
-    const diffPath = path.join(tmpDir, diffFilename);
-    fs.writeFileSync(diffPath, diffReport);
-
-    const gcsDiffPath = `${project.folder}/generated_spreadsheets/${diffFilename}`;
-    await storage.bucket(BUCKET_NAME).upload(diffPath, { destination: gcsDiffPath });
-    console.log(`   ☁️ Uploaded discrepancy report to GCS: ${gcsDiffPath}`);
-
-    return compareResult;
   } catch (e: any) {
     console.error(`   ❌ Error: ${e.message?.slice(0, 200)}`);
     return null;
@@ -287,12 +324,26 @@ async function main() {
   const taskIndex = process.env.CLOUD_RUN_TASK_INDEX ? parseInt(process.env.CLOUD_RUN_TASK_INDEX) : null;
   const taskCount = process.env.CLOUD_RUN_TASK_COUNT ? parseInt(process.env.CLOUD_RUN_TASK_COUNT) : 1;
 
+  const args = process.argv.slice(2);
+  let targetProject: string | null = null;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--project' && args[i + 1]) {
+      targetProject = args[i + 1];
+      i++;
+    }
+  }
+
   console.log('╔══════════════════════════════════════════════════════════════╗');
   console.log('║          AutoInfra CLOUD Evaluation Pipeline                ║');
   console.log('╚══════════════════════════════════════════════════════════════╝\n');
 
   let projects = await findProjectsCloud();
-  console.log(`Found ${projects.length} projects with PDF + XLSX in GCS\n`);
+  console.log(`Found ${projects.length} projects in GCS\n`);
+
+  if (targetProject) {
+    projects = projects.filter(p => p.folder.toLowerCase().includes(targetProject!.toLowerCase()));
+    console.log(`Targeting project folder: ${targetProject} (matched ${projects.length} project(s))`);
+  }
 
   if (taskIndex !== null) {
     projects = projects.filter((_, i) => i % taskCount === taskIndex);
@@ -320,13 +371,14 @@ async function main() {
   console.log(`\n🏁 Completed batch run: ${processed} succeeded, ${failed} failed.\n`);
 
   // Upload scoreboard to GCS
-  if (results.length > 0) {
+  const validResults = results.filter(r => r.overallAccuracy !== null && r.overallAccuracy !== undefined);
+  if (validResults.length > 0) {
     const suffix = taskIndex !== null ? `_task${taskIndex}` : '';
     const csvFilename = `evaluation_scoreboard_${new Date().toISOString().slice(0, 10)}${suffix}.csv`;
     const csvPath = path.join(os.tmpdir(), csvFilename);
     const csvRows = [
       'Project,MH_Structures,MH_Catchbasins,Sewers,Watermain,Overall,TotalCells,MatchingCells',
-      ...results.map(r => {
+      ...validResults.map(r => {
         const accs = r.reports.map(rep =>
           rep.totalCells > 0 ? ((rep.matchingCells / rep.totalCells) * 100).toFixed(1) : 'N/A'
         );

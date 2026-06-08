@@ -22,7 +22,7 @@ import { compareSpreadsheets, CompareResult } from './compare-sheets';
 
 const TRAINING_DIR = path.resolve(__dirname, '../../..', 'existing_projects_training_data');
 
-const GOLDEN_PROJECTS = [
+export const GOLDEN_PROJECTS = [
   "2026-067 201 GEORGIAN DR,BARRIE",
   "2026-068 HOLIDAY INN,TRENTON",
   "2026-021 MATTHEWS HANGER WATERLOO",
@@ -35,13 +35,13 @@ const GOLDEN_PROJECTS = [
   "2026-069 RIOCAN GEORGIAN MALL"
 ];
 
-interface ProjectInfo {
+export interface ProjectInfo {
   folder: string;
   pdfFiles: string[];  // All drawing PDFs (will be merged)
-  truthFile: string;
+  truthFile?: string;  // Ground truth XLSX (optional)
 }
 
-function findProjects(): ProjectInfo[] {
+export function findProjects(): ProjectInfo[] {
   const folders = fs.readdirSync(TRAINING_DIR).filter(f => {
     try {
       return fs.statSync(path.join(TRAINING_DIR, f)).isDirectory() && !f.startsWith('.');
@@ -85,14 +85,12 @@ function findProjects(): ProjectInfo[] {
       !f.toLowerCase().includes('eval_run')
     );
 
-    if (xlsxFiles.length === 0) continue;
-
     // Check manual override first
     if (manualOverrides[folder]) {
       projects.push({
         folder,
         pdfFiles: manualOverrides[folder],
-        truthFile: xlsxFiles[0],
+        truthFile: xlsxFiles[0] || undefined,
       });
       continue;
     }
@@ -129,7 +127,7 @@ function findProjects(): ProjectInfo[] {
       projects.push({
         folder,
         pdfFiles: sortedPdfs,  // ALL drawing PDFs, sorted by relevance
-        truthFile: xlsxFiles[0],
+        truthFile: xlsxFiles[0] || undefined,
       });
     }
   }
@@ -137,9 +135,9 @@ function findProjects(): ProjectInfo[] {
   return projects;
 }
 
-async function processProject(project: ProjectInfo): Promise<CompareResult | null> {
+export async function processProject(project: ProjectInfo): Promise<CompareResult | null> {
   const projectDir = path.join(TRAINING_DIR, project.folder);
-  const truthPath = path.join(projectDir, project.truthFile);
+  const truthPath = project.truthFile ? path.join(projectDir, project.truthFile) : null;
 
   console.log(`\n${'═'.repeat(70)}`);
   console.log(`📂 ${project.folder}`);
@@ -150,7 +148,7 @@ async function processProject(project: ProjectInfo): Promise<CompareResult | nul
       : 'NOT FOUND';
     console.log(`     ${i + 1}. ${f} (${size})`);
   });
-  console.log(`   Truth: ${project.truthFile}`);
+  console.log(`   Truth: ${project.truthFile || 'None (Unsupervised Run)'}`);
 
   try {
     // Read ALL PDF buffers
@@ -204,21 +202,47 @@ async function processProject(project: ProjectInfo): Promise<CompareResult | nul
     const genPath = path.join(genDir, genFilename);
     fs.writeFileSync(genPath, genBuffer);
 
-    // Compare
-    console.log(`   🔍 Comparing against ground truth...`);
-    const compareResult = await compareSpreadsheets(truthPath, genPath, project.folder);
+    if (truthPath) {
+      // Compare
+      console.log(`   🔍 Comparing against ground truth...`);
+      const compareResult = await compareSpreadsheets(truthPath, genPath, project.folder);
 
-    // Print per-section accuracy
-    for (const report of compareResult.reports) {
-      if (report.totalCells > 0) {
-        const acc = ((report.matchingCells / report.totalCells) * 100).toFixed(1);
-        const diffCount = report.diffs.length;
-        console.log(`      ${report.sectionLabel}: ${acc}% (${report.matchingCells}/${report.totalCells}) [${diffCount} diffs]`);
+      // Print per-section accuracy
+      for (const report of compareResult.reports) {
+        if (report.totalCells > 0) {
+          const acc = ((report.matchingCells / report.totalCells) * 100).toFixed(1);
+          const diffCount = report.diffs.length;
+          console.log(`      ${report.sectionLabel}: ${acc}% (${report.matchingCells}/${report.totalCells}) [${diffCount} diffs]`);
+        }
       }
-    }
-    console.log(`   📊 Overall: ${compareResult.overallAccuracy.toFixed(1)}%`);
+      console.log(`   📊 Overall: ${compareResult.overallAccuracy.toFixed(1)}%`);
 
-    return compareResult;
+      // Write metadata file
+      const metadataFilename = `eval_${timestamp}_metadata.json`;
+      const metadataPath = path.join(genDir, metadataFilename);
+      fs.writeFileSync(metadataPath, JSON.stringify({
+        confidence: result.confidence,
+        warnings: result.warnings,
+        extractTime,
+        overallAccuracy: compareResult.overallAccuracy
+      }, null, 2));
+
+      return compareResult;
+    } else {
+      console.log(`   📊 Unsupervised Run: Generated spreadsheet successfully (no Ground Truth available).`);
+      
+      // Write metadata file
+      const metadataFilename = `eval_${timestamp}_metadata.json`;
+      const metadataPath = path.join(genDir, metadataFilename);
+      fs.writeFileSync(metadataPath, JSON.stringify({
+        confidence: result.confidence,
+        warnings: result.warnings,
+        extractTime,
+        overallAccuracy: null
+      }, null, 2));
+
+      return null;
+    }
   } catch (e: any) {
     console.error(`   ❌ Error: ${e.message?.slice(0, 200)}`);
     return null;

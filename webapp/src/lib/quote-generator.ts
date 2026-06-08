@@ -40,7 +40,8 @@ export async function generateQuote(
 
       // Calculate rough totals (simplified — actual totals come from Excel formulas)
       const sewerTotal = estimateSewerTotal(extraction, params);
-      const manholeTotal = estimateManholeTotal(extraction, params);
+      const catchbasinTotal = estimateCatchbasinTotal(extraction, params);
+      const manholeTotal = estimateManholeTotal(extraction, params) + catchbasinTotal;
       const watermainTotal = estimateWatermainTotal(extraction, params);
       const subtotal = sewerTotal + manholeTotal + watermainTotal;
       const markup = params.sewers.marginFactor - 1;
@@ -64,8 +65,12 @@ export async function generateQuote(
       const totalSewerLen = extraction.sewers.reduce((s, r) => s + (r.isLineItem ? 0 : (r.length ?? 0)), 0);
       const totalWmLen = extraction.watermain.reduce((s, r) => s + r.length, 0);
 
+      const totalMhCount = extraction.manholes.filter(mh => mh.description.toUpperCase() !== 'SANITARY' && mh.depth !== null).length;
+      const totalCbCount = extraction.catchbasins?.groups.reduce((s, g) => s + (g.quantity || 0), 0) || 0;
+      const totalStructures = totalMhCount + totalCbCount;
+
       addQuoteRow(doc, col1, col2, col3, col4, '1', `${totalSewerLen} m`, 'Sewer Installation', formatCurrency(sewerTotal));
-      addQuoteRow(doc, col1, col2, col3, col4, '2', `${extraction.manholes.length} ea`, 'Manholes & Catchbasins', formatCurrency(manholeTotal));
+      addQuoteRow(doc, col1, col2, col3, col4, '2', `${totalStructures} ea`, 'Manholes & Catchbasins', formatCurrency(manholeTotal));
       addQuoteRow(doc, col1, col2, col3, col4, '3', `${totalWmLen} m`, 'Watermain Installation', formatCurrency(watermainTotal));
 
       doc.moveDown(0.5);
@@ -185,14 +190,56 @@ function estimateSewerTotal(extraction: ExtractionResult, params: GlobalParams):
 function estimateManholeTotal(extraction: ExtractionResult, params: GlobalParams): number {
   let total = 0;
   for (const mh of extraction.manholes) {
-    const topElevation = mh.topElevation ?? 0;
-    const lowInvert = mh.lowInvert ?? 0;
-    const depth = topElevation > 0 && lowInvert > 0 ? topElevation - lowInvert : 2.0;
-    const precastCost = depth * 500 + 400; // rough estimate
-    const laborCost = params.manholes.laborPerHr * (15 + depth * 5);
-    const truckCost = depth * 0.5 * params.manholes.truckingPerCM;
-    total += precastCost + laborCost + truckCost + mh.addMaterials + mh.addLE;
+    const descUpper = mh.description.toUpperCase();
+    const isDivider = descUpper === 'SANITARY';
+    const isNonStructure = mh.depth === null && (mh.topElevation === null || mh.topElevation === 0) && (mh.lowInvert === null || mh.lowInvert === 0);
+
+    if (isDivider) continue;
+
+    if (isNonStructure) {
+      // Just add raw materials/labor costs for non-structure items (e.g. saw cut, mobilization)
+      total += mh.addMaterials + mh.addLE;
+    } else {
+      const topElevation = mh.topElevation ?? 0;
+      const lowInvert = mh.lowInvert ?? 0;
+      const depth = mh.depth ?? (topElevation > 0 && lowInvert > 0 ? topElevation - lowInvert : 2.0);
+      const precastCost = depth * 500 + 400; // rough estimate
+      const laborCost = params.manholes.laborPerHr * (15 + depth * 5);
+      const truckCost = depth * 0.5 * params.manholes.truckingPerCM;
+      total += precastCost + laborCost + truckCost + mh.addMaterials + mh.addLE;
+    }
   }
+  return total;
+}
+
+function estimateCatchbasinTotal(extraction: ExtractionResult, params: GlobalParams): number {
+  if (!extraction.catchbasins || !extraction.catchbasins.groups) return 0;
+  let total = 0;
+
+  const laborRates = extraction.catchbasins.laborRates || {
+    scbLabor: 200,
+    dcbLabor: 250,
+    dicbFC: 465,
+    ddicbFC: 715
+  };
+
+  for (const g of extraction.catchbasins.groups) {
+    const qty = g.quantity || 0;
+    if (qty <= 0) continue;
+
+    let laborEach = 200;
+    if (g.type === 'SINGLE_CB') laborEach = laborRates.scbLabor;
+    else if (g.type === 'DOUBLE_CB') laborEach = laborRates.dcbLabor;
+    else if (g.type === 'DITCH_INLET_CB') laborEach = laborRates.dicbFC;
+    else if (g.type === 'DOUBLE_DITCH_INLET_CB') laborEach = laborRates.ddicbFC;
+
+    const materialsEach = g.addMaterials || 900;
+    const depth = g.depth || 2.2;
+    const truckCost = depth * 0.25 * params.manholes.truckingPerCM;
+
+    total += qty * (materialsEach + laborEach + truckCost);
+  }
+
   return total;
 }
 

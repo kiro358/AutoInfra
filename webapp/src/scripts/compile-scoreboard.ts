@@ -220,5 +220,6 @@ async function main() {
   fs.writeFileSync(csvPath, csvRows.join('\n'));
   console.log(`\n📄 Consolidated Scoreboard saved to: ${csvPath}`);
 }
-
-main().catch(console.error);
+if (require.main === module) {
+  main().catch(console.error);
+}

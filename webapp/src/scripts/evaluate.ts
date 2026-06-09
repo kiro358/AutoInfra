@@ -292,5 +292,6 @@ async function main() {
   fs.writeFileSync(outputPath, JSON.stringify(allGroundTruths, null, 2));
   console.log(`\nGround truth dataset saved to: ${outputPath}`);
 }
-
-main().catch(console.error);
+if (require.main === module) {
+  main().catch(console.error);
+}

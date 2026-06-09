@@ -17,23 +17,11 @@ import fs from 'fs';
 import path from 'path';
 import { extractFromPDF } from '../lib/extraction';
 import { populateTemplate } from '../lib/spreadsheet';
-import { DEFAULT_PARAMS } from '../lib/constants';
+import { DEFAULT_PARAMS, GOLDEN_PROJECTS } from '../lib/constants';
 import { compareSpreadsheets, CompareResult } from './compare-sheets';
 
 const TRAINING_DIR = path.resolve(__dirname, '../../..', 'existing_projects_training_data');
 
-export const GOLDEN_PROJECTS = [
-  "2026-067 201 GEORGIAN DR,BARRIE",
-  "2026-068 HOLIDAY INN,TRENTON",
-  "2026-021 MATTHEWS HANGER WATERLOO",
-  "2026-001 ECOLE SECONDAIRE CATHOLIQUE-BRAMPTON",
-  "2026-002 BRADFORD WEST GWILLIMBURY CIVIC CENTRE",
-  "2026-015 UXBRIDGE POOL SPRUNG",
-  "2026-041 TFS PERFORMING ARTS CENTRE",
-  "2026-050 PANATTONI-6500 MISSISSAUGA ROAD",
-  "2026-060 PROPOSED COMMERCIAL DEVELOPMENT",
-  "2026-069 RIOCAN GEORGIAN MALL"
-];
 
 export interface ProjectInfo {
   folder: string;
@@ -390,4 +378,6 @@ async function main() {
   console.log(`\n📄 Scoreboard saved to: ${csvPath}`);
 }
 
-main().catch(console.error);
+if (require.main === module) {
+  main().catch(console.error);
+}

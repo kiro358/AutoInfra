@@ -112,5 +112,8 @@ async function main() {
     console.error(`Error processing:`, e);
   }
 }
-main().catch(console.error);
+
+if (require.main === module) {
+  main().catch(console.error);
+}
 

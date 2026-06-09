@@ -22,6 +22,7 @@ import fs from 'fs';
 import path from 'path';
 import { analyzeFailuresCloud } from './analyze-failures-cloud';
 import { analyzeFailuresLocal, AnalysisReport } from './analyze-failures';
+import { GOLDEN_PROJECTS } from '../lib/constants';
 
 // ======================== CONFIG ========================
 
@@ -37,7 +38,32 @@ const RE_EVAL_LIMIT = 5;
 
 // ======================== HELPERS ========================
 
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = [];
+  const executing: Promise<any>[] = [];
+  
+  for (const item of items) {
+    const p = Promise.resolve().then(() => fn(item));
+    results.push(p as any);
+    
+    if (limit < items.length) {
+      const e: Promise<any> = p.then(() => executing.splice(executing.indexOf(e), 1));
+      executing.push(e);
+      if (executing.length >= limit) {
+        await Promise.race(executing);
+      }
+    }
+  }
+  
+  return Promise.all(results);
+}
+
 interface ScoreboardEntry {
+
   projectName: string;
   overall: number;
   totalCells: number;
@@ -182,12 +208,11 @@ async function runGate(csvPath: string, skipReEval: boolean, localMode: boolean)
 
     let goldenProjInfos: any[] = [];
     if (localMode) {
-      const { findProjects, GOLDEN_PROJECTS } = require('./batch-evaluate');
+      const { findProjects } = require('./batch-evaluate');
       const allProjects = findProjects();
       goldenProjInfos = allProjects.filter((p: any) => GOLDEN_PROJECTS.includes(p.folder));
     } else {
       const { findProjectsCloud } = require('./batch-evaluate-cloud');
-      const { GOLDEN_PROJECTS } = require('./batch-evaluate');
       const allProjects = await findProjectsCloud();
       goldenProjInfos = allProjects.filter((p: any) => GOLDEN_PROJECTS.includes(p.folder));
     }
@@ -196,7 +221,8 @@ async function runGate(csvPath: string, skipReEval: boolean, localMode: boolean)
     let totalCandidate = 0;
     let count = 0;
 
-    for (const projInfo of goldenProjInfos) {
+    const CONCURRENCY_LIMIT = 5;
+    await runWithConcurrency(goldenProjInfos, CONCURRENCY_LIMIT, async (projInfo) => {
       const entry = scoreboard.find(e => e.projectName.toLowerCase() === projInfo.folder.toLowerCase());
       const baselineScore = entry ? entry.overall : 0;
       
@@ -213,12 +239,13 @@ async function runGate(csvPath: string, skipReEval: boolean, localMode: boolean)
         if (res) candidateScore = res.overallAccuracy;
       }
 
-      console.log(`      ✨ Candidate Score: ${candidateScore.toFixed(1)}%`);
+      console.log(`      ✨ Candidate Score for ${projInfo.folder}: ${candidateScore.toFixed(1)}% (Baseline: ${baselineScore.toFixed(1)}%)`);
       
       totalBaseline += baselineScore;
       totalCandidate += candidateScore;
       count++;
-    }
+    });
+
 
     const avgBaseline = count > 0 ? totalBaseline / count : 0;
     const avgCandidate = count > 0 ? totalCandidate / count : 0;

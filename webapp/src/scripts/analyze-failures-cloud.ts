@@ -427,7 +427,21 @@ export async function analyzeFailuresCloud(
     const [files] = await storage.bucket(BUCKET_NAME).getFiles({ prefix: projectName + '/' });
     const fileNames = files.map(f => f.name);
     
-    const truthFile = fileNames.find(f => f.endsWith('.xlsx') && !f.includes('eval_') && !f.includes('generated_spreadsheets'));
+    const xlsxFiles = fileNames.filter(f => {
+      const name = path.basename(f).toLowerCase();
+      return name.endsWith('.xlsx') &&
+        !name.includes('quote') &&
+        !name.includes('budget') &&
+        !name.includes('backup') &&
+        !name.includes('sand') &&
+        !name.includes('appendix') &&
+        !name.includes('estimate') &&
+        !name.includes('additional') &&
+        !name.includes('eval_') &&
+        !name.includes('generated_spreadsheets');
+    });
+    
+    const truthFile = xlsxFiles.length > 0 ? xlsxFiles[0] : undefined;
     
     if (!truthFile) {
       console.log(`Missing truth file in GCS. Skipping.`);

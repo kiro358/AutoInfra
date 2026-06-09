@@ -14,5 +14,6 @@ async function main() {
   const [riocanFiles] = await bucket.getFiles({ prefix: '2026-069 RIOCAN GEORGIAN MALL/' });
   riocanFiles.forEach(f => console.log(`- ${f.name} (${(Number(f.metadata.size || 0) / 1024).toFixed(2)} KB, updated: ${f.metadata.updated})`));
 }
-
-main().catch(console.error);
+if (require.main === module) {
+  main().catch(console.error);
+}

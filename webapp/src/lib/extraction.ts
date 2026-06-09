@@ -260,7 +260,12 @@ function applyDeterministicHeuristics(data: ExtractionResult): ExtractionResult 
 
     let diameter = mh.diameter;
     if (diameter === null || diameter === 0) {
-      diameter = snapToMHSize(effectivePipeOutDia);
+      const desc = mh.description.toUpperCase();
+      if (desc.includes('DCBMH')) {
+        diameter = 1500;
+      } else {
+        diameter = snapToMHSize(effectivePipeOutDia);
+      }
     }
 
     let addMaterials = mh.addMaterials;
@@ -624,40 +629,55 @@ export async function extractFromPDF(
         },
       };
 
-    console.log(`      [extraction.ts] Stage 1: Running Table Locator Agent...`);
-    const locatorResponse = await callWithRetry(async () => {
-      return await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { text: LOCATOR_SYSTEM_PROMPT },
-              pdfPart,
-              { text: 'Analyze the drawing pages and return the JSON index.' }
-            ]
-          }
-        ],
-        config: {
-          temperature: 0,
-          responseMimeType: 'application/json'
-        }
-      });
-    });
+    const srcDoc = await PDFDocument.load(pdfBuffer);
+    const totalPages = srcDoc.getPageCount();
+    console.log(`      [extraction.ts] Total pages in merged PDF: ${totalPages}`);
 
     let locatorIndex: { manholePages: number[], sewerPages: number[], watermainPages: number[] } | null = null;
-    try {
-      const parsed = JSON.parse(locatorResponse.text || '{}');
-      if (Array.isArray(parsed.manholePages) || Array.isArray(parsed.sewerPages) || Array.isArray(parsed.watermainPages)) {
-        locatorIndex = {
-          manholePages: parsed.manholePages || [],
-          sewerPages: parsed.sewerPages || [],
-          watermainPages: parsed.watermainPages || []
-        };
+
+    if (totalPages <= 5) {
+      const allPages = Array.from({ length: totalPages }, (_, i) => i + 1);
+      locatorIndex = {
+        manholePages: allPages,
+        sewerPages: allPages,
+        watermainPages: allPages
+      };
+      console.log(`      [extraction.ts] Small PDF (<= 5 pages). Skipping locator and using all pages:`, locatorIndex);
+    } else {
+      console.log(`      [extraction.ts] Stage 1: Running Table Locator Agent...`);
+      const locatorResponse = await callWithRetry(async () => {
+        return await ai.models.generateContent({
+          model: 'gemini-2.5-flash',
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { text: LOCATOR_SYSTEM_PROMPT },
+                pdfPart,
+                { text: 'Analyze the drawing pages and return the JSON index.' }
+              ]
+            }
+          ],
+          config: {
+            temperature: 0,
+            responseMimeType: 'application/json'
+          }
+        });
+      });
+
+      try {
+        const parsed = JSON.parse(locatorResponse.text || '{}');
+        if (Array.isArray(parsed.manholePages) || Array.isArray(parsed.sewerPages) || Array.isArray(parsed.watermainPages)) {
+          locatorIndex = {
+            manholePages: parsed.manholePages || [],
+            sewerPages: parsed.sewerPages || [],
+            watermainPages: parsed.watermainPages || []
+          };
+        }
+        console.log(`      [extraction.ts] Locator results:`, locatorIndex);
+      } catch (e) {
+        console.warn(`      [extraction.ts] Failed to parse locator response, falling back to all pages`, e);
       }
-      console.log(`      [extraction.ts] Locator results:`, locatorIndex);
-    } catch (e) {
-      console.warn(`      [extraction.ts] Failed to parse locator response, falling back to all pages`, e);
     }
 
     const shouldRunManholes = !locatorIndex || locatorIndex.manholePages.length > 0;

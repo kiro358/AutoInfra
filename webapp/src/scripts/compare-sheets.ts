@@ -224,11 +224,57 @@ function getWorksheetFlex(wb: ExcelJS.Workbook, name: string): ExcelJS.Worksheet
 
   ws = wb.worksheets.find(s => s.name.toUpperCase() === name.toUpperCase()) ||
        wb.worksheets.find(s => s.name.toUpperCase() === cleanName.toUpperCase());
-       
-  if (!ws) {
-    console.warn(`      ⚠️ getWorksheetFlex: Could not find sheet "${name}" or "${cleanName}" (case-insensitive) in workbook. Available sheets: [${wb.worksheets.map(w => w.name).join(', ')}]`);
+  if (ws) return ws;
+
+  // If there's only one worksheet, use it
+  if (wb.worksheets.length === 1) {
+    return wb.worksheets[0];
   }
-  return ws;
+
+  // Keyword and split sheet number matching
+  const nameUpper = name.toUpperCase();
+  const cleanNameUpper = cleanName.toUpperCase();
+  const numMatch = name.match(/\((\d+)\)/);
+  const expectedNum = numMatch ? numMatch[1] : null;
+
+  let keywords: string[] = [];
+  if (nameUpper.includes('MANHOLE') || nameUpper.includes('MH') || nameUpper.includes('STRUCTURE')) {
+    keywords = ['MANHOLE', 'STRUCTURE', 'MH'];
+  } else if (nameUpper.includes('SEWER')) {
+    keywords = ['SEWER', 'SW'];
+  } else if (nameUpper.includes('WATERMAIN') || nameUpper.includes('WM')) {
+    keywords = ['WATERMAIN', 'WM', 'WATER'];
+  }
+
+  const candidateSheets = wb.worksheets.filter(s => {
+    const sNameUpper = s.name.toUpperCase();
+    return keywords.some(kw => sNameUpper.includes(kw));
+  });
+
+  if (candidateSheets.length > 0) {
+    if (expectedNum) {
+      const numMatchSheet = candidateSheets.find(s => {
+        const sNumMatch = s.name.match(/\(?(\d+)\)?/);
+        return sNumMatch ? sNumMatch[1] === expectedNum : false;
+      });
+      if (numMatchSheet) return numMatchSheet;
+    }
+    return candidateSheets[0];
+  }
+
+  // Fallback substring matching
+  ws = wb.worksheets.find(s => s.name.toUpperCase().includes(cleanNameUpper));
+  if (ws) return ws;
+
+  // Ultimate fallback: return first sheet that isn't a summary
+  if (wb.worksheets.length > 0) {
+    const activeSheets = wb.worksheets.filter(s => !s.name.toUpperCase().includes('SUMMARY'));
+    if (activeSheets.length > 0) return activeSheets[0];
+    return wb.worksheets[0];
+  }
+
+  console.warn(`      ⚠️ getWorksheetFlex: Could not find sheet "${name}" or "${cleanName}" (case-insensitive) in workbook. Available sheets: [${wb.worksheets.map(w => w.name).join(', ')}]`);
+  return undefined;
 }
 
 function compareSheet(

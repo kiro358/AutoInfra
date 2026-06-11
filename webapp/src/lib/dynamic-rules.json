@@ -1,14 +1,8 @@
 {
   "version": 2,
-  "baselineAccuracy": 34.3625,
-  "lastUpdated": "2026-06-08",
+  "baselineAccuracy": 34.27428571428571,
+  "lastUpdated": "2026-06-11",
   "promptAdditions": [
-    {
-      "rule": "Only populate fields for 'Additional Materials' or 'Add Mtrls' if the drawing explicitly and separately itemizes a cost for them. Do not infer these costs from general notes or other values. If no explicit, separate cost for additional materials is listed for an item, the value should be null or 0.",
-      "addedBy": "flywheel",
-      "addedAt": "2026-05-23",
-      "accuracyDelta": null
-    },
     {
       "rule": "If a value for a specific field (like quantity or cost) is not explicitly listed for a line item, you must leave that field null. Do not infer values or assign numbers from nearby, unrelated text on the drawing.",
       "addedBy": "flywheel",
@@ -33,7 +27,21 @@
       "addedBy": "flywheel",
       "addedAt": "2026-06-06",
       "accuracyDelta": null
+    },
+    {
+      "rule": "The Rim Elevation is often abbreviated on drawings as 'RIM' or 'RIM EL.' followed by the value; ensure you extract this when present.",
+      "addedBy": "flywheel",
+      "addedAt": "2026-06-11",
+      "accuracyDelta": null,
+      "component": "manholes"
     }
   ],
-  "heuristics": []
+  "heuristics": [
+    {
+      "rule": "After initial extraction, for any manhole where 'invertOut' is null, find the connected downstream manhole and set the 'invertOut' to the downstream manhole's 'invertIn'. For any pipe where 'slope' is null, calculate it using the formula: (start_invert - end_invert) / length.",
+      "addedBy": "flywheel",
+      "addedAt": "2026-06-11",
+      "accuracyDelta": null
+    }
+  ]
 }

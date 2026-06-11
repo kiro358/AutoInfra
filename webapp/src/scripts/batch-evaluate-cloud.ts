@@ -187,7 +187,11 @@ export async function processProjectCloud(project: ProjectInfo): Promise<Compare
     console.log(`\n${'═'.repeat(70)}`);
     console.log(`📂 ${project.folder}`);
     console.log(`   PDFs (${project.pdfFiles.length}):`);
-    project.pdfFiles.forEach((f, i) => console.log(`     ${i + 1}. ${f.basename} (${(f.sizeBytes / 1024 / 1024).toFixed(1)} MB)`));
+    const printLimit = 10;
+    project.pdfFiles.slice(0, printLimit).forEach((f, i) => console.log(`     ${i + 1}. ${f.basename} (${(f.sizeBytes / 1024 / 1024).toFixed(1)} MB)`));
+    if (project.pdfFiles.length > printLimit) {
+      console.log(`     ... and ${project.pdfFiles.length - printLimit} more file(s)`);
+    }
     console.log(`   Truth: ${project.truthFile ? path.basename(project.truthFile) : 'None (Unsupervised Run)'}`);
 
     const downloadPromises: Promise<any>[] = [];
@@ -257,6 +261,14 @@ export async function processProjectCloud(project: ProjectInfo): Promise<Compare
     await storage.bucket(BUCKET_NAME).upload(genPath, { destination: gcsGenPath });
     console.log(`   ☁️ Uploaded generated sheet to GCS: ${gcsGenPath}`);
 
+    // Upload raw extraction JSON to GCS
+    const extractionFilename = `eval_${timestamp}_extraction.json`;
+    const extractionPath = path.join(tmpDir, extractionFilename);
+    fs.writeFileSync(extractionPath, JSON.stringify(result, null, 2));
+    const gcsExtractionPath = `${project.folder}/generated_spreadsheets/${extractionFilename}`;
+    await storage.bucket(BUCKET_NAME).upload(extractionPath, { destination: gcsExtractionPath });
+    console.log(`   ☁️ Uploaded raw extraction JSON to GCS: ${gcsExtractionPath}`);
+
     if (truthDest) {
       console.log(`   🔍 Comparing against ground truth...`);
       const compareResult = await compareSpreadsheets(truthDest, genPath, project.folder);
@@ -298,7 +310,8 @@ export async function processProjectCloud(project: ProjectInfo): Promise<Compare
         confidence: result.confidence,
         warnings: result.warnings,
         extractTime,
-        overallAccuracy: compareResult.overallAccuracy
+        overallAccuracy: compareResult.overallAccuracy,
+        locatorIndex: result.locatorIndex || null
       }, null, 2));
 
       const gcsMetadataPath = `${project.folder}/generated_spreadsheets/${metadataFilename}`;
@@ -316,7 +329,8 @@ export async function processProjectCloud(project: ProjectInfo): Promise<Compare
         confidence: result.confidence,
         warnings: result.warnings,
         extractTime,
-        overallAccuracy: null
+        overallAccuracy: null,
+        locatorIndex: result.locatorIndex || null
       }, null, 2));
 
       const gcsMetadataPath = `${project.folder}/generated_spreadsheets/${metadataFilename}`;

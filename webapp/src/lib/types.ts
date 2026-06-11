@@ -92,6 +92,7 @@ export interface ExtractionResult {
   watermainValves: WatermainValve[];
   confidence: number;
   warnings: string[];
+  locatorIndex?: { manholePages: number[]; sewerPages: number[]; watermainPages: number[] } | null;
 }
 
 // ============ Global Parameters ============

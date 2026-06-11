@@ -1019,6 +1019,8 @@ export async function extractFromPDF(
     // Apply deterministic heuristics
     parsed = applyDeterministicHeuristics(parsed);
 
+    parsed.locatorIndex = locatorIndex;
+
     return parsed;
   } catch (err: any) {
     console.error('      [extraction.ts] Error during Gemini extraction:', err);

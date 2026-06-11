@@ -397,10 +397,20 @@ async function main() {
   let failed = 0;
 
   // Optimised runtime: process 8 projects in parallel in the cloud using Gemini 2.5 Flash
-  const CONCURRENCY_LIMIT = 8;
+  // If using Gemini API Key (Free Tier), run sequentially (concurrency=1) with a 5s delay to avoid 15 RPM limits
+  const isFreeTier = !!process.env.GEMINI_API_KEY && process.env.USE_VERTEX_AI !== 'true';
+  const CONCURRENCY_LIMIT = isFreeTier ? 1 : 8;
+  const PROJECT_DELAY_MS = isFreeTier ? 5000 : 0;
+
   console.log(`🚀 Starting execution of ${projects.length} projects with concurrency = ${CONCURRENCY_LIMIT}...\n`);
 
+  let currentProjectIndex = 0;
   await runWithConcurrency(projects, CONCURRENCY_LIMIT, async (project) => {
+    const idx = currentProjectIndex++;
+    if (idx > 0 && PROJECT_DELAY_MS > 0) {
+      console.log(`   ⏳ [batch-evaluate-cloud.ts] Waiting ${PROJECT_DELAY_MS / 1000}s to avoid rate limit...`);
+      await new Promise(resolve => setTimeout(resolve, PROJECT_DELAY_MS));
+    }
     const result = await processProjectCloud(project);
     if (result) {
       results.push(result);

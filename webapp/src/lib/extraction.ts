@@ -575,7 +575,8 @@ export async function mergePDFs(buffers: Buffer[]): Promise<Buffer> {
 
 export async function extractFromPDF(
   pdfInput: Buffer | Buffer[], // Single PDF buffer or array of buffers to merge
-  projectName: string
+  projectName: string,
+  gcsSourceUri?: string
 ): Promise<ExtractionResult> {
   // If given multiple buffers, merge them first
   const pdfBuffer = Array.isArray(pdfInput)
@@ -587,8 +588,10 @@ export async function extractFromPDF(
   let isCacheHit = false;
 
   try {
-    // If the PDF buffer size is larger than 4MB, use GCS upload to avoid HTTP payload limits
-    if (pdfBuffer.length > 4 * 1024 * 1024) {
+    if (gcsSourceUri) {
+      gcsFileUri = gcsSourceUri;
+      console.log(`      [extraction.ts] Using direct GCS URI: ${gcsFileUri}`);
+    } else if (pdfBuffer.length > 4 * 1024 * 1024) {
       const hash = crypto.createHash('sha256').update(pdfBuffer).digest('hex');
       const fileName = `cached-drawings/${hash}.pdf`;
 

@@ -240,7 +240,10 @@ export async function processProjectCloud(project: ProjectInfo): Promise<Compare
 
     console.log(`   🤖 Extracting data via Gemini...`);
     const startTime = Date.now();
-    const result = await extractFromPDF(pdfBuffers, project.folder);
+    const gcsSourceUri = project.pdfFiles.length === 1
+      ? `gs://${BUCKET_NAME}/${project.pdfFiles[0].name}`
+      : undefined;
+    const result = await extractFromPDF(pdfBuffers, project.folder, gcsSourceUri);
     const extractTime = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`   ✅ Extraction complete in ${extractTime}s`);
     console.log(`      Confidence: ${result.confidence}`);

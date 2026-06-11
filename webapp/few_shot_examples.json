@@ -2940,5 +2940,535 @@
         "laborPerValve": null
       }
     ]
+  },
+  {
+    "projectName": "2026-053 WALMART  FIJI",
+    "jobNumber": "",
+    "date": "",
+    "manholes": [
+      {
+        "description": "MH 1",
+        "depth": 2.16,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 2",
+        "depth": 2.37,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 3",
+        "depth": 2.22,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 4",
+        "depth": 2.9,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 5",
+        "depth": 2.01,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 6",
+        "depth": 1.96,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 7",
+        "depth": 1.93,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 8",
+        "depth": 1.72,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 9",
+        "depth": 1.73,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 10",
+        "depth": 2.1,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 11",
+        "depth": 2.26,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 11A",
+        "depth": 2.1,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 13",
+        "depth": 2.02,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 14",
+        "depth": 1.94,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 15",
+        "depth": 1.84,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 16",
+        "depth": 1.8,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 17",
+        "depth": 2.57,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 22",
+        "depth": 1.85,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 23",
+        "depth": 1.69,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 24",
+        "depth": 1.62,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "MH 25",
+        "depth": 1.59,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "description": "W-MH 19",
+        "depth": 4.1,
+        "addMaterials": 8000,
+        "addLE": 3000
+      },
+      {
+        "description": "W-MH 18",
+        "depth": 4.2,
+        "addMaterials": 7000,
+        "addLE": 3000
+      },
+      {
+        "description": "W-MH 2",
+        "depth": 4,
+        "addMaterials": 6000,
+        "addLE": 3000
+      },
+      {
+        "description": "E-MH 82",
+        "depth": 4.2,
+        "addMaterials": 9000,
+        "addLE": 3000
+      },
+      {
+        "description": "E-MH 81",
+        "depth": 4.5,
+        "addMaterials": 9000,
+        "addLE": 3000
+      },
+      {
+        "description": "E-MH 91",
+        "depth": 4.5,
+        "addMaterials": 7000,
+        "addLE": 3000
+      },
+      {
+        "description": "E-MH 31",
+        "depth": 4.4,
+        "addMaterials": 7000,
+        "addLE": 3000
+      },
+      {
+        "description": "E-MH 2",
+        "depth": 4.2,
+        "addMaterials": 7000,
+        "addLE": 3000
+      },
+      {
+        "description": "METER CHAMBER",
+        "depth": 3.5,
+        "addMaterials": 6000,
+        "addLE": 3000
+      }
+    ],
+    "catchbasins": {
+      "groups": [],
+      "laborRates": {
+        "scbLabor": 200,
+        "dcbLabor": 250,
+        "dicbFC": 465,
+        "ddicbFC": 715
+      }
+    },
+    "sewers": [
+      {
+        "runLabel": "MH 9-CBMH 24",
+        "isLineItem": false,
+        "length": 28,
+        "pipeDiameter": 900,
+        "typeClass": 1.4,
+        "slope": 1.1,
+        "depth": 2.5,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 24-CBMH 25",
+        "isLineItem": false,
+        "length": 40,
+        "pipeDiameter": 825,
+        "typeClass": 1.4,
+        "slope": 1.1,
+        "depth": 2.5,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 25-CBMH 26",
+        "isLineItem": false,
+        "length": 40,
+        "pipeDiameter": 825,
+        "typeClass": 1.4,
+        "slope": 1.1,
+        "depth": 2.4,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 26-CBMH 27",
+        "isLineItem": false,
+        "length": 40,
+        "pipeDiameter": 750,
+        "typeClass": 1.4,
+        "slope": 1.1,
+        "depth": 2.3,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 27-CBMH 28",
+        "isLineItem": false,
+        "length": 40,
+        "pipeDiameter": 675,
+        "typeClass": 1.4,
+        "slope": 1.1,
+        "depth": 2.2,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 28-CBMH 29",
+        "isLineItem": false,
+        "length": 40,
+        "pipeDiameter": 600,
+        "typeClass": 1.4,
+        "slope": 1.1,
+        "depth": 2,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 29-CBMH 40",
+        "isLineItem": false,
+        "length": 40,
+        "pipeDiameter": 525,
+        "typeClass": 1.4,
+        "slope": 1.1,
+        "depth": 1.9,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 40-CB 12",
+        "isLineItem": false,
+        "length": 9,
+        "pipeDiameter": 250,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.9,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 9-CBMH 22",
+        "isLineItem": false,
+        "length": 13,
+        "pipeDiameter": 675,
+        "typeClass": 1.4,
+        "slope": 1.1,
+        "depth": 2.5,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 22-CBMH 23",
+        "isLineItem": false,
+        "length": 40,
+        "pipeDiameter": 600,
+        "typeClass": 1.4,
+        "slope": 1.1,
+        "depth": 2.6,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 23-CB 9",
+        "isLineItem": false,
+        "length": 40,
+        "pipeDiameter": 450,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2.4,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 9-MH 10",
+        "isLineItem": false,
+        "length": 50,
+        "pipeDiameter": 825,
+        "typeClass": 1.4,
+        "slope": 1.1,
+        "depth": 2,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 10-CBMH 30",
+        "isLineItem": false,
+        "length": 12,
+        "pipeDiameter": 525,
+        "typeClass": 1.4,
+        "slope": 1.1,
+        "depth": 2.5,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 31-CB 11",
+        "isLineItem": false,
+        "length": 40,
+        "pipeDiameter": 375,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2.4,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 10-CBMH 32",
+        "isLineItem": false,
+        "length": 28,
+        "pipeDiameter": 750,
+        "typeClass": 1.4,
+        "slope": 1.1,
+        "depth": 2.4,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 32-CBMH 33",
+        "isLineItem": false,
+        "length": 40,
+        "pipeDiameter": 675,
+        "typeClass": 1.4,
+        "slope": 1.1,
+        "depth": 2.5,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 33-CBMH 34",
+        "isLineItem": false,
+        "length": 40,
+        "pipeDiameter": 675,
+        "typeClass": 1.4,
+        "slope": 1.1,
+        "depth": 2.5,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 34-CBMH 35",
+        "isLineItem": false,
+        "length": 40,
+        "pipeDiameter": 600,
+        "typeClass": 1.4,
+        "slope": 1.1,
+        "depth": 2.3,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 35-CBMH 36",
+        "isLineItem": false,
+        "length": 40,
+        "pipeDiameter": 600,
+        "typeClass": 1.4,
+        "slope": 1.1,
+        "depth": 2.2,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 36-CBMH 37",
+        "isLineItem": false,
+        "length": 40,
+        "pipeDiameter": 525,
+        "typeClass": 1.4,
+        "slope": 1.1,
+        "depth": 2,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 37-CBMH 41",
+        "isLineItem": false,
+        "length": 40,
+        "pipeDiameter": 450,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.9,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CBMH 41-CB 10",
+        "isLineItem": false,
+        "length": 12,
+        "pipeDiameter": 250,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.9,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "SAN.XING",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": 1.4,
+        "slope": 1.1,
+        "depth": null,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "MH 8A-MH 11A",
+        "isLineItem": false,
+        "length": 11,
+        "pipeDiameter": 200,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 8.9,
+        "addMaterials": 3000,
+        "addLE": 3000
+      }
+    ],
+    "watermain": [],
+    "watermainSpecials": [],
+    "watermainValves": [
+      {
+        "valveSize": "50 mm",
+        "quantity": null,
+        "valveCost": 424,
+        "boxCost": 55,
+        "anodeCost": 100,
+        "laborPerValve": null
+      },
+      {
+        "valveSize": "100mm",
+        "quantity": null,
+        "valveCost": 742,
+        "boxCost": 285,
+        "anodeCost": 150,
+        "laborPerValve": null
+      },
+      {
+        "valveSize": "150mm",
+        "quantity": null,
+        "valveCost": 981,
+        "boxCost": 285,
+        "anodeCost": 150,
+        "laborPerValve": null
+      },
+      {
+        "valveSize": "200mm",
+        "quantity": null,
+        "valveCost": 1692,
+        "boxCost": 285,
+        "anodeCost": 150,
+        "laborPerValve": null
+      },
+      {
+        "valveSize": "250mm",
+        "quantity": null,
+        "valveCost": 2665,
+        "boxCost": 285,
+        "anodeCost": 150,
+        "laborPerValve": null
+      },
+      {
+        "valveSize": "300mm",
+        "quantity": null,
+        "valveCost": 3696,
+        "boxCost": 285,
+        "anodeCost": 150,
+        "laborPerValve": null
+      },
+      {
+        "valveSize": "QNTY",
+        "quantity": null,
+        "valveCost": null,
+        "boxCost": null,
+        "anodeCost": null,
+        "laborPerValve": null
+      },
+      {
+        "valveSize": "QNTY",
+        "quantity": null,
+        "valveCost": null,
+        "boxCost": null,
+        "anodeCost": null,
+        "laborPerValve": null
+      }
+    ]
   }
 ]

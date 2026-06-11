@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "baselineAccuracy": 34.27428571428571,
+  "baselineAccuracy": 34.6725,
   "lastUpdated": "2026-06-11",
   "promptAdditions": [
     {
@@ -28,6 +28,20 @@
       "addedAt": "2026-06-11",
       "accuracyDelta": null,
       "component": "manholes"
+    },
+    {
+      "rule": "Before finalizing a manhole's data, check the drawing's general notes for a default manhole structure type. If a structure type is not explicitly defined for a specific manhole, use the default type from the general notes.",
+      "addedBy": "flywheel",
+      "addedAt": "2026-06-11",
+      "accuracyDelta": null,
+      "component": "manholes"
+    },
+    {
+      "rule": "Pay close attention to output formatting: always preserve the exact number of decimal places for numerical values as written on the drawing, extract the complete material description including any class or rating, and use the exact abbreviations found on the drawing labels.",
+      "addedBy": "flywheel",
+      "addedAt": "2026-06-11",
+      "accuracyDelta": null,
+      "component": "general"
     }
   ],
   "heuristics": [

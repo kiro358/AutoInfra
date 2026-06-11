@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import path from 'path';
+import os from 'os';
 dotenv.config({ path: path.resolve(__dirname, '../../.env.local') });
 
 import { GoogleGenAI } from '@google/genai';
@@ -608,45 +609,71 @@ export async function extractFromPDF(
     ? await mergePDFs(pdfInput)
     : pdfInput;
   const ai = getGenAI();
-  let gcsFileUri: string | null = null;
+  const apiKey = process.env.GEMINI_API_KEY;
+  const useVertex = process.env.USE_VERTEX_AI === 'true' || !apiKey;
+  const uploadedFiles: any[] = [];
+
+  let fileUriToUse: string | null = null;
   let gcsPath: string | null = null;
   let isCacheHit = false;
 
   try {
-    if (gcsSourceUri) {
-      gcsFileUri = gcsSourceUri;
-      console.log(`      [extraction.ts] Using direct GCS URI: ${gcsFileUri}`);
-    } else if (pdfBuffer.length > 4 * 1024 * 1024) {
-      const hash = crypto.createHash('sha256').update(pdfBuffer).digest('hex');
-      const fileName = `cached-drawings/${hash}.pdf`;
+    if (useVertex) {
+      if (gcsSourceUri) {
+        fileUriToUse = gcsSourceUri;
+        console.log(`      [extraction.ts] Using direct GCS URI: ${fileUriToUse}`);
+      } else if (pdfBuffer.length > 4 * 1024 * 1024) {
+        const hash = crypto.createHash('sha256').update(pdfBuffer).digest('hex');
+        const fileName = `cached-drawings/${hash}.pdf`;
 
-      const bucket = storage.bucket(BUCKET_NAME);
-      const file = bucket.file(fileName);
+        const bucket = storage.bucket(BUCKET_NAME);
+        const file = bucket.file(fileName);
 
-      console.log(`      [extraction.ts] File size (${(pdfBuffer.length / 1024 / 1024).toFixed(2)}MB) > 4MB. Checking GCS cache: gs://${BUCKET_NAME}/${fileName}`);
+        console.log(`      [extraction.ts] File size (${(pdfBuffer.length / 1024 / 1024).toFixed(2)}MB) > 4MB. Checking GCS cache: gs://${BUCKET_NAME}/${fileName}`);
 
-      const [exists] = await file.exists();
-      if (exists) {
-        console.log(`      [extraction.ts] ⚡ GCS Cache Hit! Reusing gs://${BUCKET_NAME}/${fileName}`);
-        isCacheHit = true;
-      } else {
-        console.log(`      [extraction.ts] Cache Miss. Uploading to GCS: gs://${BUCKET_NAME}/${fileName}`);
-        await file.save(pdfBuffer, {
-          contentType: 'application/pdf',
-          metadata: {
-            cacheControl: 'public, max-age=31536000', // Cache for 1 year
-          },
-        });
+        const [exists] = await file.exists();
+        if (exists) {
+          console.log(`      [extraction.ts] ⚡ GCS Cache Hit! Reusing gs://${BUCKET_NAME}/${fileName}`);
+          isCacheHit = true;
+        } else {
+          console.log(`      [extraction.ts] Cache Miss. Uploading to GCS: gs://${BUCKET_NAME}/${fileName}`);
+          await file.save(pdfBuffer, {
+            contentType: 'application/pdf',
+            metadata: {
+              cacheControl: 'public, max-age=31536000', // Cache for 1 year
+            },
+          });
+        }
+
+        gcsPath = fileName;
+        fileUriToUse = `gs://${BUCKET_NAME}/${fileName}`;
       }
-
-      gcsPath = fileName;
-      gcsFileUri = `gs://${BUCKET_NAME}/${fileName}`;
+    } else {
+      // Google AI Studio (Free Tier)
+      if (pdfBuffer.length > 4 * 1024 * 1024 || gcsSourceUri) {
+        const tempPath = path.join(os.tmpdir(), `locator-${crypto.randomBytes(8).toString('hex')}.pdf`);
+        fs.writeFileSync(tempPath, pdfBuffer);
+        try {
+          console.log(`      [extraction.ts] File size (${(pdfBuffer.length / 1024 / 1024).toFixed(2)}MB) > 4MB or GCS source specified. Uploading to Gemini Files API...`);
+          const uploadedFileObj = await ai.files.upload({
+            file: tempPath,
+            config: { mimeType: 'application/pdf' }
+          });
+          fileUriToUse = uploadedFileObj.uri || null;
+          uploadedFiles.push(uploadedFileObj);
+          console.log(`      [extraction.ts] Uploaded successfully to Gemini Files API: ${uploadedFileObj.name} (${uploadedFileObj.uri})`);
+        } finally {
+          try {
+            fs.unlinkSync(tempPath);
+          } catch (err) {}
+        }
+      }
     }
 
-    const pdfPart = gcsFileUri
+    const pdfPart = fileUriToUse
       ? {
         fileData: {
-          fileUri: gcsFileUri,
+          fileUri: fileUriToUse,
           mimeType: 'application/pdf',
         },
       }
@@ -724,31 +751,63 @@ export async function extractFromPDF(
     };
 
     const preparePdfPart = async (buffer: Buffer): Promise<any> => {
-      if (buffer.length > 4 * 1024 * 1024) {
-        const hash = crypto.createHash('sha256').update(buffer).digest('hex');
-        const fileName = `cached-drawings/${hash}.pdf`;
-        const bucket = storage.bucket(BUCKET_NAME);
-        const file = bucket.file(fileName);
-        const [exists] = await file.exists();
-        if (!exists) {
-          await file.save(buffer, {
-            contentType: 'application/pdf',
-            metadata: { cacheControl: 'public, max-age=31536000' }
-          });
+      if (useVertex) {
+        if (buffer.length > 4 * 1024 * 1024) {
+          const hash = crypto.createHash('sha256').update(buffer).digest('hex');
+          const fileName = `cached-drawings/${hash}.pdf`;
+          const bucket = storage.bucket(BUCKET_NAME);
+          const file = bucket.file(fileName);
+          const [exists] = await file.exists();
+          if (!exists) {
+            await file.save(buffer, {
+              contentType: 'application/pdf',
+              metadata: { cacheControl: 'public, max-age=31536000' }
+            });
+          }
+          return {
+            fileData: {
+              fileUri: `gs://${BUCKET_NAME}/${fileName}`,
+              mimeType: 'application/pdf'
+            }
+          };
         }
         return {
-          fileData: {
-            fileUri: `gs://${BUCKET_NAME}/${fileName}`,
-            mimeType: 'application/pdf'
+          inlineData: {
+            mimeType: 'application/pdf',
+            data: buffer.toString('base64')
+          }
+        };
+      } else {
+        if (buffer.length > 4 * 1024 * 1024) {
+          const tempPath = path.join(os.tmpdir(), `chunk-${crypto.randomBytes(8).toString('hex')}.pdf`);
+          fs.writeFileSync(tempPath, buffer);
+          try {
+            console.log(`      [extraction.ts] File size (${(buffer.length / 1024 / 1024).toFixed(2)}MB) > 4MB. Uploading chunk to Gemini Files API...`);
+            const uploadResponse = await ai.files.upload({
+              file: tempPath,
+              config: { mimeType: 'application/pdf' }
+            });
+            console.log(`      [extraction.ts] Uploaded successfully: ${uploadResponse.name} (${uploadResponse.uri})`);
+            uploadedFiles.push(uploadResponse);
+            return {
+              fileData: {
+                fileUri: uploadResponse.uri || '',
+                mimeType: 'application/pdf'
+              }
+            };
+          } finally {
+            try {
+              fs.unlinkSync(tempPath);
+            } catch (err) {}
+          }
+        }
+        return {
+          inlineData: {
+            mimeType: 'application/pdf',
+            data: buffer.toString('base64')
           }
         };
       }
-      return {
-        inlineData: {
-          mimeType: 'application/pdf',
-          data: buffer.toString('base64')
-        }
-      };
     };
 
     console.log(`      [extraction.ts] Running extraction agents (Manholes, Sewers, Watermain) in parallel with stagger...`);
@@ -1059,6 +1118,17 @@ export async function extractFromPDF(
         console.log(`      [extraction.ts] Reused cached drawing: gs://${BUCKET_NAME}/${gcsPath}`);
       } else {
         console.log(`      [extraction.ts] Persisted new drawing in GCS cache: gs://${BUCKET_NAME}/${gcsPath}`);
+      }
+    }
+    // Clean up files uploaded to Gemini Files API
+    for (const f of uploadedFiles) {
+      if (f.name) {
+        try {
+          console.log(`      [extraction.ts] Cleaning up Gemini Files API file: ${f.name}`);
+          await ai.files.delete({ name: f.name });
+        } catch (err: any) {
+          console.warn(`      [extraction.ts] Failed to delete file ${f.name} from Gemini Files API:`, err.message);
+        }
       }
     }
   }

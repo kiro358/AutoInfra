@@ -25,14 +25,28 @@ const MAX_PROMPT_ADDITIONS = 10;
 const MAX_DYNAMIC_FEW_SHOTS = 15;
 
 function getGenAI() {
-  return new GoogleGenAI({
-    vertexai: true,
-    project: PROJECT_ID,
-    location: LOCATION,
-    httpOptions: {
-      timeout: 300000 // 5 minutes in milliseconds
-    }
-  });
+  const apiKey = process.env.GEMINI_API_KEY;
+  const useVertex = process.env.USE_VERTEX_AI === 'true' || !apiKey;
+
+  if (useVertex) {
+    console.log(`      [analyze-failures.ts] Initializing Gemini client using Vertex AI (Project: ${PROJECT_ID})`);
+    return new GoogleGenAI({
+      vertexai: true,
+      project: PROJECT_ID,
+      location: LOCATION,
+      httpOptions: {
+        timeout: 300000 // 5 minutes in milliseconds
+      }
+    });
+  } else {
+    console.log('      [analyze-failures.ts] Initializing Gemini client using Google AI Studio (Free Tier)');
+    return new GoogleGenAI({
+      apiKey: apiKey,
+      httpOptions: {
+        timeout: 300000 // 5 minutes in milliseconds
+      }
+    });
+  }
 }
 
 function parseCSVLine(line: string): string[] {

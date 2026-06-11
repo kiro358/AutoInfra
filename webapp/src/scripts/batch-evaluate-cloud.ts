@@ -68,13 +68,21 @@ export async function findProjectsCloud(): Promise<ProjectInfo[]> {
     "2026-068 HOLIDAY INN,TRENTON": ["05-Civil Drawings & Specs.pdf"],
     "2026-069 RIOCAN GEORGIAN MALL": ["1. Bid Invitation - Drawings/RioCan, Georgian Mall, Redemise, Barrie, ON/(8) Civil/509 Bayfield Street_2026-04-07.pdf"],
     "2026-060 PROPOSED COMMERCIAL DEVELOPMENT": ["3. 24133 - SS-1.pdf"],
+    "2026-050 PANATTONI-6500 MISSISSAUGA ROAD": [
+      "Panattoni, New LEED Certified Industrial Development, 6500 Mississauga Road/New Tender Documents for 2026/01 Drawings/Civil/26-02-10 6500 Mississauga Road Site A and B-C101A Servicing Plan.pdf",
+      "Panattoni, New LEED Certified Industrial Development, 6500 Mississauga Road/New Tender Documents for 2026/01 Drawings/Civil/26-02-10 6500 Mississauga Road Site A and B-C101B Servicing Plan.pdf",
+      "Panattoni, New LEED Certified Industrial Development, 6500 Mississauga Road/New Tender Documents for 2026/01 Drawings/Civil/26-02-10 6500 Mississauga Road Site A and B-C101C Servicing Plan.pdf",
+      "Panattoni, New LEED Certified Industrial Development, 6500 Mississauga Road/New Tender Documents for 2026/01 Drawings/Civil/Sanitary Plan and Profile - C302.pdf"
+    ]
   };
 
   const blocklist = [
     "quote", "quotation", "schedule", "bid", "geotechnical", "geotech", "appendix 4",
     "report", "proposal", "estimate", "pricing", "breakdown", "budget", "letter",
     "backup", "specifications", "specs", "rpt", "contracting", "invoice", "addendum",
-    "tender_form", "tender form", "tipp", "landscape", "cover sheet", "appendix"
+    "tender_form", "tender form", "tipp", "landscape", "cover sheet", "appendix",
+    "structural", "architectural", "electrical", "mechanical", "hvac", "plumbing",
+    "fire protection", "architect", "structural drawings", "architectural drawings"
   ];
 
   for (const folder of folders) {
@@ -130,6 +138,10 @@ export async function findProjectsCloud(): Promise<ProjectInfo[]> {
 
     // Filter drawing PDFs preserving full relative paths
     const pdfPaths = folderFiles.filter(f => {
+      // Ensure the file is directly under the project folder (ignore subfolders)
+      const relativePath = f.slice(folder.length + 1);
+      if (relativePath.includes('/')) return false;
+
       const name = path.basename(f).toLowerCase();
       return name.endsWith(".pdf") && !blocklist.some(b => name.includes(b));
     });

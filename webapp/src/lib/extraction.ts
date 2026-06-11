@@ -7,18 +7,29 @@ import { Storage } from '@google-cloud/storage';
 import { ExtractionResult } from './types';
 import { PIPE_DIAMETERS, MH_DIAMETERS } from './constants';
 import { buildFewShotPromptSection } from './few-shot-examples';
-import { setGlobalDispatcher, Agent } from 'undici';
+import { setGlobalDispatcher, Agent, ProxyAgent } from 'undici';
 import crypto from 'crypto';
 import { LOCATOR_SYSTEM_PROMPT, getManholeAgentPrompt, getSewerAgentPrompt, getWatermainAgentPrompt } from './modular-prompts';
 
-// Globally override Undici's default 30-second headers/body timeout
+// Globally override Undici's default 30-second headers/body timeout and configure proxy if present
 try {
-  setGlobalDispatcher(new Agent({
-    headersTimeout: 300000, // 5 minutes in milliseconds
-    bodyTimeout: 300000,
-    connectTimeout: 300000
-  }));
-  console.log('      [extraction.ts] Undici global dispatcher configured with 5m timeouts.');
+  const proxyUrl = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+  if (proxyUrl) {
+    setGlobalDispatcher(new ProxyAgent({
+      uri: proxyUrl,
+      headersTimeout: 300000, // 5 minutes in milliseconds
+      bodyTimeout: 300000,
+      connectTimeout: 300000
+    }));
+    console.log(`      [extraction.ts] Undici global dispatcher configured with ProxyAgent pointing to ${proxyUrl}`);
+  } else {
+    setGlobalDispatcher(new Agent({
+      headersTimeout: 300000, // 5 minutes in milliseconds
+      bodyTimeout: 300000,
+      connectTimeout: 300000
+    }));
+    console.log('      [extraction.ts] Undici global dispatcher configured with 5m timeouts (No Proxy).');
+  }
 } catch (e) {
   console.warn('      [extraction.ts] Failed to configure Undici global dispatcher:', e);
 }
@@ -31,14 +42,28 @@ const BUCKET_NAME = process.env.GCS_BUCKET || 'autoinfra-ai-eval-data';
 
 
 function getGenAI() {
-  return new GoogleGenAI({
-    vertexai: true,
-    project: PROJECT_ID,
-    location: LOCATION,
-    httpOptions: {
-      timeout: 300000 // 5 minutes in milliseconds
-    }
-  });
+  const apiKey = process.env.GEMINI_API_KEY;
+  const useVertex = process.env.USE_VERTEX_AI === 'true' || !apiKey;
+
+  if (useVertex) {
+    console.log(`      [extraction.ts] Initializing Gemini client using Vertex AI (Project: ${PROJECT_ID})`);
+    return new GoogleGenAI({
+      vertexai: true,
+      project: PROJECT_ID,
+      location: LOCATION,
+      httpOptions: {
+        timeout: 300000 // 5 minutes in milliseconds
+      }
+    });
+  } else {
+    console.log('      [extraction.ts] Initializing Gemini client using Google AI Studio (Free Tier)');
+    return new GoogleGenAI({
+      apiKey: apiKey,
+      httpOptions: {
+        timeout: 300000 // 5 minutes in milliseconds
+      }
+    });
+  }
 }
 
 function getSystemPrompt(projectName: string): string {
@@ -485,7 +510,7 @@ function parseRawExtraction(text: string, projectName: string): ExtractionResult
   }
 }
 
-async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 3, initialDelay = 10000): Promise<T> {
+async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 6, initialDelay = 10000): Promise<T> {
   let attempt = 0;
   while (true) {
     try {
@@ -638,14 +663,14 @@ export async function extractFromPDF(
 
     let locatorIndex: { manholePages: number[], sewerPages: number[], watermainPages: number[] } | null = null;
 
-    if (totalPages <= 5) {
+    if (totalPages <= 15) {
       const allPages = Array.from({ length: totalPages }, (_, i) => i + 1);
       locatorIndex = {
         manholePages: allPages,
         sewerPages: allPages,
         watermainPages: allPages
       };
-      console.log(`      [extraction.ts] Small PDF (<= 5 pages). Skipping locator and using all pages:`, locatorIndex);
+      console.log(`      [extraction.ts] Small/Medium PDF (<= 15 pages). Skipping locator and using all pages:`, locatorIndex);
     } else {
       console.log(`      [extraction.ts] Stage 1: Running Table Locator Agent...`);
       const locatorResponse = await callWithRetry(async () => {
@@ -743,7 +768,7 @@ export async function extractFromPDF(
         console.log(`      [extraction.ts] Stage 2: Slicing and Extracting Manholes & Catchbasins...`);
         const targetPages = locatorIndex?.manholePages || [];
         
-        const CHUNK_SIZE = 10;
+        const CHUNK_SIZE = 15;
         const chunks: number[][] = [];
         for (let i = 0; i < targetPages.length; i += CHUNK_SIZE) {
           chunks.push(targetPages.slice(i, i + CHUNK_SIZE));
@@ -845,7 +870,7 @@ export async function extractFromPDF(
         console.log(`      [extraction.ts] Stage 3: Slicing and Extracting Sewer Pipe Runs & Line Items...`);
         const targetPages = locatorIndex?.sewerPages || [];
         
-        const CHUNK_SIZE = 10;
+        const CHUNK_SIZE = 15;
         const chunks: number[][] = [];
         for (let i = 0; i < targetPages.length; i += CHUNK_SIZE) {
           chunks.push(targetPages.slice(i, i + CHUNK_SIZE));
@@ -916,7 +941,7 @@ export async function extractFromPDF(
         console.log(`      [extraction.ts] Stage 4: Slicing and Extracting Watermain Infrastructure...`);
         const targetPages = locatorIndex?.watermainPages || [];
         
-        const CHUNK_SIZE = 10;
+        const CHUNK_SIZE = 15;
         const chunks: number[][] = [];
         for (let i = 0; i < targetPages.length; i += CHUNK_SIZE) {
           chunks.push(targetPages.slice(i, i + CHUNK_SIZE));

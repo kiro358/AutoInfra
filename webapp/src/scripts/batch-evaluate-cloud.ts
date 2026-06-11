@@ -52,9 +52,10 @@ export async function findProjectsCloud(): Promise<ProjectInfo[]> {
   const fileNames = files.map(f => f.name);
   
   const folders = new Set<string>();
+  const systemFolders = ['cached-drawings', 'temp-uploads', 'scoreboards', 'few_shot_examples', 'rules'];
   fileNames.forEach(name => {
     const parts = name.split('/');
-    if (parts.length > 1 && parts[0]) {
+    if (parts.length > 1 && parts[0] && !systemFolders.includes(parts[0])) {
       folders.add(parts[0]);
     }
   });

@@ -740,7 +740,7 @@ export async function extractFromPDF(
         console.log(`      [extraction.ts] Stage 2: Slicing and Extracting Manholes & Catchbasins...`);
         const targetPages = locatorIndex?.manholePages || [];
         
-        const CHUNK_SIZE = 5;
+        const CHUNK_SIZE = 10;
         const chunks: number[][] = [];
         for (let i = 0; i < targetPages.length; i += CHUNK_SIZE) {
           chunks.push(targetPages.slice(i, i + CHUNK_SIZE));
@@ -842,7 +842,7 @@ export async function extractFromPDF(
         console.log(`      [extraction.ts] Stage 3: Slicing and Extracting Sewer Pipe Runs & Line Items...`);
         const targetPages = locatorIndex?.sewerPages || [];
         
-        const CHUNK_SIZE = 5;
+        const CHUNK_SIZE = 10;
         const chunks: number[][] = [];
         for (let i = 0; i < targetPages.length; i += CHUNK_SIZE) {
           chunks.push(targetPages.slice(i, i + CHUNK_SIZE));
@@ -913,7 +913,7 @@ export async function extractFromPDF(
         console.log(`      [extraction.ts] Stage 4: Slicing and Extracting Watermain Infrastructure...`);
         const targetPages = locatorIndex?.watermainPages || [];
         
-        const CHUNK_SIZE = 5;
+        const CHUNK_SIZE = 10;
         const chunks: number[][] = [];
         for (let i = 0; i < targetPages.length; i += CHUNK_SIZE) {
           chunks.push(targetPages.slice(i, i + CHUNK_SIZE));

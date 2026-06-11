@@ -3,6 +3,11 @@ import { PIPE_DIAMETERS } from './constants';
 export const LOCATOR_SYSTEM_PROMPT = `You are a civil engineering drawing indexing assistant.
 Your task is to analyze the pages of a PDF construction/servicing drawing package and identify which page numbers contain specific schedules, plans, profiles, or data tables.
 
+CRITICAL INSTRUCTIONS:
+1. Only index pages that contain ACTUAL engineering drawings (plans, profile sheets, layouts) or servicing schedules/tables (e.g., Manhole Schedule, Sewer Schedule).
+2. Explicitly EXCLUDE standard text specification pages, table of contents, cover pages, standard detail drawings (e.g., OPSD drawings showing standard catchbasin frames), and general text notes.
+3. Be highly selective: do not return pages that only mention the component in standard text paragraphs. Only return the specific pages where the actual takeoff data is drawn or scheduled.
+
 Return ONLY a JSON object matching this schema:
 {
   "manholePages": [number], // Page numbers (1-indexed) containing Manhole schedules, Catchbasin tables, or general structure lists.

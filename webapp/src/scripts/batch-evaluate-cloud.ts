@@ -81,6 +81,10 @@ export async function findProjectsCloud(): Promise<ProjectInfo[]> {
     
     // Find the ground truth XLSX (using full relative path in the bucket)
     const xlsxFiles = folderFiles.filter(f => {
+      // Ensure the file is directly under the project folder (ignore subfolders)
+      const relativePath = f.slice(folder.length + 1);
+      if (relativePath.includes('/')) return false;
+
       const name = path.basename(f).toLowerCase();
       return name.endsWith('.xlsx') &&
         !name.includes('quote') &&
@@ -362,8 +366,8 @@ async function main() {
   let processed = 0;
   let failed = 0;
 
-  // Optimised runtime: process 5 projects in parallel in the cloud using Gemini 2.5 Flash
-  const CONCURRENCY_LIMIT = 5;
+  // Optimised runtime: process 8 projects in parallel in the cloud using Gemini 2.5 Flash
+  const CONCURRENCY_LIMIT = 8;
   console.log(`🚀 Starting execution of ${projects.length} projects with concurrency = ${CONCURRENCY_LIMIT}...\n`);
 
   await runWithConcurrency(projects, CONCURRENCY_LIMIT, async (project) => {

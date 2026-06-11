@@ -14,7 +14,7 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env.local') });
 
 import fs from 'fs';
 import { GoogleGenAI } from '@google/genai';
-import { compareSpreadsheets } from './compare-sheets';
+import { compareSpreadsheets, getWorksheetFlex } from './compare-sheets';
 import ExcelJS from 'exceljs';
 
 const TRAINING_DIR = path.resolve(__dirname, '../../..', 'existing_projects_training_data');
@@ -110,18 +110,6 @@ function getCellValue(sheet: any, ref: string) {
   return cell.value;
 }
 
-function getWorksheetFlex(wb: ExcelJS.Workbook, name: string): ExcelJS.Worksheet | undefined {
-  let ws = wb.getWorksheet(name);
-  if (ws) return ws;
-
-  const cleanName = name.replace(/\s*\(1\)$/, '');
-  ws = wb.getWorksheet(cleanName);
-  if (ws) return ws;
-
-  ws = wb.worksheets.find(s => s.name.toUpperCase() === name.toUpperCase()) ||
-       wb.worksheets.find(s => s.name.toUpperCase() === cleanName.toUpperCase());
-  return ws;
-}
 
 async function extractGtForFewShot(projectName: string, truthPath: string) {
   const wb = new ExcelJS.Workbook();

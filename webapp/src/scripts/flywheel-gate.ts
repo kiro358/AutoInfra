@@ -221,7 +221,7 @@ async function runGate(csvPath: string, skipReEval: boolean, localMode: boolean)
     let totalCandidate = 0;
     let count = 0;
 
-    const CONCURRENCY_LIMIT = 5;
+    const CONCURRENCY_LIMIT = 8;
     await runWithConcurrency(goldenProjInfos, CONCURRENCY_LIMIT, async (projInfo) => {
       const entry = scoreboard.find(e => e.projectName.toLowerCase() === projInfo.folder.toLowerCase());
       const baselineScore = entry ? entry.overall : 0;

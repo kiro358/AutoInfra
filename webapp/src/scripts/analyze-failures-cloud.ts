@@ -22,6 +22,7 @@ import fs from 'fs';
 import os from 'os';
 import { Storage } from '@google-cloud/storage';
 import ExcelJS from 'exceljs';
+import { getWorksheetFlex } from './compare-sheets';
 
 const storage = new Storage();
 const BUCKET_NAME = process.env.GCS_BUCKET || 'autoinfra-ai-eval-data';
@@ -68,18 +69,6 @@ function getCellValue(sheet: any, ref: string) {
   return cell.value;
 }
 
-function getWorksheetFlex(wb: ExcelJS.Workbook, name: string): ExcelJS.Worksheet | undefined {
-  let ws = wb.getWorksheet(name);
-  if (ws) return ws;
-
-  const cleanName = name.replace(/\s*\(1\)$/, '');
-  ws = wb.getWorksheet(cleanName);
-  if (ws) return ws;
-
-  ws = wb.worksheets.find(s => s.name.toUpperCase() === name.toUpperCase()) ||
-       wb.worksheets.find(s => s.name.toUpperCase() === cleanName.toUpperCase());
-  return ws;
-}
 
 async function extractGtForFewShot(projectName: string, truthPath: string) {
   const wb = new ExcelJS.Workbook();
@@ -428,6 +417,10 @@ export async function analyzeFailuresCloud(
     const fileNames = files.map(f => f.name);
     
     const xlsxFiles = fileNames.filter(f => {
+      // Ensure the file is directly under the project folder (ignore subfolders like tender submissions/quotes)
+      const relativePath = f.slice(projectName.length + 1);
+      if (relativePath.includes('/')) return false;
+
       const name = path.basename(f).toLowerCase();
       return name.endsWith('.xlsx') &&
         !name.includes('quote') &&

@@ -214,7 +214,7 @@ function keysMatch(keyA: string | number | null, keyB: string | number | null): 
   return false;
 }
 
-function getWorksheetFlex(wb: ExcelJS.Workbook, name: string): ExcelJS.Worksheet | undefined {
+export function getWorksheetFlex(wb: ExcelJS.Workbook, name: string): ExcelJS.Worksheet | undefined {
   let ws = wb.getWorksheet(name);
   if (ws) return ws;
 

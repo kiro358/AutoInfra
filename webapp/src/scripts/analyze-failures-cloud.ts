@@ -30,7 +30,7 @@ const BUCKET_NAME = process.env.GCS_BUCKET || 'autoinfra-ai-eval-data';
 const PROJECT_ID = process.env.GCP_PROJECT_ID || '';
 const LOCATION = process.env.GCP_LOCATION || 'us-central1';
 
-const MAX_PROMPT_ADDITIONS = 5;
+const MAX_PROMPT_ADDITIONS = 10;
 const MAX_DYNAMIC_FEW_SHOTS = 15;
 
 function getGenAI() {
@@ -88,15 +88,34 @@ Return ONLY a JSON object matching this schema:
 
 
 
+function parseCSVLine(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === ',' && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
+
 function parseScoreboard(csvPath: string) {
   const content = fs.readFileSync(csvPath, 'utf8');
-  const lines = content.split('\n').filter(l => l.trim().length > 0);
+  const lines = content.split(/\r?\n/).filter(l => l.trim().length > 0);
   const dataLines = lines.slice(1);
   
   const seen = new Map<string, { projectName: string; overall: number; totalCells: number }>();
   for (const line of dataLines) {
-    const parts = line.split(',');
-    if (parts.length < 6) continue;
+    const parts = parseCSVLine(line);
+    if (parts.length < 8) continue;
     const projectName = parts[0].replace(/"/g, '').trim();
     const overall = parseFloat(parts[5]);
     const totalCells = parts[6] ? parseInt(parts[6], 10) : 0;

@@ -52,6 +52,8 @@ Default labor rates: SCB=$200, DCB=$250, DICB F&C=$465, DDICB F&C=$715.
 
 ## CRITICAL RULES
 - IGNORE EXISTING INFRASTRUCTURE: Do NOT extract any structures marked as "EX.", "EXIST.", "EXISTING", or clearly shown as existing to remain. ONLY extract newly proposed or modified structures.
+- SOURCE FILTERING: Only extract data from engineering plan and profile views, and from specific schedules or tables (e.g., Manhole Schedule, Catchbasin Schedule). Explicitly ignore any tables or lists related to cost estimates, bid items, or general construction notes/specifications pages.
+- ADDITIONAL MATERIALS & LABOR: Only populate the 'addMaterials' (surcharges/grates) and 'addLE' fields if the drawing explicitly and separately itemizes a cost or a specific material surcharge/notes for them. Do not infer these costs from general notes or other values. If no explicit separate cost/surcharge is listed, return null or 0.
 - Look at both plan views and profile views, and especially MH tables/schedules.
 
 ${dynamicRules}
@@ -127,6 +129,8 @@ If the project has both storm AND sanitary sewers, insert a divider row with run
 
 ## CRITICAL RULES
 - IGNORE EXISTING INFRASTRUCTURE: Do NOT extract any sewers marked as "EX.", "EXIST.", "EXISTING", or clearly shown as existing to remain. ONLY extract newly proposed or modified sewers.
+- SOURCE FILTERING: Only extract data from engineering plan and profile views, and from specific schedules or tables (e.g., Pipe Schedule). Explicitly ignore any tables or lists related to cost estimates, bid items, or general construction notes/specifications pages.
+- ADDITIONAL MATERIALS & LABOR: Only populate the 'addMaterials' and 'addLE' fields if the drawing explicitly and separately itemizes a cost or a specific material surcharge/notes for them. Do not infer these costs from general notes or other values. If no explicit separate cost/surcharge is listed, return null or 0.
 - DO NOT include standard fees like VIDEO, LAYOUT, or AS BUILT. These will be appended automatically by our system. ONLY include items explicitly drawn or noted.
 - Match structures and pipe runs carefully. Look at both plan views and profile views.
 
@@ -177,6 +181,10 @@ Only extract watermain data if watermain work is explicitly shown on the drawing
 - valveSize: e.g., "200mm Gate Valve".
 - quantity: number.
 - valveCost, boxCost, anodeCost, laborPerValve: associated costs.
+
+## CRITICAL RULES
+- IGNORE EXISTING INFRASTRUCTURE: Do NOT extract any watermains marked as "EX.", "EXIST.", "EXISTING", or clearly shown as existing to remain. ONLY extract newly proposed or modified watermains.
+- SOURCE FILTERING: Only extract data from engineering plan and profile views, layouts, and watermain schedules. Explicitly ignore any tables or lists related to cost estimates, bid items, or general construction notes/specifications pages.
 
 ${dynamicRules}
 

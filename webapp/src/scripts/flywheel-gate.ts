@@ -69,15 +69,34 @@ interface ScoreboardEntry {
   totalCells: number;
 }
 
+function parseCSVLine(line: string): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === ',' && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
+
 function parseScoreboard(csvPath: string): ScoreboardEntry[] {
   const content = fs.readFileSync(csvPath, 'utf8');
-  const lines = content.split('\n').filter(l => l.trim().length > 0);
+  const lines = content.split(/\r?\n/).filter(l => l.trim().length > 0);
   const dataLines = lines.slice(1);
   
   const seen = new Map<string, ScoreboardEntry>();
   for (const line of dataLines) {
-    const parts = line.split(',');
-    if (parts.length < 6) continue;
+    const parts = parseCSVLine(line);
+    if (parts.length < 8) continue;
     const projectName = parts[0].replace(/"/g, '').trim();
     const overall = parseFloat(parts[5]);
     const totalCells = parts[6] ? parseInt(parts[6], 10) : 0;

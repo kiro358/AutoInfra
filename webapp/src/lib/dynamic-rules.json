@@ -23,12 +23,6 @@
       "accuracyDelta": null
     },
     {
-      "rule": "Only extract quantities and costs for items explicitly listed as a 'Pay Item' in the bid schedule or notes. If an item is shown on the drawing but is not a distinct pay item, its quantity and cost should be considered incidental and set to null or zero.",
-      "addedBy": "flywheel",
-      "addedAt": "2026-06-06",
-      "accuracyDelta": null
-    },
-    {
       "rule": "The Rim Elevation is often abbreviated on drawings as 'RIM' or 'RIM EL.' followed by the value; ensure you extract this when present.",
       "addedBy": "flywheel",
       "addedAt": "2026-06-11",

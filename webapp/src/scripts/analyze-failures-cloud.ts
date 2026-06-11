@@ -23,6 +23,7 @@ import os from 'os';
 import { Storage } from '@google-cloud/storage';
 import ExcelJS from 'exceljs';
 import { getWorksheetFlex } from './compare-sheets';
+import { GoogleGenAI } from '@google/genai';
 
 const storage = new Storage();
 const BUCKET_NAME = process.env.GCS_BUCKET || 'autoinfra-ai-eval-data';
@@ -31,6 +32,59 @@ const LOCATION = process.env.GCP_LOCATION || 'us-central1';
 
 const MAX_PROMPT_ADDITIONS = 5;
 const MAX_DYNAMIC_FEW_SHOTS = 15;
+
+function getGenAI() {
+  return new GoogleGenAI({
+    vertexai: true,
+    project: PROJECT_ID,
+    location: LOCATION,
+    httpOptions: {
+      timeout: 300000 // 5 minutes in milliseconds
+    }
+  });
+}
+
+async function suggestImprovements(diffsSummary: string, projectName: string) {
+  const ai = getGenAI();
+  
+  const systemPrompt = `You are an expert AI optimization engineer. We have a data extraction pipeline that pulls civil engineering infrastructure data from PDF drawings and populates an Excel spreadsheet.
+  
+We just ran an evaluation pass and found mismatches between what our pipeline generated and what human estimators manually entered (Ground Truth).
+
+Your task is to analyze the following mismatches for a single project and suggest exactly ONE of the following fixes:
+1. "PROMPT_TUNING": If the pipeline misunderstood the schema or format, suggest what sentence to add to the system prompt of the targeted component.
+2. "ADD_HEURISTIC": If it's a domain-specific default that isn't on the drawings, suggest a new post-processing heuristic rule.
+3. "ADD_FEW_SHOT": If the drawing is just too complex, recommend adding this project to the few-shot examples.
+
+Explain your reasoning clearly.
+Return ONLY a JSON object matching this schema:
+{
+  "action": "PROMPT_TUNING" | "ADD_HEURISTIC" | "ADD_FEW_SHOT",
+  "component": "manholes" | "sewers" | "watermain" | "general", // Target component if action is PROMPT_TUNING
+  "reasoning": "Explanation here",
+  "promptAddition": "Sentence to add to prompt (if PROMPT_TUNING)",
+  "heuristicRule": "Description of rule (if ADD_HEURISTIC)"
+}`;
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-2.5-pro',
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          { text: systemPrompt },
+          { text: `\\n\\nProject: \${projectName}\\n\\nHere are the mismatches:\\n\${diffsSummary}` }
+        ]
+      }
+    ],
+    config: {
+      temperature: 0.2,
+      responseMimeType: 'application/json'
+    }
+  });
+
+  return JSON.parse(response.text || '{}');
+}
 
 
 
@@ -266,7 +320,12 @@ function isDuplicateRule(existingRules: string[], newRule: string): boolean {
   return false;
 }
 
-function applyDynamicRule(rules: DynamicRulesV2, action: string, rule: string): { applied: boolean; reason: string } {
+function applyDynamicRule(
+  rules: DynamicRulesV2,
+  action: string,
+  rule: string,
+  component?: 'manholes' | 'sewers' | 'watermain' | 'general'
+): { applied: boolean; reason: string } {
   const today = new Date().toISOString().split('T')[0];
   
   if (action === 'PROMPT_TUNING') {
@@ -286,6 +345,7 @@ function applyDynamicRule(rules: DynamicRulesV2, action: string, rule: string): 
       addedBy: 'flywheel',
       addedAt: today,
       accuracyDelta: null,
+      component,
     });
     return { applied: true, reason: 'Added prompt rule' };
     
@@ -446,27 +506,85 @@ export async function analyzeFailuresCloud(
     
     await storage.bucket(BUCKET_NAME).file(truthFile).download({ destination: truthPath });
 
-    console.log(`🤖 Automatically extracting Ground Truth as a few-shot candidate...`);
-    try {
-      const gt = await extractGtForFewShot(projectName, truthPath);
-      const applyResult = applyFewShot(fewShotsPath, gt);
-
-      if (applyResult.applied) {
-        report.changesApplied++;
-        console.log(`✅ ${applyResult.reason}`);
-      } else {
-        report.changesRejected++;
-        console.log(`⏭️ Skipped: ${applyResult.reason}`);
+    // Download latest discrepancy text report if available
+    const diffFiles = fileNames.filter(f => f.includes('/generated_spreadsheets/') && f.endsWith('_diff.txt'));
+    let diffsSummary = '';
+    if (diffFiles.length > 0) {
+      diffFiles.sort();
+      const latestDiffFile = diffFiles[diffFiles.length - 1];
+      const diffDest = path.join(tmpDir, 'diff.txt');
+      try {
+        await storage.bucket(BUCKET_NAME).file(latestDiffFile).download({ destination: diffDest });
+        diffsSummary = fs.readFileSync(diffDest, 'utf8');
+      } catch (err: any) {
+        console.warn(`   ⚠️ Failed to download discrepancy report: ${err.message}`);
       }
+    }
 
-      report.details.push({
-        project: projectName,
-        action: 'ADD_FEW_SHOT',
-        applied: applyResult.applied,
-        reason: applyResult.reason,
-      });
+    let suggestion = { action: 'ADD_FEW_SHOT', reasoning: 'No discrepancy report found. Defaulting to few-shot.' };
+    if (diffsSummary) {
+      console.log(`🤖 LLM analyzing mismatches and suggesting fixes...`);
+      try {
+        suggestion = await suggestImprovements(diffsSummary, projectName);
+        console.log(`   Action suggested: ${suggestion.action}`);
+        console.log(`   Reasoning: ${suggestion.reasoning}`);
+      } catch (err: any) {
+        console.warn(`   ⚠️ LLM suggestion failed: ${err.message}. Defaulting to ADD_FEW_SHOT.`);
+      }
+    }
+
+    try {
+      if (suggestion.action === 'PROMPT_TUNING' && (suggestion as any).promptAddition) {
+        const applyResult = applyDynamicRule(rules, 'PROMPT_TUNING', (suggestion as any).promptAddition, (suggestion as any).component);
+        if (applyResult.applied) {
+          report.changesApplied++;
+          console.log(`✅ ${applyResult.reason}`);
+        } else {
+          report.changesRejected++;
+          console.log(`⏭️ Skipped: ${applyResult.reason}`);
+        }
+        report.details.push({
+          project: projectName,
+          action: 'PROMPT_TUNING',
+          applied: applyResult.applied,
+          reason: applyResult.reason,
+        });
+      } else if (suggestion.action === 'ADD_HEURISTIC' && (suggestion as any).heuristicRule) {
+        const applyResult = applyDynamicRule(rules, 'ADD_HEURISTIC', (suggestion as any).heuristicRule);
+        if (applyResult.applied) {
+          report.changesApplied++;
+          console.log(`✅ ${applyResult.reason}`);
+        } else {
+          report.changesRejected++;
+          console.log(`⏭️ Skipped: ${applyResult.reason}`);
+        }
+        report.details.push({
+          project: projectName,
+          action: 'ADD_HEURISTIC',
+          applied: applyResult.applied,
+          reason: applyResult.reason,
+        });
+      } else {
+        // ADD_FEW_SHOT
+        console.log(`🤖 Automatically extracting Ground Truth as a few-shot candidate...`);
+        const gt = await extractGtForFewShot(projectName, truthPath);
+        const applyResult = applyFewShot(fewShotsPath, gt);
+        if (applyResult.applied) {
+          report.changesApplied++;
+          console.log(`✅ ${applyResult.reason}`);
+        } else {
+          report.changesRejected++;
+          console.log(`⏭️ Skipped: ${applyResult.reason}`);
+        }
+        report.details.push({
+          project: projectName,
+          action: 'ADD_FEW_SHOT',
+          applied: applyResult.applied,
+          reason: applyResult.reason,
+        });
+      }
     } catch (e: any) {
-      console.error(`Failed to extract/apply few-shot: ${e.message}`);
+      console.error(`Failed to apply suggested optimization: ${e.message}`);
       report.details.push({
         project: projectName,
         action: 'ERROR',

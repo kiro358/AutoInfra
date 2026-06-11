@@ -482,27 +482,82 @@ export async function analyzeFailuresLocal(
     const truthPath = path.join(projectDir, truthFiles[0]);
 
 
-    console.log(`🤖 Automatically extracting Ground Truth as a few-shot candidate...`);
-    try {
-      const gt = await extractGtForFewShot(projectName, truthPath);
-      const applyResult = applyFewShot(fewShotsPath, gt);
-
-      if (applyResult.applied) {
-        report.changesApplied++;
-        console.log(`✅ ${applyResult.reason}`);
-      } else {
-        report.changesRejected++;
-        console.log(`⏭️ Skipped: ${applyResult.reason}`);
+    // Find latest discrepancy text report locally if available
+    const diffFiles = fs.readdirSync(genDir).filter(f => f.startsWith('eval_') && f.endsWith('_diff.txt')).sort();
+    let diffsSummary = '';
+    if (diffFiles.length > 0) {
+      const latestDiffFile = diffFiles[diffFiles.length - 1];
+      try {
+        diffsSummary = fs.readFileSync(path.join(genDir, latestDiffFile), 'utf8');
+      } catch (err: any) {
+        console.warn(`   ⚠️ Failed to read local discrepancy report: ${err.message}`);
       }
+    }
 
-      report.details.push({
-        project: projectName,
-        action: 'ADD_FEW_SHOT',
-        applied: applyResult.applied,
-        reason: applyResult.reason,
-      });
+    let suggestion = { action: 'ADD_FEW_SHOT', reasoning: 'No discrepancy report found. Defaulting to few-shot.' };
+    if (diffsSummary) {
+      console.log(`🤖 LLM analyzing mismatches and suggesting fixes...`);
+      try {
+        suggestion = await suggestImprovements(diffsSummary, projectName);
+        console.log(`   Action suggested: ${suggestion.action}`);
+        console.log(`   Reasoning: ${suggestion.reasoning}`);
+      } catch (err: any) {
+        console.warn(`   ⚠️ LLM suggestion failed: ${err.message}. Defaulting to ADD_FEW_SHOT.`);
+      }
+    }
+
+    try {
+      if (suggestion.action === 'PROMPT_TUNING' && (suggestion as any).promptAddition) {
+        const applyResult = applyDynamicRule(rules, 'PROMPT_TUNING', (suggestion as any).promptAddition, (suggestion as any).component);
+        if (applyResult.applied) {
+          report.changesApplied++;
+          console.log(`✅ ${applyResult.reason}`);
+        } else {
+          report.changesRejected++;
+          console.log(`⏭️ Skipped: ${applyResult.reason}`);
+        }
+        report.details.push({
+          project: projectName,
+          action: 'PROMPT_TUNING',
+          applied: applyResult.applied,
+          reason: applyResult.reason,
+        });
+      } else if (suggestion.action === 'ADD_HEURISTIC' && (suggestion as any).heuristicRule) {
+        const applyResult = applyDynamicRule(rules, 'ADD_HEURISTIC', (suggestion as any).heuristicRule);
+        if (applyResult.applied) {
+          report.changesApplied++;
+          console.log(`✅ ${applyResult.reason}`);
+        } else {
+          report.changesRejected++;
+          console.log(`⏭️ Skipped: ${applyResult.reason}`);
+        }
+        report.details.push({
+          project: projectName,
+          action: 'ADD_HEURISTIC',
+          applied: applyResult.applied,
+          reason: applyResult.reason,
+        });
+      } else {
+        // ADD_FEW_SHOT
+        console.log(`🤖 Automatically extracting Ground Truth as a few-shot candidate...`);
+        const gt = await extractGtForFewShot(projectName, truthPath);
+        const applyResult = applyFewShot(fewShotsPath, gt);
+        if (applyResult.applied) {
+          report.changesApplied++;
+          console.log(`✅ ${applyResult.reason}`);
+        } else {
+          report.changesRejected++;
+          console.log(`⏭️ Skipped: ${applyResult.reason}`);
+        }
+        report.details.push({
+          project: projectName,
+          action: 'ADD_FEW_SHOT',
+          applied: applyResult.applied,
+          reason: applyResult.reason,
+        });
+      }
     } catch (e: any) {
-      console.error(`Failed to extract/apply few-shot: ${e.message}`);
+      console.error(`Failed to apply suggested optimization: ${e.message}`);
       report.details.push({
         project: projectName,
         action: 'ERROR',

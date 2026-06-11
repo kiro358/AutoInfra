@@ -322,7 +322,7 @@ export async function processProjectCloud(project: ProjectInfo): Promise<Compare
       await storage.bucket(BUCKET_NAME).upload(metadataPath, { destination: gcsMetadataPath });
       console.log(`   ☁️ Uploaded metadata to GCS: ${gcsMetadataPath}`);
 
-      return null;
+      return { overallAccuracy: null, reports: [] } as any;
     }
   } catch (e: any) {
     console.error(`   ❌ Error: ${e.message?.slice(0, 200)}`);

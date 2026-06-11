@@ -520,7 +520,7 @@ async function extractPagesFromPDF(pdfBuffer: Buffer, pages: number[]): Promise<
     return pdfBuffer;
   }
   try {
-    const srcDoc = await PDFDocument.load(pdfBuffer);
+    const srcDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
     const dstDoc = await PDFDocument.create();
     const totalPages = srcDoc.getPageCount();
     const validIndices = pages
@@ -555,7 +555,7 @@ export async function mergePDFs(buffers: Buffer[]): Promise<Buffer> {
 
   for (let i = 0; i < buffers.length; i++) {
     try {
-      const srcDoc = await PDFDocument.load(buffers[i]);
+      const srcDoc = await PDFDocument.load(buffers[i], { ignoreEncryption: true });
       const pageCount = srcDoc.getPageCount();
       const indices = Array.from({ length: pageCount }, (_, j) => j);
       const copiedPages = await mergedDoc.copyPages(srcDoc, indices);
@@ -629,7 +629,7 @@ export async function extractFromPDF(
         },
       };
 
-    const srcDoc = await PDFDocument.load(pdfBuffer);
+    const srcDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
     const totalPages = srcDoc.getPageCount();
     console.log(`      [extraction.ts] Total pages in merged PDF: ${totalPages}`);
 

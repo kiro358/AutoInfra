@@ -49,6 +49,7 @@ jobs:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          USE_VERTEX_AI: 'true'
         run: |
           npx tsx src/scripts/batch-evaluate-cloud.ts
 
@@ -69,6 +70,7 @@ jobs:
           GCP_LOCATION: ${{ secrets.GCP_LOCATION }}
           GCS_BUCKET: ${{ secrets.GCS_BUCKET }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          USE_VERTEX_AI: 'true'
         run: |
           npx tsx src/scripts/flywheel-gate.ts scoreboards/combined.csv
           

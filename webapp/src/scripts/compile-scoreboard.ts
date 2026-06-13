@@ -11,6 +11,7 @@
 import fs from 'fs';
 import path from 'path';
 import { compareSpreadsheets, CompareResult } from './compare-sheets';
+import { compareSemantically } from './compare-jsons';
 
 const TRAINING_DIR = path.resolve(__dirname, '../../..', 'existing_projects_training_data');
 
@@ -167,8 +168,14 @@ async function main() {
 
     try {
       const compareResult = await compareSpreadsheets(truthPath, genPath, project.folder);
+      try {
+        const semResult = await compareSemantically(truthPath, genPath, project.folder);
+        compareResult.semanticOverallAccuracy = semResult.overallAccuracy;
+      } catch (err) {
+        compareResult.semanticOverallAccuracy = 0;
+      }
       results.push(compareResult);
-      console.log(`  -> Accuracy: ${compareResult.overallAccuracy.toFixed(1)}%\n`);
+      console.log(`  -> Spreadsheet Accuracy: ${compareResult.overallAccuracy.toFixed(1)}% | Semantic: ${compareResult.semanticOverallAccuracy.toFixed(1)}%\n`);
     } catch (e: any) {
       console.error(`  -> Error: ${e.message}\n`);
     }
@@ -192,6 +199,7 @@ async function main() {
     'Sewers'.padStart(8),
     'WM'.padStart(8),
     'Overall'.padStart(8),
+    'Semantic'.padStart(8),
     'Cells'.padStart(6),
   ].join(' │ ');
   console.log('\n📊 BATCH EVALUATION SCOREBOARD');
@@ -211,6 +219,7 @@ async function main() {
       sectionAccs[2]?.padStart(8) || 'N/A'.padStart(8),
       sectionAccs[3]?.padStart(8) || 'N/A'.padStart(8),
       `${r.overallAccuracy.toFixed(1)}%`.padStart(8),
+      r.semanticOverallAccuracy !== undefined ? `${r.semanticOverallAccuracy.toFixed(1)}%`.padStart(8) : 'N/A'.padStart(8),
       String(r.totalCells).padStart(6),
     ].join(' │ ');
     console.log(row);
@@ -220,12 +229,13 @@ async function main() {
   // Save scoreboard as CSV
   const csvPath = path.join(process.cwd(), `evaluation_scoreboard_${new Date().toISOString().slice(0, 10)}.csv`);
   const csvRows = [
-    'Project,MH_Structures,MH_Catchbasins,Sewers,Watermain,Overall,TotalCells,MatchingCells',
+    'Project,MH_Structures,MH_Catchbasins,Sewers,Watermain,Overall,Semantic_Overall,TotalCells,MatchingCells',
     ...results.map(r => {
       const accs = r.reports.map(rep =>
         rep.totalCells > 0 ? ((rep.matchingCells / rep.totalCells) * 100).toFixed(1) : 'N/A'
       );
-      return `"${r.projectName}",${accs.join(',')},${r.overallAccuracy.toFixed(1)},${r.totalCells},${r.totalMatching}`;
+      const semAcc = r.semanticOverallAccuracy !== undefined ? r.semanticOverallAccuracy.toFixed(1) : 'N/A';
+      return `"${r.projectName}",${accs.join(',')},${r.overallAccuracy.toFixed(1)},${semAcc},${r.totalCells},${r.totalMatching}`;
     }),
   ];
   fs.writeFileSync(csvPath, csvRows.join('\n'));

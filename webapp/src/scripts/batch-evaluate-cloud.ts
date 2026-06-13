@@ -6,6 +6,7 @@ import { extractFromPDF } from '../lib/extraction';
 import { populateTemplate } from '../lib/spreadsheet';
 import { DEFAULT_PARAMS } from '../lib/constants';
 import { compareSpreadsheets, CompareResult, formatCompareResult } from './compare-sheets';
+import { compareSemantically } from './compare-jsons';
 
 const storage = new Storage();
 const BUCKET_NAME = process.env.GCS_BUCKET || 'autoinfra-ai-eval-data';
@@ -314,6 +315,20 @@ export async function processProjectCloud(project: ProjectInfo): Promise<Compare
       console.log(`   🔍 Comparing against ground truth...`);
       const compareResult = await compareSpreadsheets(truthDest, genPath, project.folder);
 
+      // Add semantic JSON comparison
+      let semanticReport = '';
+      try {
+        const semResult = await compareSemantically(truthDest, genPath, project.folder);
+        compareResult.semanticOverallAccuracy = semResult.overallAccuracy;
+        
+        const { formatSemanticResult } = require('./compare-jsons');
+        semanticReport = formatSemanticResult(semResult);
+        console.log(semanticReport);
+      } catch (err: any) {
+        console.warn(`   ⚠️ Semantic comparison failed: ${err.message}`);
+        compareResult.semanticOverallAccuracy = 0;
+      }
+
       for (const report of compareResult.reports) {
         if (report.totalCells > 0) {
           const acc = ((report.matchingCells / report.totalCells) * 100).toFixed(1);
@@ -332,7 +347,7 @@ export async function processProjectCloud(project: ProjectInfo): Promise<Compare
           }
         }
       }
-      console.log(`   📊 Overall: ${compareResult.overallAccuracy.toFixed(1)}%`);
+      console.log(`   📊 Overall Spreadsheet: ${compareResult.overallAccuracy.toFixed(1)}%`);
 
       // Write text report of diffs and upload to GCS next to generated spreadsheet
       const diffReport = formatCompareResult(compareResult);
@@ -344,6 +359,15 @@ export async function processProjectCloud(project: ProjectInfo): Promise<Compare
       await storage.bucket(BUCKET_NAME).upload(diffPath, { destination: gcsDiffPath });
       console.log(`   ☁️ Uploaded discrepancy report to GCS: ${gcsDiffPath}`);
 
+      if (semanticReport) {
+        const semFilename = `eval_${timestamp}_semantic_diff.txt`;
+        const semPath = path.join(tmpDir, semFilename);
+        fs.writeFileSync(semPath, semanticReport);
+        const gcsSemPath = `${project.folder}/generated_spreadsheets/${semFilename}`;
+        await storage.bucket(BUCKET_NAME).upload(semPath, { destination: gcsSemPath });
+        console.log(`   ☁️ Uploaded semantic diff report to GCS: ${gcsSemPath}`);
+      }
+
       // Upload metadata to GCS
       const metadataFilename = `eval_${timestamp}_metadata.json`;
       const metadataPath = path.join(tmpDir, metadataFilename);
@@ -352,6 +376,7 @@ export async function processProjectCloud(project: ProjectInfo): Promise<Compare
         warnings: result.warnings,
         extractTime,
         overallAccuracy: compareResult.overallAccuracy,
+        semanticOverallAccuracy: compareResult.semanticOverallAccuracy,
         locatorIndex: result.locatorIndex || null
       }, null, 2));
 
@@ -455,12 +480,13 @@ async function main() {
     const csvFilename = `evaluation_scoreboard_${new Date().toISOString().slice(0, 10)}${suffix}.csv`;
     const csvPath = path.join(os.tmpdir(), csvFilename);
     const csvRows = [
-      'Project,MH_Structures,MH_Catchbasins,Sewers,Watermain,Overall,TotalCells,MatchingCells',
+      'Project,MH_Structures,MH_Catchbasins,Sewers,Watermain,Overall,Semantic_Overall,TotalCells,MatchingCells',
       ...validResults.map(r => {
         const accs = r.reports.map(rep =>
           rep.totalCells > 0 ? ((rep.matchingCells / rep.totalCells) * 100).toFixed(1) : 'N/A'
         );
-        return `"${r.projectName}",${accs.join(',')},${r.overallAccuracy.toFixed(1)},${r.totalCells},${r.totalMatching}`;
+        const semAcc = r.semanticOverallAccuracy !== undefined ? r.semanticOverallAccuracy.toFixed(1) : 'N/A';
+        return `"${r.projectName}",${accs.join(',')},${r.overallAccuracy.toFixed(1)},${semAcc},${r.totalCells},${r.totalMatching}`;
       }),
     ];
     fs.writeFileSync(csvPath, csvRows.join('\n'));

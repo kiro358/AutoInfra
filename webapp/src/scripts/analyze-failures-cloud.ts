@@ -126,21 +126,29 @@ function parseScoreboard(csvPath: string) {
   const lines = content.split(/\r?\n/).filter(l => l.trim().length > 0);
   const dataLines = lines.slice(1);
   
-  const seen = new Map<string, { projectName: string; overall: number; totalCells: number }>();
+  const seen = new Map<string, { projectName: string; overall: number; semanticOverall: number; totalCells: number }>();
   for (const line of dataLines) {
     const parts = parseCSVLine(line);
     if (parts.length < 8) continue;
     const projectName = parts[0].replace(/"/g, '').trim();
     const overall = parseFloat(parts[5]);
-    const totalCells = parts[6] ? parseInt(parts[6], 10) : 0;
-    if (!projectName || isNaN(overall)) continue;
+    let semanticOverall = overall;
+    let totalCells = 0;
+    
+    if (parts.length >= 9) {
+      semanticOverall = parseFloat(parts[6]);
+      totalCells = parts[7] ? parseInt(parts[7], 10) : 0;
+    } else {
+      totalCells = parts[6] ? parseInt(parts[6], 10) : 0;
+    }
+    if (!projectName || isNaN(overall) || isNaN(semanticOverall)) continue;
     
     // Always overwrite with the last seen entry (latest date)
-    seen.set(projectName.toLowerCase(), { projectName, overall, totalCells });
+    seen.set(projectName.toLowerCase(), { projectName, overall, semanticOverall, totalCells });
   }
 
   const results = Array.from(seen.values());
-  return results.filter(r => r.overall < 95 && !isNaN(r.totalCells) && r.totalCells > 0);
+  return results.filter(r => r.semanticOverall < 95 && !isNaN(r.totalCells) && r.totalCells > 0);
 }
 
 
@@ -487,9 +495,9 @@ export async function analyzeFailuresCloud(
   }
   
   // Sort from worst to best
-  failedProjects.sort((a, b) => a.overall - b.overall);
+  failedProjects.sort((a, b) => a.semanticOverall - b.semanticOverall);
   failedProjects = failedProjects.slice(0, limit);
-  console.log(`Found ${failedProjects.length} projects with <95% accuracy after filtering.\n`);
+  console.log(`Found ${failedProjects.length} projects with <95% semantic accuracy after filtering.\n`);
 
   const report: AnalysisReport = {
     analyzedProjects: failedProjects.length,
@@ -501,9 +509,9 @@ export async function analyzeFailuresCloud(
   // Load rules once
   const rules = loadDynamicRules(rulesPath);
 
-  for (const { projectName, overall } of failedProjects) {
+  for (const { projectName, semanticOverall } of failedProjects) {
     console.log(`====================================================`);
-    console.log(`🔍 Analyzing: ${projectName} (${overall.toFixed(1)}% Accuracy)`);
+    console.log(`🔍 Analyzing: ${projectName} (${semanticOverall.toFixed(1)}% Semantic Accuracy)`);
     
     // Find project files in GCS
     const [files] = await storage.bucket(BUCKET_NAME).getFiles({ prefix: projectName + '/' });

@@ -121,6 +121,7 @@ export interface CompareResult {
   warnings?: string[];
   isCustomLayout?: boolean;
   truthSheets?: string[];
+  semanticOverallAccuracy?: number;
 }
 
 // ======================== CORE FUNCTIONS ========================

@@ -19,6 +19,7 @@ import { extractFromPDF } from '../lib/extraction';
 import { populateTemplate } from '../lib/spreadsheet';
 import { DEFAULT_PARAMS, GOLDEN_PROJECTS } from '../lib/constants';
 import { compareSpreadsheets, CompareResult } from './compare-sheets';
+import { compareSemantically } from './compare-jsons';
 
 const TRAINING_DIR = path.resolve(__dirname, '../../..', 'existing_projects_training_data');
 
@@ -226,6 +227,15 @@ export async function processProject(project: ProjectInfo): Promise<CompareResul
       console.log(`   🔍 Comparing against ground truth...`);
       const compareResult = await compareSpreadsheets(truthPath, genPath, project.folder);
 
+      try {
+        const semResult = await compareSemantically(truthPath, genPath, project.folder);
+        compareResult.semanticOverallAccuracy = semResult.overallAccuracy;
+        console.log(`   🧠 Semantic JSON Overall: ${semResult.overallAccuracy.toFixed(1)}%`);
+      } catch (err: any) {
+        console.warn(`   ⚠️ Semantic comparison failed: ${err.message}`);
+        compareResult.semanticOverallAccuracy = 0;
+      }
+
       // Print per-section accuracy
       for (const report of compareResult.reports) {
         if (report.totalCells > 0) {
@@ -234,7 +244,7 @@ export async function processProject(project: ProjectInfo): Promise<CompareResul
           console.log(`      ${report.sectionLabel}: ${acc}% (${report.matchingCells}/${report.totalCells}) [${diffCount} diffs]`);
         }
       }
-      console.log(`   📊 Overall: ${compareResult.overallAccuracy.toFixed(1)}%`);
+      console.log(`   📊 Overall Spreadsheet: ${compareResult.overallAccuracy.toFixed(1)}%`);
 
       // Write metadata file
       const metadataFilename = `eval_${timestamp}_metadata.json`;
@@ -243,7 +253,8 @@ export async function processProject(project: ProjectInfo): Promise<CompareResul
         confidence: result.confidence,
         warnings: result.warnings,
         extractTime,
-        overallAccuracy: compareResult.overallAccuracy
+        overallAccuracy: compareResult.overallAccuracy,
+        semanticOverallAccuracy: compareResult.semanticOverallAccuracy
       }, null, 2));
 
       return compareResult;
@@ -355,6 +366,7 @@ async function main() {
     'Sewers'.padStart(8),
     'WM'.padStart(8),
     'Overall'.padStart(8),
+    'Semantic'.padStart(8),
     'Cells'.padStart(6),
   ].join(' │ ');
   console.log(header);
@@ -372,6 +384,7 @@ async function main() {
       sectionAccs[2]?.padStart(8) || 'N/A'.padStart(8),
       sectionAccs[3]?.padStart(8) || 'N/A'.padStart(8),
       `${r.overallAccuracy.toFixed(1)}%`.padStart(8),
+      r.semanticOverallAccuracy !== undefined ? `${r.semanticOverallAccuracy.toFixed(1)}%`.padStart(8) : 'N/A'.padStart(8),
       String(r.totalCells).padStart(6),
     ].join(' │ ');
     console.log(row);
@@ -397,12 +410,13 @@ async function main() {
   // Save scoreboard as CSV
   const csvPath = path.join(process.cwd(), `evaluation_scoreboard_${new Date().toISOString().slice(0, 10)}.csv`);
   const csvRows = [
-    'Project,MH_Structures,MH_Catchbasins,Sewers,Watermain,Overall,TotalCells,MatchingCells',
+    'Project,MH_Structures,MH_Catchbasins,Sewers,Watermain,Overall,Semantic_Overall,TotalCells,MatchingCells',
     ...results.map(r => {
       const accs = r.reports.map(rep =>
         rep.totalCells > 0 ? ((rep.matchingCells / rep.totalCells) * 100).toFixed(1) : 'N/A'
       );
-      return `"${r.projectName}",${accs.join(',')},${r.overallAccuracy.toFixed(1)},${r.totalCells},${r.totalMatching}`;
+      const semAcc = r.semanticOverallAccuracy !== undefined ? r.semanticOverallAccuracy.toFixed(1) : 'N/A';
+      return `"${r.projectName}",${accs.join(',')},${r.overallAccuracy.toFixed(1)},${semAcc},${r.totalCells},${r.totalMatching}`;
     }),
   ];
   fs.writeFileSync(csvPath, csvRows.join('\n'));

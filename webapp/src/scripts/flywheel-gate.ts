@@ -63,9 +63,9 @@ async function runWithConcurrency<T, R>(
 }
 
 interface ScoreboardEntry {
-
   projectName: string;
   overall: number;
+  semanticOverall: number;
   totalCells: number;
 }
 
@@ -99,13 +99,23 @@ function parseScoreboard(csvPath: string): ScoreboardEntry[] {
     if (parts.length < 8) continue;
     const projectName = parts[0].replace(/"/g, '').trim();
     const overall = parseFloat(parts[5]);
-    const totalCells = parts[6] ? parseInt(parts[6], 10) : 0;
-    if (!projectName || isNaN(overall)) continue;
+    let semanticOverall = overall;
+    let totalCells = 0;
     
-    seen.set(projectName.toLowerCase(), { projectName, overall, totalCells });
+    // Check if new format with Semantic_Overall is present (typically >= 9 parts)
+    if (parts.length >= 9) {
+      semanticOverall = parseFloat(parts[6]);
+      totalCells = parts[7] ? parseInt(parts[7], 10) : 0;
+    } else {
+      totalCells = parts[6] ? parseInt(parts[6], 10) : 0;
+    }
+    
+    if (!projectName || isNaN(overall) || isNaN(semanticOverall)) continue;
+    
+    seen.set(projectName.toLowerCase(), { projectName, overall, semanticOverall, totalCells });
   }
 
-  return Array.from(seen.values()).filter(r => !isNaN(r.overall) && !isNaN(r.totalCells) && r.totalCells > 0);
+  return Array.from(seen.values()).filter(r => !isNaN(r.overall) && !isNaN(r.semanticOverall) && !isNaN(r.totalCells) && r.totalCells > 0);
 }
 
 function restoreBackups(backupRules: Buffer | null, backupFewShots: Buffer | null) {
@@ -126,7 +136,7 @@ function restoreBackups(backupRules: Buffer | null, backupFewShots: Buffer | nul
 
 function computeBaselineAccuracy(entries: ScoreboardEntry[]): number {
   if (entries.length === 0) return 0;
-  const total = entries.reduce((sum, e) => sum + e.overall, 0);
+  const total = entries.reduce((sum, e) => sum + e.semanticOverall, 0);
   return total / entries.length;
 }
 
@@ -243,7 +253,7 @@ async function runGate(csvPath: string, skipReEval: boolean, localMode: boolean)
     const CONCURRENCY_LIMIT = 16;
     await runWithConcurrency(goldenProjInfos, CONCURRENCY_LIMIT, async (projInfo) => {
       const entry = scoreboard.find(e => e.projectName.toLowerCase() === projInfo.folder.toLowerCase());
-      const baselineScore = entry ? entry.overall : 0;
+      const baselineScore = entry ? entry.semanticOverall : 0;
       
       console.log(`   🔄 Re-evaluating Golden Project: ${projInfo.folder} (Baseline: ${baselineScore.toFixed(1)}%)`);
       let candidateScore = 0;
@@ -251,11 +261,11 @@ async function runGate(csvPath: string, skipReEval: boolean, localMode: boolean)
       if (localMode) {
         const { processProject } = require('./batch-evaluate');
         const res = await processProject(projInfo);
-        if (res) candidateScore = res.overallAccuracy;
+        if (res) candidateScore = res.semanticOverallAccuracy ?? res.overallAccuracy;
       } else {
         const { processProjectCloud } = require('./batch-evaluate-cloud');
         const res = await processProjectCloud(projInfo);
-        if (res) candidateScore = res.overallAccuracy;
+        if (res) candidateScore = res.semanticOverallAccuracy ?? res.overallAccuracy;
       }
 
       console.log(`      ✨ Candidate Score for ${projInfo.folder}: ${candidateScore.toFixed(1)}% (Baseline: ${baselineScore.toFixed(1)}%)`);

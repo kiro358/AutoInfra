@@ -22,3 +22,4 @@ webapp/src/scripts/lib/
 webapp/vendor_pricing_sheet/page_*.pdf
 webapp/vendor_pricing_sheet/page_*_transcription.md
 eval_logs/
+.eval-cache/

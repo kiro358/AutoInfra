@@ -119,6 +119,8 @@ export interface CompareResult {
   totalCells: number;
   totalMatching: number;
   warnings?: string[];
+  isCustomLayout?: boolean;
+  truthSheets?: string[];
 }
 
 // ======================== CORE FUNCTIONS ========================
@@ -440,6 +442,9 @@ export async function compareSpreadsheets(
   const warnings: string[] = [];
   const reports: SheetReport[] = [];
   const configs = getSheetConfigs(truthWb);
+  const isCustomLayout = configs.length === 0;
+  const truthSheets = truthWb.worksheets.map(w => w.name);
+
   for (const config of configs) {
     reports.push(compareSheet(truthWb, genWb, config, warnings));
   }
@@ -457,6 +462,8 @@ export async function compareSpreadsheets(
     totalCells,
     totalMatching,
     warnings,
+    isCustomLayout,
+    truthSheets,
   };
 }
 
@@ -466,6 +473,15 @@ export function formatCompareResult(result: CompareResult): string {
   out += `🔬 PROJECT: ${result.projectName}\n`;
   out += `   Truth Sheet: ${result.truthFile} | Generated: ${result.genFile}\n`;
   out += `${'='.repeat(80)}\n`;
+
+  if (result.isCustomLayout) {
+    out += `\n⚠️ Custom layout detected in Ground Truth. (Sheets: [${result.truthSheets?.join(', ')}])\n`;
+    out += `   Bypassing cell-by-cell spreadsheet template comparison.\n`;
+    out += `${'─'.repeat(60)}\n`;
+    out += `📊 OVERALL SYSTEM ACCURACY: N/A (Custom Layout)\n`;
+    out += `${'─'.repeat(60)}\n`;
+    return out;
+  }
 
   for (const report of result.reports) {
     const accuracy =
@@ -499,6 +515,15 @@ function printCompareResult(result: CompareResult) {
   console.log(`🔬 ${result.projectName}`);
   console.log(`   Truth: ${result.truthFile} | Generated: ${result.genFile}`);
   console.log(`${'='.repeat(80)}`);
+
+  if (result.isCustomLayout) {
+    console.log(`\n  ⚠️ Custom layout detected in Ground Truth. (Sheets: [${result.truthSheets?.join(', ')}])`);
+    console.log(`     Bypassing cell-by-cell spreadsheet template comparison.`);
+    console.log(`\n${'─'.repeat(60)}`);
+    console.log(`📊 OVERALL ACCURACY: N/A (Custom Layout)`);
+    console.log(`${'─'.repeat(60)}\n`);
+    return;
+  }
 
   for (const report of result.reports) {
     const accuracy =
@@ -550,15 +575,26 @@ async function main() {
   const allFiles = fs.readdirSync(projectDir);
   let truthFile = args[1];
   if (!truthFile) {
-    const xlsxFiles = allFiles.filter(f =>
+    let xlsxFiles = allFiles.filter(f =>
       f.endsWith('.xlsx') &&
       !f.toLowerCase().includes('quote') &&
       !f.toLowerCase().includes('budget') &&
       !f.toLowerCase().includes('backup') &&
       !f.toLowerCase().includes('sand') &&
       !f.toLowerCase().includes('appendix') &&
-      !f.toLowerCase().includes('estimate')
+      !f.toLowerCase().includes('estimate') &&
+      !f.toLowerCase().includes('eval_')
     );
+    if (xlsxFiles.length === 0) {
+      xlsxFiles = allFiles.filter(f =>
+        f.endsWith('.xlsx') &&
+        !f.toLowerCase().includes('quote') &&
+        !f.toLowerCase().includes('backup') &&
+        !f.toLowerCase().includes('sand') &&
+        !f.toLowerCase().includes('appendix') &&
+        !f.toLowerCase().includes('eval_')
+      );
+    }
     if (xlsxFiles.length === 0) {
       console.error(`❌ No truth XLSX found in ${projectDir}`);
       process.exit(1);

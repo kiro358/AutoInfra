@@ -89,7 +89,7 @@ export async function findProjectsCloud(): Promise<ProjectInfo[]> {
     const folderFiles = fileNames.filter(f => f.startsWith(`${folder}/`));
     
     // Find the ground truth XLSX (using full relative path in the bucket)
-    const xlsxFiles = folderFiles.filter(f => {
+    let xlsxFiles = folderFiles.filter(f => {
       // Ensure the file is directly under the project folder (ignore subfolders)
       const relativePath = f.slice(folder.length + 1);
       if (relativePath.includes('/')) return false;
@@ -105,6 +105,21 @@ export async function findProjectsCloud(): Promise<ProjectInfo[]> {
         !name.includes('additional') &&
         !name.includes('eval_')
     });
+
+    if (xlsxFiles.length === 0) {
+      xlsxFiles = folderFiles.filter(f => {
+        const relativePath = f.slice(folder.length + 1);
+        if (relativePath.includes('/')) return false;
+
+        const name = path.basename(f).toLowerCase();
+        return name.endsWith('.xlsx') &&
+          !name.includes('quote') &&
+          !name.includes('backup') &&
+          !name.includes('sand') &&
+          !name.includes('appendix') &&
+          !name.includes('eval_')
+      });
+    }
 
     const truthFile = xlsxFiles.length > 0 ? xlsxFiles[0] : undefined;
 

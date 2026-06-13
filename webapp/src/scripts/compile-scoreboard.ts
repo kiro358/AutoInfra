@@ -51,7 +51,7 @@ function findProjects(): ProjectInfo[] {
     const files = fs.readdirSync(dir);
 
     // Find the ground truth XLSX
-    const xlsxFiles = files.filter(f =>
+    let xlsxFiles = files.filter(f =>
       f.toLowerCase().endsWith('.xlsx') &&
       !f.toLowerCase().includes('quote') &&
       !f.toLowerCase().includes('budget') &&
@@ -59,8 +59,19 @@ function findProjects(): ProjectInfo[] {
       !f.toLowerCase().includes('sand') &&
       !f.toLowerCase().includes('appendix') &&
       !f.toLowerCase().includes('estimate') &&
-      !f.toLowerCase().includes('additional')
+      !f.toLowerCase().includes('additional') &&
+      !f.toLowerCase().includes('eval_')
     );
+    if (xlsxFiles.length === 0) {
+      xlsxFiles = files.filter(f =>
+        f.toLowerCase().endsWith('.xlsx') &&
+        !f.toLowerCase().includes('quote') &&
+        !f.toLowerCase().includes('backup') &&
+        !f.toLowerCase().includes('sand') &&
+        !f.toLowerCase().includes('appendix') &&
+        !f.toLowerCase().includes('eval_')
+      );
+    }
 
     if (xlsxFiles.length === 0) continue;
 

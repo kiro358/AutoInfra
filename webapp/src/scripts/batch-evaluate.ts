@@ -69,7 +69,7 @@ export function findProjects(): ProjectInfo[] {
     const files = fs.readdirSync(dir);
 
     // Find the ground truth XLSX
-    const xlsxFiles = files.filter(f =>
+    let xlsxFiles = files.filter(f =>
       f.toLowerCase().endsWith('.xlsx') &&
       !f.toLowerCase().includes('quote') &&
       !f.toLowerCase().includes('budget') &&
@@ -78,8 +78,20 @@ export function findProjects(): ProjectInfo[] {
       !f.toLowerCase().includes('appendix') &&
       !f.toLowerCase().includes('estimate') &&
       !f.toLowerCase().includes('additional') &&
-      !f.toLowerCase().includes('eval_run')
+      !f.toLowerCase().includes('eval_')
     );
+
+    // Relaxed fallback if strict filtering yields nothing (allows estimate/budget, but still blocks quotes/backups)
+    if (xlsxFiles.length === 0) {
+      xlsxFiles = files.filter(f =>
+        f.toLowerCase().endsWith('.xlsx') &&
+        !f.toLowerCase().includes('quote') &&
+        !f.toLowerCase().includes('backup') &&
+        !f.toLowerCase().includes('sand') &&
+        !f.toLowerCase().includes('appendix') &&
+        !f.toLowerCase().includes('eval_')
+      );
+    }
 
     // Check manual override first
     if (manualOverrides[folder]) {

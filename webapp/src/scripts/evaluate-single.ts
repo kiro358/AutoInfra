@@ -74,14 +74,25 @@ async function main() {
   const specifiedPdf = process.argv[3];
   const pdfFiles = specifiedPdf ? [specifiedPdf] : findDrawingPDFs(projectDir);
   
-  const xlsxFiles = files.filter(f => 
+  let xlsxFiles = files.filter(f => 
     f.toLowerCase().endsWith('.xlsx') && 
     !f.toLowerCase().includes('backup') &&
-    !f.toLowerCase().includes('eval_run') &&
+    !f.toLowerCase().includes('eval_') &&
     !f.toLowerCase().includes('quote') &&
     !f.toLowerCase().includes('sand') &&
-    !f.toLowerCase().includes('budget')
+    !f.toLowerCase().includes('budget') &&
+    !f.toLowerCase().includes('estimate')
   );
+
+  if (xlsxFiles.length === 0) {
+    xlsxFiles = files.filter(f => 
+      f.toLowerCase().endsWith('.xlsx') && 
+      !f.toLowerCase().includes('backup') &&
+      !f.toLowerCase().includes('eval_') &&
+      !f.toLowerCase().includes('quote') &&
+      !f.toLowerCase().includes('sand')
+    );
+  }
 
   if (pdfFiles.length === 0 || xlsxFiles.length === 0) {
     console.log(`Skipping (missing PDF or XLSX). Found PDFs: [${pdfFiles.join(', ')}], XLSXs: [${xlsxFiles.join(', ')}]`);
@@ -116,8 +127,17 @@ async function main() {
     console.log(`Output saved to: ${genPath}`);
 
     const truthPath = path.join(projectDir, xlsxFiles[0]);
-    console.log(`Running compare-sheets...`);
-    execSync(`npx tsx src/scripts/compare-sheets.ts "${TARGET_FOLDER}" "${xlsxFiles[0]}" "${path.basename(genPath)}"`, { stdio: 'inherit', cwd: path.resolve(__dirname, '../..') });
+    console.log(`Running sheet comparison...`);
+    
+    const { compareSpreadsheets, formatCompareResult } = require('./compare-sheets');
+    const { compareSemantically, formatSemanticResult } = require('./compare-jsons');
+
+    const compareResult = await compareSpreadsheets(truthPath, genPath, TARGET_FOLDER);
+    console.log(formatCompareResult(compareResult));
+
+    console.log(`Running semantic comparison...`);
+    const semanticResult = await compareSemantically(truthPath, genPath, TARGET_FOLDER);
+    console.log(formatSemanticResult(semanticResult));
   } catch (e) {
     console.error(`Error processing:`, e);
   }

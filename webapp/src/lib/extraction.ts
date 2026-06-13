@@ -966,10 +966,8 @@ export async function extractFromPDF(
             return parsed;
           } catch (e: any) {
             console.error(`      [extraction.ts] Failed to parse manholes response for chunk ${chunkIdx + 1}: ${e.message}`);
-            if (response.candidates?.[0]) {
-              console.error(`      [extraction.ts] FinishReason: ${response.candidates[0].finishReason} | Text length: ${response.text?.length || 0}`);
-              console.error(`      [extraction.ts] Snippet: ${response.text?.slice(0, 200)} ... ${response.text?.slice(-200)}`);
-            }
+            console.error(`      [extraction.ts] Text length: ${text.length || 0}`);
+            console.error(`      [extraction.ts] Snippet: ${text.slice(0, 200)} ... ${text.slice(-200)}`);
             return {};
           }
         });
@@ -1076,10 +1074,8 @@ export async function extractFromPDF(
             return parsed.sewers || [];
           } catch (e: any) {
             console.error(`      [extraction.ts] Failed to parse sewers response for chunk ${chunkIdx + 1}: ${e.message}`);
-            if (response.candidates?.[0]) {
-              console.error(`      [extraction.ts] FinishReason: ${response.candidates[0].finishReason} | Text length: ${response.text?.length || 0}`);
-              console.error(`      [extraction.ts] Snippet: ${response.text?.slice(0, 200)} ... ${response.text?.slice(-200)}`);
-            }
+            console.error(`      [extraction.ts] Text length: ${text.length || 0}`);
+            console.error(`      [extraction.ts] Snippet: ${text.slice(0, 200)} ... ${text.slice(-200)}`);
             return [];
           }
         });
@@ -1155,10 +1151,8 @@ export async function extractFromPDF(
             return parsed;
           } catch (e: any) {
             console.error(`      [extraction.ts] Failed to parse watermain response for chunk ${chunkIdx + 1}: ${e.message}`);
-            if (response.candidates?.[0]) {
-              console.error(`      [extraction.ts] FinishReason: ${response.candidates[0].finishReason} | Text length: ${response.text?.length || 0}`);
-              console.error(`      [extraction.ts] Snippet: ${response.text?.slice(0, 200)} ... ${response.text?.slice(-200)}`);
-            }
+            console.error(`      [extraction.ts] Text length: ${text.length || 0}`);
+            console.error(`      [extraction.ts] Snippet: ${text.slice(0, 200)} ... ${text.slice(-200)}`);
             return {};
           }
         });

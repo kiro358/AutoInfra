@@ -3470,5 +3470,170 @@
         "laborPerValve": null
       }
     ]
+  },
+  {
+    "projectName": "201 GEORGIAN DRIVE , BARRIE",
+    "jobNumber": "2026-067",
+    "date": "APR.19th,2026",
+    "manholes": [
+      {
+        "description": "DCBMH 2",
+        "depth": 2,
+        "addMaterials": 900,
+        "addLE": 0
+      },
+      {
+        "description": "MH 1/O.P.",
+        "depth": 1.7,
+        "addMaterials": 1500,
+        "addLE": 500
+      },
+      {
+        "description": "GREENSTORM",
+        "depth": null,
+        "addMaterials": 39835,
+        "addLE": 17430
+      }
+    ],
+    "catchbasins": {
+      "groups": [
+        {
+          "type": "SINGLE_CB",
+          "quantity": 2,
+          "wallThickness": 4,
+          "depth": 2.2,
+          "grateEach": 0,
+          "addMaterials": 900
+        },
+        {
+          "type": "DITCH_INLET_CB",
+          "quantity": 1,
+          "wallThickness": 4,
+          "depth": 2.2,
+          "grateEach": 0,
+          "addMaterials": 900
+        }
+      ],
+      "laborRates": {
+        "scbLabor": 200,
+        "dcbLabor": 250,
+        "dicbFC": 465,
+        "ddicbFC": 715
+      }
+    },
+    "sewers": [
+      {
+        "runLabel": "CB 3-DCBMH 2",
+        "isLineItem": false,
+        "length": 21,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.7,
+        "addMaterials": 0,
+        "addLE": 0
+      },
+      {
+        "runLabel": "CB 1-MH 1/INS.",
+        "isLineItem": false,
+        "length": 9,
+        "pipeDiameter": 300,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 1.5,
+        "addMaterials": 720,
+        "addLE": 360
+      },
+      {
+        "runLabel": "DICB 1-CONN.",
+        "isLineItem": false,
+        "length": 17,
+        "pipeDiameter": 250,
+        "typeClass": 2.35,
+        "slope": 1.1,
+        "depth": 2.3,
+        "addMaterials": 500,
+        "addLE": 250
+      },
+      {
+        "runLabel": "SWALE",
+        "isLineItem": true,
+        "length": null,
+        "pipeDiameter": null,
+        "typeClass": null,
+        "slope": null,
+        "depth": null,
+        "addMaterials": 1774,
+        "addLE": 2376
+      }
+    ],
+    "watermain": [],
+    "watermainSpecials": [],
+    "watermainValves": [
+      {
+        "valveSize": "50 mm",
+        "quantity": null,
+        "valveCost": 424,
+        "boxCost": 285,
+        "anodeCost": 150,
+        "laborPerValve": null
+      },
+      {
+        "valveSize": "100mm",
+        "quantity": null,
+        "valveCost": 807,
+        "boxCost": 285,
+        "anodeCost": 150,
+        "laborPerValve": null
+      },
+      {
+        "valveSize": "150mm",
+        "quantity": null,
+        "valveCost": 1027,
+        "boxCost": 285,
+        "anodeCost": 150,
+        "laborPerValve": null
+      },
+      {
+        "valveSize": "200mm",
+        "quantity": null,
+        "valveCost": 1732,
+        "boxCost": 285,
+        "anodeCost": 150,
+        "laborPerValve": null
+      },
+      {
+        "valveSize": "250mm",
+        "quantity": null,
+        "valveCost": 2665,
+        "boxCost": 285,
+        "anodeCost": 150,
+        "laborPerValve": null
+      },
+      {
+        "valveSize": "300mm",
+        "quantity": null,
+        "valveCost": 3696,
+        "boxCost": 285,
+        "anodeCost": 150,
+        "laborPerValve": null
+      },
+      {
+        "valveSize": "QNTY",
+        "quantity": null,
+        "valveCost": null,
+        "boxCost": null,
+        "anodeCost": null,
+        "laborPerValve": null
+      },
+      {
+        "valveSize": "QNTY",
+        "quantity": null,
+        "valveCost": null,
+        "boxCost": null,
+        "anodeCost": null,
+        "laborPerValve": null
+      }
+    ]
   }
 ]

@@ -1,7 +1,7 @@
 {
   "version": 2,
   "baselineAccuracy": 34.6725,
-  "lastUpdated": "2026-06-11",
+  "lastUpdated": "2026-06-13",
   "promptAdditions": [
     {
       "rule": "If a value for a specific field (like quantity or cost) is not explicitly listed for a line item, you must leave that field null. Do not infer values or assign numbers from nearby, unrelated text on the drawing.",

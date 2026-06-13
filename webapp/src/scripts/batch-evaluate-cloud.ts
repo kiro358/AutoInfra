@@ -410,7 +410,7 @@ async function main() {
   // Optimised runtime: process 8 projects in parallel in the cloud using Gemini 2.5 Flash
   // If using Gemini API Key (Free Tier), run sequentially (concurrency=1) with a 5s delay to avoid 15 RPM limits
   const isFreeTier = !!process.env.GEMINI_API_KEY && process.env.USE_VERTEX_AI !== 'true';
-  const CONCURRENCY_LIMIT = isFreeTier ? 1 : 8;
+  const CONCURRENCY_LIMIT = isFreeTier ? 1 : 16;
   const PROJECT_DELAY_MS = isFreeTier ? 5000 : 0;
 
   console.log(`🚀 Starting execution of ${projects.length} projects with concurrency = ${CONCURRENCY_LIMIT}...\n`);

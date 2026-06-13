@@ -26,10 +26,12 @@ export async function populateTemplate(
 
   // Break shared formula chains in columns that forceSetCellValue will write to.
   // This must happen BEFORE any fill functions are called.
-  const mhSheet = workbook.getWorksheet('MANHOLES (1)');
-  if (mhSheet) {
-    breakSharedFormulas(mhSheet, ['J', 'K', 'L'], 11, 50);
-  }
+  ['MANHOLES (1)', 'MANHOLES (2)', 'MANHOLES (3)'].forEach(name => {
+    const ws = workbook.getWorksheet(name);
+    if (ws) {
+      breakSharedFormulas(ws, ['J', 'K', 'L'], 11, 50);
+    }
+  });
 
   // Fill MANHOLES sheet(s)
   fillManholes(workbook, extraction, params);
@@ -50,33 +52,43 @@ function fillManholes(
   extraction: ExtractionResult,
   params: GlobalParams
 ) {
-  const sheet = workbook.getWorksheet('MANHOLES (1)');
-  if (!sheet) return;
+  const sheets = ['MANHOLES (1)', 'MANHOLES (2)', 'MANHOLES (3)']
+    .map(name => workbook.getWorksheet(name))
+    .filter(Boolean) as ExcelJS.Worksheet[];
 
-  // Fill header / project info
-  setCellValue(sheet, 'B2', extraction.projectName);
-  setCellValue(sheet, 'B3', extraction.jobNumber);
-  setCellValue(sheet, 'B5', extraction.date);
+  if (sheets.length === 0) return;
 
-  // Fill global params
-  setCellValue(sheet, 'F3', params.manholes.truckingPerCM);
-  setCellValue(sheet, 'F4', params.manholes.concretePerCM);
-  setCellValue(sheet, 'F5', params.manholes.discount);
-  setCellValue(sheet, 'F6', params.manholes.marginFactor);
-  setCellValue(sheet, 'F7', params.manholes.metric ? 1 : 0);
-  setCellValue(sheet, 'I3', params.manholes.fstFactor);
-  setCellValue(sheet, 'I4', params.manholes.pstFactor);
-  setCellValue(sheet, 'I5', params.manholes.modPerM);
-  setCellValue(sheet, 'I6', params.manholes.mhFC);
-  setCellValue(sheet, 'I7', params.manholes.cbFC);
-  setCellValue(sheet, 'L4', params.manholes.laborPerHr);
-  setCellValue(sheet, 'L7', params.manholes.frameCoverM);
+  // Fill header / project info and global params on all sheets
+  sheets.forEach(sheet => {
+    setCellValue(sheet, 'B2', extraction.projectName);
+    setCellValue(sheet, 'B3', extraction.jobNumber);
+    setCellValue(sheet, 'B5', extraction.date);
+
+    setCellValue(sheet, 'F3', params.manholes.truckingPerCM);
+    setCellValue(sheet, 'F4', params.manholes.concretePerCM);
+    setCellValue(sheet, 'F5', params.manholes.discount);
+    setCellValue(sheet, 'F6', params.manholes.marginFactor);
+    setCellValue(sheet, 'F7', params.manholes.metric ? 1 : 0);
+    setCellValue(sheet, 'I3', params.manholes.fstFactor);
+    setCellValue(sheet, 'I4', params.manholes.pstFactor);
+    setCellValue(sheet, 'I5', params.manholes.modPerM);
+    setCellValue(sheet, 'I6', params.manholes.mhFC);
+    setCellValue(sheet, 'I7', params.manholes.cbFC);
+    setCellValue(sheet, 'L4', params.manholes.laborPerHr);
+    setCellValue(sheet, 'L7', params.manholes.frameCoverM);
+  });
 
   // Fill data rows (starting at row 11)
   const startRow = 11;
+  const maxRowsPerSheet = 40; // rows 11 to 50
+
   extraction.manholes.forEach((mh, idx) => {
-    const row = startRow + idx;
-    if (row > 50) return; // Don't overflow template into catchbasins
+    const sheetIdx = Math.floor(idx / maxRowsPerSheet);
+    const rowOffset = idx % maxRowsPerSheet;
+    const sheet = sheets[sheetIdx];
+    if (!sheet) return; // Exceeded template sheets limit
+
+    const row = startRow + rowOffset;
 
     setCellValue(sheet, `B${row}`, mh.description);
     setCellValue(sheet, `C${row}`, mh.topElevation || undefined);
@@ -91,7 +103,8 @@ function fillManholes(
     if (mh.diameter != null) forceSetCellValue(sheet, `L${row}`, mh.diameter);
   });
 
-  // Fill catchbasin groups (Rows 53-56)
+  // Fill catchbasin groups (Rows 53-56) - only on MANHOLES (1)
+  const primarySheet = sheets[0];
   if (extraction.catchbasins && extraction.catchbasins.groups) {
     const cbMap: Record<string, number> = {
       'SINGLE_CB': 53,
@@ -102,22 +115,22 @@ function fillManholes(
     extraction.catchbasins.groups.forEach(g => {
       const row = cbMap[g.type];
       if (row) {
-        setCellValue(sheet, `C${row}`, g.quantity || undefined);
-        setCellValue(sheet, `D${row}`, g.wallThickness || undefined);
-        setCellValue(sheet, `E${row}`, g.depth || undefined);
-        setCellValue(sheet, `F${row}`, g.grateEach || undefined);
-        setCellValue(sheet, `G${row}`, g.addMaterials || undefined);
+        setCellValue(primarySheet, `C${row}`, g.quantity || undefined);
+        setCellValue(primarySheet, `D${row}`, g.wallThickness || undefined);
+        setCellValue(primarySheet, `E${row}`, g.depth || undefined);
+        setCellValue(primarySheet, `F${row}`, g.grateEach || undefined);
+        setCellValue(primarySheet, `G${row}`, g.addMaterials || undefined);
       }
     });
   }
 
-  // Fill catchbasin labor rates (Rows 59-60)
+  // Fill catchbasin labor rates (Rows 59-60) - only on MANHOLES (1)
   if (extraction.catchbasins && extraction.catchbasins.laborRates) {
     const lr = extraction.catchbasins.laborRates;
-    setCellValue(sheet, `C59`, lr.scbLabor || undefined);
-    setCellValue(sheet, `C60`, lr.dcbLabor || undefined);
-    setCellValue(sheet, `F59`, lr.dicbFC || undefined);
-    setCellValue(sheet, `F60`, lr.ddicbFC || undefined);
+    setCellValue(primarySheet, `C59`, lr.scbLabor || undefined);
+    setCellValue(primarySheet, `C60`, lr.dcbLabor || undefined);
+    setCellValue(primarySheet, `F59`, lr.dicbFC || undefined);
+    setCellValue(primarySheet, `F60`, lr.ddicbFC || undefined);
   }
 }
 
@@ -126,37 +139,47 @@ function fillSewers(
   extraction: ExtractionResult,
   params: GlobalParams
 ) {
-  const sheet = workbook.getWorksheet('SEWERS (1)');
-  if (!sheet) return;
+  const sheets = ['SEWERS (1)', 'SEWERS (2)', 'SEWERS (3)', 'SEWERS (4)']
+    .map(name => workbook.getWorksheet(name))
+    .filter(Boolean) as ExcelJS.Worksheet[];
 
-  // Fill header params
-  setCellValue(sheet, 'F3', params.sewers.minTrenchWidth);
-  setCellValue(sheet, 'F4', params.sewers.pipeCover);
-  setCellValue(sheet, 'F5', params.sewers.mFinGrade);
-  setCellValue(sheet, 'F6', params.sewers.dayCostPerDay);
-  setCellValue(sheet, 'F7', params.sewers.extraPerDay);
-  setCellValue(sheet, 'F8', params.sewers.productionMPerDay);
-  setCellValue(sheet, 'I3', params.sewers.stoneImpT);
-  setCellValue(sheet, 'I4', params.sewers.stoneMt);
-  setCellValue(sheet, 'I5', params.sewers.granImpTn);
-  setCellValue(sheet, 'I6', params.sewers.granMt);
-  setCellValue(sheet, 'I7', params.sewers.truckingPerCM);
-  setCellValue(sheet, 'P3', params.sewers.efficiency);
-  setCellValue(sheet, 'P4', params.sewers.metric ? 1 : 0);
-  setCellValue(sheet, 'P5', params.sewers.marginFactor);
-  setCellValue(sheet, 'P6', params.sewers.openCutFactor);
-  setCellValue(sheet, 'P7', params.sewers.dualTrSep);
-  setCellValue(sheet, 'P8', params.sewers.concPipePct);
-  setCellValue(sheet, 'P9', params.sewers.trenchClear);
-  setCellValue(sheet, 'V3', params.sewers.provTax);
-  setCellValue(sheet, 'V4', params.sewers.fedTax);
+  if (sheets.length === 0) return;
+
+  // Fill header params on all sheets
+  sheets.forEach(sheet => {
+    setCellValue(sheet, 'F3', params.sewers.minTrenchWidth);
+    setCellValue(sheet, 'F4', params.sewers.pipeCover);
+    setCellValue(sheet, 'F5', params.sewers.mFinGrade);
+    setCellValue(sheet, 'F6', params.sewers.dayCostPerDay);
+    setCellValue(sheet, 'F7', params.sewers.extraPerDay);
+    setCellValue(sheet, 'F8', params.sewers.productionMPerDay);
+    setCellValue(sheet, 'I3', params.sewers.stoneImpT);
+    setCellValue(sheet, 'I4', params.sewers.stoneMt);
+    setCellValue(sheet, 'I5', params.sewers.granImpTn);
+    setCellValue(sheet, 'I6', params.sewers.granMt);
+    setCellValue(sheet, 'I7', params.sewers.truckingPerCM);
+    setCellValue(sheet, 'P3', params.sewers.efficiency);
+    setCellValue(sheet, 'P4', params.sewers.metric ? 1 : 0);
+    setCellValue(sheet, 'P5', params.sewers.marginFactor);
+    setCellValue(sheet, 'P6', params.sewers.openCutFactor);
+    setCellValue(sheet, 'P7', params.sewers.dualTrSep);
+    setCellValue(sheet, 'P8', params.sewers.concPipePct);
+    setCellValue(sheet, 'P9', params.sewers.trenchClear);
+    setCellValue(sheet, 'V3', params.sewers.provTax);
+    setCellValue(sheet, 'V4', params.sewers.fedTax);
+  });
 
   // Fill data rows (starting at row 14)
   const startRow = 14;
-  const limitRow = extraction.templateType === 'LONG' ? 300 : 55;
+  const maxRowsPerSheet = 42; // rows 14 to 55
+
   extraction.sewers.forEach((sw, idx) => {
-    const row = startRow + idx;
-    if (row > limitRow) return;
+    const sheetIdx = Math.floor(idx / maxRowsPerSheet);
+    const rowOffset = idx % maxRowsPerSheet;
+    const sheet = sheets[sheetIdx];
+    if (!sheet) return; // Exceeded template sheets limit
+
+    const row = startRow + rowOffset;
 
     setCellValue(sheet, `B${row}`, sw.runLabel);
     setCellValue(sheet, `C${row}`, sw.length || undefined);
@@ -174,43 +197,54 @@ function fillWatermain(
   extraction: ExtractionResult,
   params: GlobalParams
 ) {
-  const sheet = workbook.getWorksheet('WATERMAIN (1)');
-  if (!sheet) return;
+  const sheets = ['WATERMAIN (1)', 'WATERMAIN (2)']
+    .map(name => workbook.getWorksheet(name))
+    .filter(Boolean) as ExcelJS.Worksheet[];
 
-  // Fill header params
-  setCellValue(sheet, 'F3', params.watermain.minTrenchWidth);
-  setCellValue(sheet, 'F4', params.watermain.pipeCover);
-  setCellValue(sheet, 'F5', params.watermain.mFinGrade);
-  setCellValue(sheet, 'F6', params.watermain.dayCostPerDay);
-  setCellValue(sheet, 'F7', params.watermain.extraPerDay);
-  setCellValue(sheet, 'F8', params.watermain.productionMPerDay);
-  setCellValue(sheet, 'I3', params.watermain.stoneImpTon);
-  setCellValue(sheet, 'I4', params.watermain.stoneMtne);
-  setCellValue(sheet, 'I5', params.watermain.granImpTon);
-  setCellValue(sheet, 'I6', params.watermain.granMtne);
-  setCellValue(sheet, 'I7', params.watermain.truckingPerCM);
-  setCellValue(sheet, 'I8', params.watermain.peelRegionCover);
-  setCellValue(sheet, 'O3', params.watermain.efficiency);
-  setCellValue(sheet, 'O4', params.watermain.metric ? 1 : 0);
-  setCellValue(sheet, 'O6', params.watermain.openCutFactor);
-  setCellValue(sheet, 'O7', params.watermain.dualTrSep);
-  setCellValue(sheet, 'O8', params.watermain.trenchClear);
-  setCellValue(sheet, 'R4', params.watermain.precastPct);
-  setCellValue(sheet, 'R7', params.watermain.modulocPerM);
-  setCellValue(sheet, 'L3', params.watermain.c900_100);
-  setCellValue(sheet, 'L4', params.watermain.c900_150);
-  setCellValue(sheet, 'L5', params.watermain.c900_200);
-  setCellValue(sheet, 'L6', params.watermain.c900_250);
-  setCellValue(sheet, 'L7', params.watermain.c900_300);
-  setCellValue(sheet, 'L8', params.watermain.concPerCM);
-  setCellValue(sheet, 'U3', params.watermain.provTax);
-  setCellValue(sheet, 'U4', params.watermain.fedTax);
+  if (sheets.length === 0) return;
+
+  // Fill header params on all sheets
+  sheets.forEach(sheet => {
+    setCellValue(sheet, 'F3', params.watermain.minTrenchWidth);
+    setCellValue(sheet, 'F4', params.watermain.pipeCover);
+    setCellValue(sheet, 'F5', params.watermain.mFinGrade);
+    setCellValue(sheet, 'F6', params.watermain.dayCostPerDay);
+    setCellValue(sheet, 'F7', params.watermain.extraPerDay);
+    setCellValue(sheet, 'F8', params.watermain.productionMPerDay);
+    setCellValue(sheet, 'I3', params.watermain.stoneImpTon);
+    setCellValue(sheet, 'I4', params.watermain.stoneMtne);
+    setCellValue(sheet, 'I5', params.watermain.granImpTon);
+    setCellValue(sheet, 'I6', params.watermain.granMtne);
+    setCellValue(sheet, 'I7', params.watermain.truckingPerCM);
+    setCellValue(sheet, 'I8', params.watermain.peelRegionCover);
+    setCellValue(sheet, 'O3', params.watermain.efficiency);
+    setCellValue(sheet, 'O4', params.watermain.metric ? 1 : 0);
+    setCellValue(sheet, 'O6', params.watermain.openCutFactor);
+    setCellValue(sheet, 'O7', params.watermain.dualTrSep);
+    setCellValue(sheet, 'O8', params.watermain.trenchClear);
+    setCellValue(sheet, 'R4', params.watermain.precastPct);
+    setCellValue(sheet, 'R7', params.watermain.modulocPerM);
+    setCellValue(sheet, 'L3', params.watermain.c900_100);
+    setCellValue(sheet, 'L4', params.watermain.c900_150);
+    setCellValue(sheet, 'L5', params.watermain.c900_200);
+    setCellValue(sheet, 'L6', params.watermain.c900_250);
+    setCellValue(sheet, 'L7', params.watermain.c900_300);
+    setCellValue(sheet, 'L8', params.watermain.concPerCM);
+    setCellValue(sheet, 'U3', params.watermain.provTax);
+    setCellValue(sheet, 'U4', params.watermain.fedTax);
+  });
 
   // Fill watermain runs (starting at row 13)
   const startRow = 13;
+  const maxRowsPerSheet = 7; // rows 13 to 19
+
   extraction.watermain.forEach((wm, idx) => {
-    const row = startRow + idx;
-    if (row > 19) return;
+    const sheetIdx = Math.floor(idx / maxRowsPerSheet);
+    const rowOffset = idx % maxRowsPerSheet;
+    const sheet = sheets[sheetIdx];
+    if (!sheet) return; // Exceeded template sheets limit
+
+    const row = startRow + rowOffset;
 
     setCellValue(sheet, `B${row}`, wm.sizeAndType);
     setCellValue(sheet, `C${row}`, wm.length || undefined);
@@ -221,31 +255,32 @@ function fillWatermain(
     forceSetCellValue(sheet, `J${row}`, wm.avgCover);
   });
 
-  // Fill specials (starting at row 24)
+  // Fill specials (starting at row 24) - only on WATERMAIN (1)
+  const primarySheet = sheets[0];
   const specialsStart = 24;
   extraction.watermainSpecials.forEach((sp, idx) => {
     const row = specialsStart + idx;
     if (row > 40) return;
 
-    setCellValue(sheet, `B${row}`, sp.specialName);
-    setCellValue(sheet, `C${row}`, sp.quantity || undefined);
-    setCellValue(sheet, `D${row}`, sp.costEach || undefined);
-    setCellValue(sheet, `E${row}`, sp.thrustBlock);
-    setCellValue(sheet, `F${row}`, sp.anodeCost || undefined);
-    setCellValue(sheet, `G${row}`, sp.laborEach || undefined);
+    setCellValue(primarySheet, `B${row}`, sp.specialName);
+    setCellValue(primarySheet, `C${row}`, sp.quantity || undefined);
+    setCellValue(primarySheet, `D${row}`, sp.costEach || undefined);
+    setCellValue(primarySheet, `E${row}`, sp.thrustBlock);
+    setCellValue(primarySheet, `F${row}`, sp.anodeCost || undefined);
+    setCellValue(primarySheet, `G${row}`, sp.laborEach || undefined);
   });
 
-  // Fill valves (columns N-T, starting at row 24)
+  // Fill valves (columns N-T, starting at row 24) - only on WATERMAIN (1)
   extraction.watermainValves.forEach((v, idx) => {
     const row = specialsStart + idx;
     if (row > 40) return;
 
-    setCellValue(sheet, `O${row}`, v.valveSize);
-    setCellValue(sheet, `P${row}`, v.quantity || undefined);
-    setCellValue(sheet, `Q${row}`, v.valveCost || undefined);
-    setCellValue(sheet, `R${row}`, v.boxCost || undefined);
-    setCellValue(sheet, `S${row}`, v.anodeCost || undefined);
-    setCellValue(sheet, `T${row}`, v.laborPerValve || undefined);
+    setCellValue(primarySheet, `O${row}`, v.valveSize);
+    setCellValue(primarySheet, `P${row}`, v.quantity || undefined);
+    setCellValue(primarySheet, `Q${row}`, v.valveCost || undefined);
+    setCellValue(primarySheet, `R${row}`, v.boxCost || undefined);
+    setCellValue(primarySheet, `S${row}`, v.anodeCost || undefined);
+    setCellValue(primarySheet, `T${row}`, v.laborPerValve || undefined);
   });
 }
 

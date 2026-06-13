@@ -92,9 +92,20 @@ export function findProjects(): ProjectInfo[] {
     }
 
     // Find ALL drawing PDFs (not quotes/schedules/bids)
+    const civilKeywords = ['civil', 'servicing', 'drainage', 'plan', 'pnp', 'storm', 'sewer', 'water'];
     const pdfFiles = files.filter(f => {
       const name = f.toLowerCase();
-      return name.endsWith(".pdf") && !blocklist.some(b => name.includes(b));
+      if (!name.endsWith(".pdf")) return false;
+
+      const hitBlocklist = blocklist.filter(b => name.includes(b));
+      if (hitBlocklist.length === 0) return true;
+
+      const onlyHitsAppendix = hitBlocklist.every(b => b === 'appendix' || b === 'appendix 4');
+      const hasCivilKeyword = civilKeywords.some(cw => name.includes(cw));
+      if (onlyHitsAppendix && hasCivilKeyword) {
+        return true;
+      }
+      return false;
     });
 
     if (pdfFiles.length > 0) {

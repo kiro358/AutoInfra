@@ -137,13 +137,24 @@ export async function findProjectsCloud(): Promise<ProjectInfo[]> {
     }
 
     // Filter drawing PDFs preserving full relative paths
+    const civilKeywords = ['civil', 'servicing', 'drainage', 'plan', 'pnp', 'storm', 'sewer', 'water'];
     const pdfPaths = folderFiles.filter(f => {
       // Ensure the file is directly under the project folder (ignore subfolders)
       const relativePath = f.slice(folder.length + 1);
       if (relativePath.includes('/')) return false;
 
       const name = path.basename(f).toLowerCase();
-      return name.endsWith(".pdf") && !blocklist.some(b => name.includes(b));
+      if (!name.endsWith(".pdf")) return false;
+
+      const hitBlocklist = blocklist.filter(b => name.includes(b));
+      if (hitBlocklist.length === 0) return true;
+
+      const onlyHitsAppendix = hitBlocklist.every(b => b === 'appendix' || b === 'appendix 4');
+      const hasCivilKeyword = civilKeywords.some(cw => name.includes(cw));
+      if (onlyHitsAppendix && hasCivilKeyword) {
+        return true;
+      }
+      return false;
     });
 
     if (pdfPaths.length > 0) {

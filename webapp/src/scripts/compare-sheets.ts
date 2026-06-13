@@ -24,49 +24,59 @@ const TRAINING_DIR = path.resolve(
   'existing_projects_training_data'
 );
 
-// Which sheets and cell ranges to compare
-const SHEET_CONFIGS: SheetConfig[] = [
-  {
-    sheetName: 'MANHOLES (1)',
-    sectionLabel: 'MANHOLES - Structures',
-    headerRow: 10,
-    dataStartRow: 11,
-    dataEndRow: 50,
-    columns: ['B', 'H', 'I', 'J', 'K', 'L'],
-    columnNames: ['Description', 'Add Mtrls', 'Add L&E', 'Depth', 'Drop', 'Diameter'],
-    keyColumn: 'B',
-  },
-  {
-    sheetName: 'MANHOLES (1)',
-    sectionLabel: 'MANHOLES - Catchbasins',
-    headerRow: 52,
-    dataStartRow: 53,
-    dataEndRow: 56,
-    columns: ['B', 'C', 'D', 'E', 'F', 'G'],
-    columnNames: ['CB Type', 'QNTY', 'Wall Thickness', 'DPTHm', '$GT ea', '$/ADDMAT'],
-    keyColumn: 'B',
-  },
-  {
-    sheetName: 'SEWERS (1)',
-    sectionLabel: 'SEWERS',
-    headerRow: 13,
-    dataStartRow: 14,
-    dataEndRow: 300,
-    columns: ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'],
-    columnNames: ['Run Label', 'Length', 'Pipe Dia', 'Type/Class', 'Slope', 'Depth', 'Add Mtrls', 'Add L&E'],
-    keyColumn: 'B',
-  },
-  {
-    sheetName: 'WATERMAIN (1)',
-    sectionLabel: 'WATERMAIN',
-    headerRow: 12,
-    dataStartRow: 13,
-    dataEndRow: 19,
-    columns: ['B', 'C', 'D', 'F', 'J'],
-    columnNames: ['Size & Type', 'Length', 'Pipe Dia', 'OC/SC', 'Avg Cover'],
-    keyColumn: 'B',
-  },
-];
+export function getSheetConfigs(workbook: ExcelJS.Workbook): SheetConfig[] {
+  const configs: SheetConfig[] = [];
+
+  workbook.worksheets.forEach(sheet => {
+    const nameUpper = sheet.name.toUpperCase();
+    if (nameUpper.startsWith('MANHOLES')) {
+      configs.push({
+        sheetName: sheet.name,
+        sectionLabel: `${sheet.name} - Structures`,
+        headerRow: 10,
+        dataStartRow: 11,
+        dataEndRow: 50,
+        columns: ['B', 'H', 'I', 'J', 'K', 'L'],
+        columnNames: ['Description', 'Add Mtrls', 'Add L&E', 'Depth', 'Drop', 'Diameter'],
+        keyColumn: 'B',
+      });
+      configs.push({
+        sheetName: sheet.name,
+        sectionLabel: `${sheet.name} - Catchbasins`,
+        headerRow: 52,
+        dataStartRow: 53,
+        dataEndRow: 56,
+        columns: ['B', 'C', 'D', 'E', 'F', 'G'],
+        columnNames: ['CB Type', 'QNTY', 'Wall Thickness', 'DPTHm', '$GT ea', '$/ADDMAT'],
+        keyColumn: 'B',
+      });
+    } else if (nameUpper.startsWith('SEWERS')) {
+      configs.push({
+        sheetName: sheet.name,
+        sectionLabel: sheet.name,
+        headerRow: 13,
+        dataStartRow: 14,
+        dataEndRow: 55, // cap at 55 to prevent reading lookups/total rows as data runs
+        columns: ['B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'],
+        columnNames: ['Run Label', 'Length', 'Pipe Dia', 'Type/Class', 'Slope', 'Depth', 'Add Mtrls', 'Add L&E'],
+        keyColumn: 'B',
+      });
+    } else if (nameUpper.startsWith('WATERMAIN')) {
+      configs.push({
+        sheetName: sheet.name,
+        sectionLabel: sheet.name,
+        headerRow: 12,
+        dataStartRow: 13,
+        dataEndRow: 19,
+        columns: ['B', 'C', 'D', 'F', 'J'],
+        columnNames: ['Size & Type', 'Length', 'Pipe Dia', 'OC/SC', 'Avg Cover'],
+        keyColumn: 'B',
+      });
+    }
+  });
+
+  return configs;
+}
 
 interface SheetConfig {
   sheetName: string;
@@ -429,7 +439,8 @@ export async function compareSpreadsheets(
 
   const warnings: string[] = [];
   const reports: SheetReport[] = [];
-  for (const config of SHEET_CONFIGS) {
+  const configs = getSheetConfigs(truthWb);
+  for (const config of configs) {
     reports.push(compareSheet(truthWb, genWb, config, warnings));
   }
 

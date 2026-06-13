@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import path from 'path';
 import os from 'os';
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 dotenv.config({ path: path.resolve(__dirname, '../../.env.local') });
 
 import { GoogleGenAI } from '@google/genai';
@@ -649,12 +650,12 @@ export async function extractFromPDF(
         fileUriToUse = `gs://${BUCKET_NAME}/${fileName}`;
       }
     } else {
-      // Google AI Studio (Free Tier)
-      if (pdfBuffer.length > 4 * 1024 * 1024 || gcsSourceUri) {
+      // Google AI Studio (Free Tier) - Always upload to Files API for robust PDF parsing
+      if (pdfBuffer.length > 0 || gcsSourceUri) {
         const tempPath = path.join(os.tmpdir(), `locator-${crypto.randomBytes(8).toString('hex')}.pdf`);
         fs.writeFileSync(tempPath, pdfBuffer);
         try {
-          console.log(`      [extraction.ts] File size (${(pdfBuffer.length / 1024 / 1024).toFixed(2)}MB) > 4MB or GCS source specified. Uploading to Gemini Files API...`);
+          console.log(`      [extraction.ts] File size (${(pdfBuffer.length / 1024 / 1024).toFixed(2)}MB) > 0MB or GCS source specified. Uploading to Gemini Files API...`);
           const uploadedFileObj = await ai.files.upload({
             file: tempPath,
             config: { mimeType: 'application/pdf' }
@@ -778,11 +779,12 @@ export async function extractFromPDF(
           }
         };
       } else {
-        if (buffer.length > 4 * 1024 * 1024) {
+        // Always upload chunk to Gemini Files API
+        if (buffer.length > 0) {
           const tempPath = path.join(os.tmpdir(), `chunk-${crypto.randomBytes(8).toString('hex')}.pdf`);
           fs.writeFileSync(tempPath, buffer);
           try {
-            console.log(`      [extraction.ts] File size (${(buffer.length / 1024 / 1024).toFixed(2)}MB) > 4MB. Uploading chunk to Gemini Files API...`);
+            console.log(`      [extraction.ts] File size (${(buffer.length / 1024 / 1024).toFixed(2)}MB) > 0MB. Uploading chunk to Gemini Files API...`);
             const uploadResponse = await ai.files.upload({
               file: tempPath,
               config: { mimeType: 'application/pdf' }

@@ -22,10 +22,20 @@ function findDrawingPDFs(projectDir: string): string[] {
   const files = fs.readdirSync(projectDir);
   
   // Filter to drawing PDFs only (not quotes, reports, etc.)
+  const civilKeywords = ['civil', 'servicing', 'drainage', 'plan', 'pnp', 'storm', 'sewer', 'water'];
   const pdfFiles = files.filter(f => {
     const name = f.toLowerCase();
     if (!name.endsWith('.pdf')) return false;
-    return !PDF_BLOCKLIST.some(b => name.includes(b));
+
+    const hitBlocklist = PDF_BLOCKLIST.filter(b => name.includes(b));
+    if (hitBlocklist.length === 0) return true;
+
+    const onlyHitsAppendix = hitBlocklist.every(b => b === 'appendix');
+    const hasCivilKeyword = civilKeywords.some(cw => name.includes(cw));
+    if (onlyHitsAppendix && hasCivilKeyword) {
+      return true;
+    }
+    return false;
   });
 
   // Sort by relevance: civil/servicing/drainage first, then by size

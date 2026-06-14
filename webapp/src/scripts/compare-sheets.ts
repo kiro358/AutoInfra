@@ -29,7 +29,10 @@ export function getSheetConfigs(workbook: ExcelJS.Workbook): SheetConfig[] {
 
   workbook.worksheets.forEach(sheet => {
     const nameUpper = sheet.name.toUpperCase();
-    if (nameUpper.startsWith('MANHOLES')) {
+    
+    // Check if it's a manhole sheet (must contain MANHOLE or MH or STRUCTURE, but not SEWER, WATERMAIN, or SUMMARY)
+    if ((nameUpper.includes('MANHOLE') || nameUpper.includes('MH') || nameUpper.includes('STRUCTURE')) && 
+        !nameUpper.includes('SEWER') && !nameUpper.includes('WATERMAIN') && !nameUpper.includes('SUMMARY')) {
       configs.push({
         sheetName: sheet.name,
         sectionLabel: `${sheet.name} - Structures`,
@@ -50,7 +53,8 @@ export function getSheetConfigs(workbook: ExcelJS.Workbook): SheetConfig[] {
         columnNames: ['CB Type', 'QNTY', 'Wall Thickness', 'DPTHm', '$GT ea', '$/ADDMAT'],
         keyColumn: 'B',
       });
-    } else if (nameUpper.startsWith('SEWERS')) {
+    } else if ((nameUpper.includes('SEWER') || nameUpper.includes('SW') || nameUpper.includes('PIPE')) && 
+               !nameUpper.includes('SUMMARY')) {
       configs.push({
         sheetName: sheet.name,
         sectionLabel: sheet.name,
@@ -61,7 +65,8 @@ export function getSheetConfigs(workbook: ExcelJS.Workbook): SheetConfig[] {
         columnNames: ['Run Label', 'Length', 'Pipe Dia', 'Type/Class', 'Slope', 'Depth', 'Add Mtrls', 'Add L&E'],
         keyColumn: 'B',
       });
-    } else if (nameUpper.startsWith('WATERMAIN')) {
+    } else if ((nameUpper.includes('WATERMAIN') || nameUpper.includes('WM') || nameUpper.includes('WATER')) && 
+               !nameUpper.includes('SUMMARY')) {
       configs.push({
         sheetName: sheet.name,
         sectionLabel: sheet.name,

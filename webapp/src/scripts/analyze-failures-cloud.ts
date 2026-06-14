@@ -22,7 +22,7 @@ import fs from 'fs';
 import os from 'os';
 import { Storage } from '@google-cloud/storage';
 import ExcelJS from 'exceljs';
-import { getWorksheetFlex } from './compare-sheets';
+import { getWorksheetFlex, getSheetConfigs } from './compare-sheets';
 import { GoogleGenAI } from '@google/genai';
 
 const storage = new Storage();
@@ -169,125 +169,133 @@ async function extractGtForFewShot(projectName: string, truthPath: string) {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(truthPath);
 
-  const mhSheet = getWorksheetFlex(wb, 'MANHOLES (1)');
-  const swSheet = getWorksheetFlex(wb, 'SEWERS (1)');
-  if (!mhSheet || !swSheet) throw new Error('Missing tabs');
+  const configs = getSheetConfigs(wb);
+  
+  // Find at least one manhole or sewer or watermain sheet to read B2/B3/B5 metadata
+  let mhSheet = getWorksheetFlex(wb, 'MANHOLES (1)') || getWorksheetFlex(wb, 'MANHOLES');
+  if (!mhSheet && configs.length > 0) {
+    mhSheet = getWorksheetFlex(wb, configs[0].sheetName);
+  }
 
   const result: any = { 
-    projectName: String(getCellValue(mhSheet, 'B2') || projectName), 
-    jobNumber: String(getCellValue(mhSheet, 'B3') || ''), 
-    date: String(getCellValue(mhSheet, 'B5') || '') 
+    projectName: String(mhSheet ? getCellValue(mhSheet, 'B2') || projectName : projectName), 
+    jobNumber: String(mhSheet ? getCellValue(mhSheet, 'B3') || '' : ''), 
+    date: String(mhSheet ? getCellValue(mhSheet, 'B5') || '' : '') 
   };
 
   result.manholes = [];
-  for (let r = 11; r <= 50; r++) {
-    const desc = getCellValue(mhSheet, `B${r}`);
-    if (!desc) continue;
-    result.manholes.push({
-      description: String(desc),
-      depth: getCellValue(mhSheet, `J${r}`),
-      addMaterials: Number(getCellValue(mhSheet, `H${r}`)) || 0,
-      addLE: Number(getCellValue(mhSheet, `I${r}`)) || 0,
-    });
-  }
-
   result.catchbasins = { groups: [], laborRates: {} };
-  const cbTypes: Record<number, string> = {53:'SINGLE_CB', 54:'DOUBLE_CB', 55:'DITCH_INLET_CB', 56:'DOUBLE_DITCH_INLET_CB'};
-  for (const [rowStr, type] of Object.entries(cbTypes)) {
-    const row = Number(rowStr);
-    const qty = getCellValue(mhSheet, `C${row}`);
-    if (qty) {
-      result.catchbasins.groups.push({
-        type,
-        quantity: Number(qty),
-        wallThickness: Number(getCellValue(mhSheet, `D${row}`)) || 4,
-        depth: Number(getCellValue(mhSheet, `E${row}`)) || 2.2,
-        grateEach: Number(getCellValue(mhSheet, `F${row}`)) || 0,
-        addMaterials: Number(getCellValue(mhSheet, `G${row}`)) || 0,
-      });
-    }
-  }
-  result.catchbasins.laborRates = {
-    scbLabor: Number(getCellValue(mhSheet, 'C59')) || 200,
-    dcbLabor: Number(getCellValue(mhSheet, 'C60')) || 250,
-    dicbFC: Number(getCellValue(mhSheet, 'F59')) || 465,
-    ddicbFC: Number(getCellValue(mhSheet, 'F60')) || 715,
-  };
-
   result.sewers = [];
-  for (let r = 14; r <= 55; r++) {
-    const label = getCellValue(swSheet, `B${r}`);
-    if (!label) continue;
-    const length = getCellValue(swSheet, `C${r}`);
-    const pipeDia = getCellValue(swSheet, `D${r}`);
-    const isLineItem = !length && !pipeDia;
-
-    // Skip standard fee line items — they're added deterministically
-    const labelUpper = String(label).toUpperCase();
-    if (isLineItem && (labelUpper.includes('VIDEO') || labelUpper.includes('LAYOUT') || labelUpper.includes('AS BUILT'))) {
-      continue;
-    }
-
-    result.sewers.push({
-      runLabel: String(label),
-      isLineItem,
-      length: length != null ? Number(length) : null,
-      pipeDiameter: pipeDia != null ? Number(pipeDia) : null,
-      typeClass: getCellValue(swSheet, `E${r}`) != null ? Number(getCellValue(swSheet, `E${r}`)) : null,
-      slope: getCellValue(swSheet, `F${r}`) != null ? Number(getCellValue(swSheet, `F${r}`)) : null,
-      depth: getCellValue(swSheet, `G${r}`) != null ? Number(getCellValue(swSheet, `G${r}`)) : null,
-      addMaterials: Number(getCellValue(swSheet, `H${r}`)) || 0,
-      addLE: Number(getCellValue(swSheet, `I${r}`)) || 0,
-    });
-  }
-  
   result.watermain = [];
   result.watermainSpecials = [];
   result.watermainValves = [];
 
-  const wmSheet = getWorksheetFlex(wb, 'WATERMAIN (1)');
-  if (wmSheet) {
-    // Read watermain runs (rows 13-19)
-    for (let r = 13; r <= 19; r++) {
-      const sizeAndType = getCellValue(wmSheet, `B${r}`);
-      if (!sizeAndType) continue;
-      result.watermain.push({
-        sizeAndType: String(sizeAndType),
-        length: getCellValue(wmSheet, `C${r}`) != null ? Number(getCellValue(wmSheet, `C${r}`)) : null,
-        pipeDiameter: getCellValue(wmSheet, `D${r}`) != null ? Number(getCellValue(wmSheet, `D${r}`)) : null,
-        ocSc: String(getCellValue(wmSheet, `F${r}`) || 'OC'),
-        addMaterials: Number(getCellValue(wmSheet, `G${r}`)) || 0,
-        addLE: Number(getCellValue(wmSheet, `H${r}`)) || 0,
-        avgCover: getCellValue(wmSheet, `J${r}`) != null ? Number(getCellValue(wmSheet, `J${r}`)) : null,
-      });
-    }
+  for (const config of configs) {
+    const sheet = getWorksheetFlex(wb, config.sheetName);
+    if (!sheet) continue;
 
-    // Read watermain specials (rows 24-40)
-    for (let r = 24; r <= 40; r++) {
-      const specialName = getCellValue(wmSheet, `B${r}`);
-      if (!specialName) continue;
-      result.watermainSpecials.push({
-        specialName: String(specialName),
-        quantity: getCellValue(wmSheet, `C${r}`) != null ? Number(getCellValue(wmSheet, `C${r}`)) : null,
-        costEach: getCellValue(wmSheet, `D${r}`) != null ? Number(getCellValue(wmSheet, `D${r}`)) : null,
-        thrustBlock: getCellValue(wmSheet, `E${r}`) != null ? Number(getCellValue(wmSheet, `E${r}`)) : null,
-        anodeCost: getCellValue(wmSheet, `F${r}`) != null ? Number(getCellValue(wmSheet, `F${r}`)) : null,
-        laborEach: getCellValue(wmSheet, `G${r}`) != null ? Number(getCellValue(wmSheet, `G${r}`)) : null,
-      });
-    }
+    if (config.sectionLabel.endsWith(' - Structures')) {
+      for (let r = config.dataStartRow; r <= config.dataEndRow; r++) {
+        const desc = getCellValue(sheet, `B${r}`);
+        if (!desc) continue;
+        result.manholes.push({
+          description: String(desc),
+          depth: getCellValue(sheet, `J${r}`),
+          addMaterials: Number(getCellValue(sheet, `H${r}`)) || 0,
+          addLE: Number(getCellValue(sheet, `I${r}`)) || 0,
+        });
+      }
+    } else if (config.sectionLabel.endsWith(' - Catchbasins')) {
+      const cbTypes: Record<number, string> = {53:'SINGLE_CB', 54:'DOUBLE_CB', 55:'DITCH_INLET_CB', 56:'DOUBLE_DITCH_INLET_CB'};
+      for (const [rowStr, type] of Object.entries(cbTypes)) {
+        const row = Number(rowStr);
+        const qty = getCellValue(sheet, `C${row}`);
+        if (qty) {
+          result.catchbasins.groups.push({
+            type,
+            quantity: Number(qty),
+            wallThickness: Number(getCellValue(sheet, `D${row}`)) || 4,
+            depth: Number(getCellValue(sheet, `E${row}`)) || 2.2,
+            grateEach: Number(getCellValue(sheet, `F${row}`)) || 0,
+            addMaterials: Number(getCellValue(sheet, `G${row}`)) || 0,
+          });
+        }
+      }
+      result.catchbasins.laborRates = {
+        scbLabor: Number(getCellValue(sheet, 'C59')) || 200,
+        dcbLabor: Number(getCellValue(sheet, 'C60')) || 250,
+        dicbFC: Number(getCellValue(sheet, 'F59')) || 465,
+        ddicbFC: Number(getCellValue(sheet, 'F60')) || 715,
+      };
+    } else if (config.sectionLabel.toUpperCase().includes('SEWER')) {
+      for (let r = config.dataStartRow; r <= config.dataEndRow; r++) {
+        const label = getCellValue(sheet, `B${r}`);
+        if (!label) continue;
+        const length = getCellValue(sheet, `C${r}`);
+        const pipeDia = getCellValue(sheet, `D${r}`);
+        const isLineItem = !length && !pipeDia;
 
-    // Read watermain valves (rows 24-40)
-    for (let r = 24; r <= 40; r++) {
-      const valveSize = getCellValue(wmSheet, `O${r}`);
-      if (!valveSize) continue;
-      result.watermainValves.push({
-        valveSize: String(valveSize),
-        quantity: getCellValue(wmSheet, `P${r}`) != null ? Number(getCellValue(wmSheet, `P${r}`)) : null,
-        valveCost: getCellValue(wmSheet, `Q${r}`) != null ? Number(getCellValue(wmSheet, `Q${r}`)) : null,
-        boxCost: getCellValue(wmSheet, `R${r}`) != null ? Number(getCellValue(wmSheet, `R${r}`)) : null,
-        anodeCost: getCellValue(wmSheet, `S${r}`) != null ? Number(getCellValue(wmSheet, `S${r}`)) : null,
-        laborPerValve: getCellValue(wmSheet, `T${r}`) != null ? Number(getCellValue(wmSheet, `T${r}`)) : null,
-      });
+        // Skip standard fee line items — they're added deterministically
+        const labelUpper = String(label).toUpperCase();
+        if (isLineItem && (labelUpper.includes('VIDEO') || labelUpper.includes('LAYOUT') || labelUpper.includes('AS BUILT'))) {
+          continue;
+        }
+
+        result.sewers.push({
+          runLabel: String(label),
+          isLineItem,
+          length: length != null ? Number(length) : null,
+          pipeDiameter: pipeDia != null ? Number(pipeDia) : null,
+          typeClass: getCellValue(sheet, `E${r}`) != null ? Number(getCellValue(sheet, `E${r}`)) : null,
+          slope: getCellValue(sheet, `F${r}`) != null ? Number(getCellValue(sheet, `F${r}`)) : null,
+          depth: getCellValue(sheet, `G${r}`) != null ? Number(getCellValue(sheet, `G${r}`)) : null,
+          addMaterials: Number(getCellValue(sheet, `H${r}`)) || 0,
+          addLE: Number(getCellValue(sheet, `I${r}`)) || 0,
+        });
+      }
+    } else if (config.sectionLabel.toUpperCase().includes('WATERMAIN')) {
+      // Read watermain runs (rows 13-19)
+      for (let r = 13; r <= 19; r++) {
+        const sizeAndType = getCellValue(sheet, `B${r}`);
+        if (!sizeAndType) continue;
+        result.watermain.push({
+          sizeAndType: String(sizeAndType),
+          length: getCellValue(sheet, `C${r}`) != null ? Number(getCellValue(sheet, `C${r}`)) : null,
+          pipeDiameter: getCellValue(sheet, `D${r}`) != null ? Number(getCellValue(sheet, `D${r}`)) : null,
+          ocSc: String(getCellValue(sheet, `F${r}`) || 'OC'),
+          addMaterials: Number(getCellValue(sheet, `G${r}`)) || 0,
+          addLE: Number(getCellValue(sheet, `H${r}`)) || 0,
+          avgCover: getCellValue(sheet, `J${r}`) != null ? Number(getCellValue(sheet, `J${r}`)) : null,
+        });
+      }
+
+      // Read watermain specials (rows 24-40)
+      for (let r = 24; r <= 40; r++) {
+        const specialName = getCellValue(sheet, `B${r}`);
+        if (!specialName) continue;
+        result.watermainSpecials.push({
+          specialName: String(specialName),
+          quantity: getCellValue(sheet, `C${r}`) != null ? Number(getCellValue(sheet, `C${r}`)) : null,
+          costEach: getCellValue(sheet, `D${r}`) != null ? Number(getCellValue(sheet, `D${r}`)) : null,
+          thrustBlock: getCellValue(sheet, `E${r}`) != null ? Number(getCellValue(sheet, `E${r}`)) : null,
+          anodeCost: getCellValue(sheet, `F${r}`) != null ? Number(getCellValue(sheet, `F${r}`)) : null,
+          laborEach: getCellValue(sheet, `G${r}`) != null ? Number(getCellValue(sheet, `G${r}`)) : null,
+        });
+      }
+
+      // Read watermain valves (rows 24-40)
+      for (let r = 24; r <= 40; r++) {
+        const valveSize = getCellValue(sheet, `O${r}`);
+        if (!valveSize) continue;
+        result.watermainValves.push({
+          valveSize: String(valveSize),
+          quantity: getCellValue(sheet, `P${r}`) != null ? Number(getCellValue(sheet, `P${r}`)) : null,
+          valveCost: getCellValue(sheet, `Q${r}`) != null ? Number(getCellValue(sheet, `Q${r}`)) : null,
+          boxCost: getCellValue(sheet, `R${r}`) != null ? Number(getCellValue(sheet, `R${r}`)) : null,
+          anodeCost: getCellValue(sheet, `S${r}`) != null ? Number(getCellValue(sheet, `S${r}`)) : null,
+          laborPerValve: getCellValue(sheet, `T${r}`) != null ? Number(getCellValue(sheet, `T${r}`)) : null,
+        });
+      }
     }
   }
 

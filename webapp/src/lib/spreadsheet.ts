@@ -361,7 +361,7 @@ function breakSharedFormulas(
  * Replaces non-absolute row references (e.g., C11 → C15 for offset 4).
  * Preserves absolute references (e.g., F$7 stays F$7).
  */
-function adjustFormulaForRow(formula: string, rowOffset: number): string {
+export function adjustFormulaForRow(formula: string, rowOffset: number): string {
   if (rowOffset === 0) return formula;
 
   // Match cell references: column letters followed by optional $ and digits

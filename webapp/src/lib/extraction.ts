@@ -302,7 +302,7 @@ async function getCachedOrCallLLM(
   }
 }
 
-function snapToMHSize(pipeOutDia: number | null): number {
+export function snapToMHSize(pipeOutDia: number | null): number {
   if (pipeOutDia === null || pipeOutDia <= 0) return 1200;
   if (pipeOutDia <= 450) return 1200;
   if (pipeOutDia <= 600) return 1500;
@@ -1243,7 +1243,7 @@ function determineTemplateType(data: any): 'SHORT' | 'LONG' {
   return 'SHORT';
 }
 
-function snapToPipeDiameter(value: number): number {
+export function snapToPipeDiameter(value: number): number {
   if (value <= 0) return 0;
   // Find closest standard diameter
   let closest = PIPE_DIAMETERS[0];
@@ -1262,7 +1262,7 @@ function snapToPipeDiameter(value: number): number {
  * Normalize slope values — if the model outputs ‰ (per mille) instead of %,
  * convert by dividing by 10. Heuristic: if slope > 10, it's likely ‰.
  */
-function normalizeSlope(slope: number): number {
+export function normalizeSlope(slope: number): number {
   if (slope > 10) {
     // Likely per-mille, convert to %
     return slope / 10;

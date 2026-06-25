@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "evaluate:golden": "tsx src/scripts/evaluate-golden.ts",
     "flywheel:local": "tsx src/scripts/batch-evaluate.ts --golden && tsx src/scripts/flywheel-gate.ts $(ls -t evaluation_scoreboard_*.csv | head -n 1) --local"
   },
@@ -36,6 +38,7 @@
     "eslint-config-next": "16.2.6",
     "ts-node": "^10.9.2",
     "tsx": "^4.22.0",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^2.1.9"
   }
 }

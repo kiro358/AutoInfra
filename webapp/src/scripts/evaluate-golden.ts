@@ -17,6 +17,8 @@ import { priceTakeoff } from '../lib/costing-rules';
 import { populateTemplate } from '../lib/spreadsheet';
 import { DEFAULT_PARAMS } from '../lib/constants';
 import { compareSpreadsheets, CompareResult, formatCompareResult } from './compare-sheets';
+import { compareFacts, formatFactsComparison } from '../lib/compare-facts';
+import { readTruthFacts } from '../lib/truth-facts';
 
 const TRAINING_DIR = path.resolve(__dirname, '../../..', 'existing_projects_training_data');
 
@@ -115,7 +117,15 @@ async function evaluateProject(folderName: string): Promise<CompareResult | null
     const genPath = path.join(genDir, genFilename);
     fs.writeFileSync(genPath, genBuffer);
 
-    // Compare generated sheet vs ground truth
+    // Redesigned extraction metric: score facts vs ground truth (model-only signal)
+    try {
+      const truthFacts = await readTruthFacts(truthPath, folderName);
+      console.log(formatFactsComparison(compareFacts(facts, truthFacts)));
+    } catch (e: any) {
+      console.warn(`   [evaluate-golden] facts metric skipped: ${e.message}`);
+    }
+
+    // Legacy cell-level comparison of the priced sheet (costing + extraction mixed)
     const compareResult = await compareSpreadsheets(truthPath, genPath, folderName);
 
     // Save and print detailed discrepancies

@@ -210,19 +210,28 @@ fine to keep, but it shouldn't sit on the accuracy-improvement critical path.
 
 ---
 
-## 5. Suggested sequence
+## 5. Sequence & status
 
-1. **Tests + safety first (no behavior change):** add `vitest`; cover `normalizeSlope`,
-   `snapToPipeDiameter`, `repairTruncatedJson`, `deduplicate*`, `adjustFormulaForRow`,
-   `keysMatch`. Remove the global TLS-disable. Delete the §4 "safe" scratch files.
-2. **Split the schema:** introduce `TakeoffFacts` + `costing-rules.ts` + `priceTakeoff`;
-   move magic numbers out of `extraction.ts`. Pipeline output stays identical → guarded by
-   tests.
-3. **New eval (§3.4)** with committed synthetic fixtures; unify the golden set; retire the
-   duplicate comparators/scripts.
-4. **Simplify extraction** to a schedule-first single structured pass; A/B against the old
-   3-agent path on the golden set using the new extraction-F1.
-5. **Revisit the flywheel** only after step 4 yields a stable metric.
+1. **Tests + safety first** — ✅ done. `vitest` added (`npm test`); pure functions covered
+   (`geometry.ts`, costing, facts metric, `adjustFormulaForRow`). Global TLS-disable removed.
+   Scratch `*.js` files deleted.
+2. **Split the schema** — ✅ done. `TakeoffFacts` (facts) vs `ExtractionResult` (priced);
+   new `costing-rules.ts::priceTakeoff` holds every magic number; `extraction.ts` returns
+   facts; prompts ask for facts only. Guarded by `costing-rules.test.ts`.
+3. **New eval (§3.4)** — ✅ mostly done. `compare-facts.ts` (entity F1 + field accuracy)
+   with synthetic fixtures; `truth-facts.ts` reads ground-truth xlsx → facts; wired into
+   `evaluate-golden`. ⬜ Remaining: reconcile the two disjoint golden-set lists (needs the
+   gitignored dataset to verify folder names) and retire `compare-jsons.ts`/cloud forks.
+4. **Simplify extraction** — ✅ implemented, ⬜ unvalidated. `EXTRACTION_MODE=single` runs a
+   schedule-first single structured pass (`getSinglePassPrompt`). Default stays `agents`.
+   A/B against the agent path on the golden set (extraction-F1) needs the dataset + API keys.
+5. **Revisit the flywheel** — shelved/frozen. CI schedule stays disabled; `dynamic-rules.json`
+   is no longer auto-tuned. Re-enable only once the facts metric (step 3) is the gate.
 
-Each step is independently shippable and leaves the app runnable.
+Each step is independently shippable and leaves the app runnable (`tsc --noEmit` + `npm test`
+green throughout).
+
+> **What still needs the dataset (can't be done in a clean clone):** validate the facts
+> metric end-to-end, run the single-pass vs agents A/B, tune `DEFAULT_COSTING` against real
+> sheets, and reconcile the golden-set folder names.
 </content>

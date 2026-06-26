@@ -12,29 +12,53 @@ Turns civil-engineering servicing **drawings (PDF)** into a populated **cost-est
 spreadsheet (.xlsx)** + quote PDF, for Ontario municipal infrastructure: storm/sanitary
 **sewers**, **manholes/catchbasins**, and **watermain**.
 
+## Pipeline (the important mental model)
+
+Two stages, deliberately separated (this is the core of the redesign):
+
+```
+PDF ──▶ extractFromPDF()  ──▶ TakeoffFacts   facts only, NO dollars   (extraction.ts)
+                                   │
+                                   ▼
+        priceTakeoff(facts, rules) ──▶ ExtractionResult  (priced)     (costing-rules.ts)
+                                   │
+                                   ▼
+        populateTemplate() ──▶ .xlsx  + generateQuote() ──▶ quote.pdf  (spreadsheet.ts)
+```
+
+- **Extraction** asks the LLM ONLY for physical facts on the drawing (labels, lengths,
+  diameters, slopes, elevations, counts). It must never output prices.
+- **Costing** is deterministic: every dollar/labor/fee comes from one explicit, versioned,
+  unit-tested rule table (`DEFAULT_COSTING` in `costing-rules.ts`).
+
 ## Layout
 
 ```
 webapp/                       Next.js app (everything lives here)
-  src/app/api/process/        main endpoint: PDF -> extraction -> xlsx + quote
-  src/app/page.tsx            upload UI + accuracy scoreboard
+  src/app/api/process/        main endpoint: PDF -> facts -> priced -> xlsx + quote
+  src/app/page.tsx            upload UI + accuracy scoreboard (+ legacy flywheel buttons)
   src/lib/
-    extraction.ts             ⭐ LLM extraction pipeline (locator + 3 agents + heuristics)
+    extraction.ts             ⭐ LLM extraction -> TakeoffFacts (locator + 3 agents, or single-pass)
+    costing-rules.ts          ⭐ DEFAULT_COSTING table + pure priceTakeoff(facts) -> ExtractionResult
+    geometry.ts               pure helpers: snapToPipeDiameter, snapToMHSize, normalizeSlope
+    compare-facts.ts          ⭐ facts-level eval metric (entity F1 + field accuracy)
+    truth-facts.ts            reads an estimator's filled xlsx into TakeoffFacts (for eval)
     spreadsheet.ts            writes ExtractionResult into the .xlsx template
     quote-generator.ts        renders the quote PDF
     constants.ts              DEFAULT_PARAMS, INPUT_CELLS (template cell map), PIPE/MH sizes
-    types.ts                  ExtractionResult & related schema
-    modular-prompts.ts        per-agent system prompts
+    types.ts                  TakeoffFacts (facts) + ExtractionResult (priced) schemas
+    modular-prompts.ts        per-agent + single-pass prompts (facts only, no pricing)
     few-shot-examples.ts      builds few-shot block from few_shot_examples.json
-    dynamic-rules.json        "flywheel"-appended English rules (machine-written)
+    dynamic-rules.json        "flywheel"-appended English rules (machine-written; frozen)
+    *.test.ts                 vitest unit tests (geometry, costing, facts metric, spreadsheet)
   src/scripts/                eval + "flywheel" CLIs (see below)
   empty_templates/            the real .xlsx templates (SHORT / LONG)
 empty_templates/              (also at repo root) template source
 existing_projects_*_data/     ground-truth PDFs+XLSX — GITIGNORED, not in the repo
 ```
 
-> The ground-truth data is **gitignored**, so eval cannot run from a clean clone. You need
-> the datasets locally to reproduce accuracy numbers.
+> The ground-truth data is **gitignored**, so the golden eval cannot run from a clean clone.
+> You need the datasets locally to reproduce accuracy numbers. The unit tests do NOT need it.
 
 ## Run it
 
@@ -42,82 +66,74 @@ existing_projects_*_data/     ground-truth PDFs+XLSX — GITIGNORED, not in the 
 cd webapp
 npm install
 npm run dev                     # http://localhost:3000
+npm test                        # vitest unit suite (no dataset required)
 
 # Local golden-set eval (needs existing_projects_training_data/ present):
-npm run evaluate:golden
+npm run evaluate:golden         # prints the facts metric + legacy cell diff
+
+# Try the single-pass extractor instead of the 3-agent path:
+EXTRACTION_MODE=single npm run evaluate:golden
 ```
 
 Model access: **Gemini** via either Vertex AI (`USE_VERTEX_AI=true`, needs
-`GCP_PROJECT_ID`) or Google AI Studio (`GEMINI_API_KEY`). The current code uses
-`gemini-2.5-flash`. When choosing/﻿changing models or providers, check current model IDs
-and pricing rather than guessing.
+`GCP_PROJECT_ID`) or Google AI Studio (`GEMINI_API_KEY`). Current model: `gemini-2.5-flash`.
+When choosing/changing models or providers, check current model IDs and pricing.
 
-## The core problem to keep in mind
+## The core problem (and where it now stands)
 
-Accuracy stalled around **~35%** (cell-by-cell vs the estimator's real sheet) and
-underperforms a naive RAG baseline. The root cause is **not the model** — it's that the
-schema and the metric mix two different things:
-
-- **Facts** that are physically on the drawing (lengths, diameters, slopes, elevations,
-  counts) — the model *can* get these.
-- **Pricing judgment** that lives in the estimator's head (dollar surcharges, labor rates,
-  standard fees) — the model *cannot* read these off a drawing, yet the code guesses them
-  with magic numbers and the eval scores the guesses.
-
-**North star:** separate Extraction (facts, LLM) from Costing (rules, deterministic) and
-evaluate each separately. Details + target schema in `REDESIGN.md`.
+Cell-accuracy historically stalled ~35% and underperformed a naive RAG baseline. Root cause
+was **not the model**: the old schema mixed *facts* (on the drawing) with *pricing judgment*
+(in the estimator's head), and the metric scored guessed dollars cell-by-cell. The redesign
+splits the two (done) and measures extraction with a **facts metric** (done). Remaining work
+is empirical: validate the facts metric on the dataset and A/B single-pass vs agents.
 
 ## Where the levers are
 
-- **Prompts**: `src/lib/modular-prompts.ts` (+ the big system prompt inside
-  `extraction.ts::getSystemPrompt`). Few-shot: `few_shot_examples.json`.
-- **Pricing magic numbers** (today): `extraction.ts::applyDeterministicHeuristics`
-  — these should move into one explicit costing rule table (see redesign).
+- **Prompts**: `modular-prompts.ts` (agent prompts + `getSinglePassPrompt`). Few-shot:
+  `few_shot_examples.json` (still contains legacy pricing in examples — harmless, parseFacts
+  ignores it; strip when convenient).
+- **Pricing**: `costing-rules.ts::DEFAULT_COSTING`. This is the ONLY place dollars live.
+  Do NOT put pricing back into the extraction path.
 - **Template cells**: `constants.ts::INPUT_CELLS` is the intended source of truth;
-  `spreadsheet.ts` currently re-hardcodes them — keep them in sync (or unify).
-- **Eval comparison**: `src/scripts/compare-sheets.ts` (cell) and `compare-jsons.ts`
-  (semantic). Golden set is defined in **two** places today
-  (`evaluate-golden.ts` and `constants.ts::GOLDEN_PROJECTS`) — unify before trusting it.
+  `spreadsheet.ts` still re-hardcodes them — keep in sync (or unify).
+- **Eval**: `compare-facts.ts` (canonical, facts-level) + `compare-sheets.ts` (legacy cell)
+  + `compare-jsons.ts` (legacy semantic). Golden set is defined in **two** disjoint places
+  (`evaluate-golden.ts` and `constants.ts::GOLDEN_PROJECTS`) — reconcile against the real
+  dataset before trusting it.
 
-## Scripts (`src/scripts/`) — what's live vs legacy
+## Scripts (`src/scripts/`) — live vs legacy
 
-- **Live / wired**: `batch-evaluate-cloud.ts` & `flywheel-gate.ts` (CI `flywheel.yml`,
-  currently disabled), `batch-evaluate.ts` + `flywheel-gate.ts` (`npm run flywheel:local`),
-  `evaluate-golden.ts` (`npm run evaluate:golden`), `compare-sheets.ts`.
-- **Legacy / scratch (candidates for deletion — see REDESIGN.md §4)**: `evaluate.ts`,
-  `evaluate-single.ts`, `extract-single.ts`, `list-eval-files.ts`, `test-gcs.ts`, and the
-  `*-cloud.ts` forks duplicate their local twins.
-- `Dockerfile.flywheel` points at `src/scripts/flywheel.ts`, **which does not exist**.
+- **Live**: `evaluate-golden.ts` (`npm run evaluate:golden`), `compare-sheets.ts`,
+  `batch-evaluate.ts` + `flywheel-gate.ts` (`npm run flywheel:local`).
+- **Flywheel (frozen)**: `batch-evaluate-cloud.ts`, `analyze-failures{,-cloud}.ts`,
+  `flywheel-gate.ts`, `flywheel-rollback.ts`, `compile-scoreboard.ts`, `compare-jsons.ts`.
+  CI `flywheel.yml` schedule is disabled. Do NOT re-enable auto-commit of prompt rules until
+  the facts metric is the gate (see REDESIGN §3.5).
+- `Dockerfile.flywheel` still points at a non-existent `src/scripts/flywheel.ts` (broken).
 
 ## Conventions & gotchas
 
-- **No test suite exists yet.** Add `vitest` and start with the pure functions in
-  `extraction.ts` (`normalizeSlope`, `snapToPipeDiameter`, `repairTruncatedJson`,
-  `deduplicate*`) and `spreadsheet.ts` (`adjustFormulaForRow`). They're pure and high-value.
-- `extraction.ts` sets `NODE_TLS_REJECT_UNAUTHORIZED='0'` globally — **don't rely on this;
-  remove it.** It disables TLS verification for the whole process.
+- **Tests exist now** (`vitest`, `npm test`). Add a test with any change to a pure function
+  or to costing/eval logic. Pure modules: `geometry.ts`, `costing-rules.ts`, `compare-facts.ts`.
+- The global `NODE_TLS_REJECT_UNAUTHORIZED='0'` hack has been **removed** — rely on the
+  proxy CA bundle; don't reintroduce it.
 - `getCachedOrCallLLM` can return a cache entry derived from `latest_result.json` *instead
-  of calling the model*. Be careful: during eval this can read data seeded from ground
-  truth. Disable with `ENABLE_EVAL_CACHE=false`.
-- Excel templates use **shared formula chains**; `spreadsheet.ts::breakSharedFormulas`
-  must run before force-writing calculated columns (depth/drop/diameter). Don't reorder it.
-- Slopes: drawings may use ‰ (per-mille); code divides by 10 when slope > 10. Pipe
-  diameters snap to a fixed standard set (`PIPE_DIAMETERS`).
-- The "flywheel" rewrites `dynamic-rules.json` / `few_shot_examples.json` and commits them
-  to `master` from CI. It's gated on the (noisy) cell metric and currently disabled.
+  of calling the model*. During eval this can read data seeded from ground truth. Disable
+  with `ENABLE_EVAL_CACHE=false`.
+- Excel templates use **shared formula chains**; `spreadsheet.ts::breakSharedFormulas` must
+  run before force-writing calculated columns (depth/drop/diameter). Don't reorder it.
+- Slopes: drawings may use ‰; `normalizeSlope` divides by 10 when slope > 10. Diameters snap
+  to `PIPE_DIAMETERS`.
 
 ## Deploy / CI
 
 - `.github/workflows/deploy.yml` — pushes to `master`/`main` deploy to Cloud Run.
-- `.github/workflows/flywheel.yml` — scheduled optimization loop (**schedule disabled**;
-  manual `workflow_dispatch` only).
+- `.github/workflows/flywheel.yml` — scheduled optimization loop (**schedule disabled**).
 
 ## Working agreement for changes here
 
-1. Keep each change shippable; the app must still run.
+1. Keep each change shippable; the app must still run; `npm test` and `tsc --noEmit` stay green.
 2. Add a test with any change to a pure function or to costing/eval logic.
 3. When you touch architecture, update this file and `REDESIGN.md`.
-4. Don't reintroduce magic-number pricing into the extraction path — it belongs in the
-   costing rule table.
+4. Pricing belongs in `costing-rules.ts` — never in the extraction path.
 </content>
-</invoke>

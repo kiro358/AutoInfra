@@ -140,6 +140,60 @@ Return ONLY valid JSON matching this schema:
 `;
 }
 
+/**
+ * Single-pass extraction prompt — asks for ALL facts (structures, catchbasins,
+ * sewers, watermain) in one structured call. Schedule-first: most takeoff data
+ * lives in MH/pipe schedule tables, so reading those well beats a multi-agent
+ * split. Opt-in via EXTRACTION_MODE=single. Output schema matches parseFacts().
+ */
+export function getSinglePassPrompt(projectName: string, dynamicRules: string): string {
+  return `You are a senior civil engineering estimator extracting infrastructure FACTS from PDF servicing drawings for the project: "${projectName}".
+
+Work SCHEDULE-FIRST: the most reliable data is in tables/schedules (Manhole Schedule, Catchbasin Schedule, Pipe/Sewer Schedule). Read those carefully, then cross-check against plan and profile views.
+
+Extract these four groups in a single JSON object:
+
+## STRUCTURES ("manholes")
+Each manhole/structure (and non-structure line items like "SANITARY", "GREENSTORM", "MOB.") as a row:
+- description (exact label; drop ST/STM/SAN prefixes: STMH 1 -> MH 1), topElevation, lowInvert, highInvert,
+  pipeOutDiameter (mm), structureType, depth (m, if stated). Use null where not shown.
+
+## CATCHBASINS ("catchbasins.groups")
+Counted by type (SINGLE_CB, DOUBLE_CB, DITCH_INLET_CB, DOUBLE_DITCH_INLET_CB): quantity, wallThickness (in, or null), depth (m, or null).
+
+## SEWERS ("sewers")
+Each pipe run: runLabel (exact; add /INS. or CONN. suffixes if shown), isLineItem=false, length (m),
+pipeDiameter (mm, one of: ${PIPE_DIAMETERS.join(', ')}), typeClass, slope (%; convert ‰ by /10), depth (m).
+Non-pipe items (SWALE, DEWATERING, ...): isLineItem=true with null pipe fields.
+
+## WATERMAIN ("watermain", "watermainSpecials", "watermainValves")
+Runs: sizeAndType, length, pipeDiameter, ocSc, avgCover. Specials/valves: name/size + quantity only.
+If no watermain work is shown, return empty arrays.
+
+${NO_PRICING_RULE}
+
+## CRITICAL RULES
+- IGNORE EXISTING INFRASTRUCTURE ("EX.", "EXIST.", "EXISTING", existing-to-remain). Extract only proposed/modified work.
+- Only use plan/profile views and schedules. Ignore cost-estimate tables, bid items, and notes/spec pages.
+- DO NOT include VIDEO / LAYOUT / AS BUILT — appended automatically by our system.
+
+${dynamicRules}
+
+## OUTPUT FORMAT
+Return ONLY valid JSON:
+{
+  "manholes": [{"description": "string", "topElevation": number|null, "lowInvert": number|null, "highInvert": number|null, "pipeOutDiameter": number|null, "structureType": "string"|null, "depth": number|null}],
+  "catchbasins": {"groups": [{"type": "SINGLE_CB"|"DOUBLE_CB"|"DITCH_INLET_CB"|"DOUBLE_DITCH_INLET_CB", "quantity": number, "wallThickness": number|null, "depth": number|null}]},
+  "sewers": [{"runLabel": "string", "isLineItem": boolean, "lineItemType": "string"|null, "length": number|null, "pipeDiameter": number|null, "typeClass": number|null, "slope": number|null, "depth": number|null}],
+  "watermain": [{"sizeAndType": "string", "length": number, "pipeDiameter": number, "ocSc": number, "avgCover": number}],
+  "watermainSpecials": [{"specialName": "string", "quantity": number}],
+  "watermainValves": [{"valveSize": "string", "quantity": number}],
+  "confidence": number,
+  "warnings": ["string"]
+}
+`;
+}
+
 export function getWatermainAgentPrompt(projectName: string, dynamicRules: string): string {
   return `You are a senior civil engineering estimator. Your sole task is to extract WATERMAIN facts from PDF drawings for the project: "${projectName}".
 

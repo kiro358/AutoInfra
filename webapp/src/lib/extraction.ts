@@ -11,7 +11,7 @@ import { snapToPipeDiameter, normalizeSlope } from './geometry';
 import { buildFewShotPromptSection } from './few-shot-examples';
 import { setGlobalDispatcher, Agent, ProxyAgent } from 'undici';
 import crypto from 'crypto';
-import { LOCATOR_SYSTEM_PROMPT, getManholeAgentPrompt, getSewerAgentPrompt, getWatermainAgentPrompt } from './modular-prompts';
+import { LOCATOR_SYSTEM_PROMPT, getManholeAgentPrompt, getSewerAgentPrompt, getWatermainAgentPrompt, getSinglePassPrompt } from './modular-prompts';
 
 // Globally override Undici's default 30-second headers/body timeout and configure proxy if present
 try {
@@ -554,6 +554,66 @@ export async function extractFromPDF(
         };
       }
     };
+
+    // --- SINGLE-PASS MODE (opt-in, schedule-first) ---
+    // One combined facts call instead of locator + 3 staggered agents. Simpler and
+    // typically more accurate when the takeoff lives in schedule tables. Enable with
+    // EXTRACTION_MODE=single. Empirical A/B vs the agent path needs the dataset + keys.
+    if ((process.env.EXTRACTION_MODE || 'agents').toLowerCase() === 'single') {
+      console.log(`      [extraction.ts] EXTRACTION_MODE=single — running one combined facts pass.`);
+      const unionPages = locatorIndex
+        ? Array.from(new Set([
+            ...locatorIndex.manholePages,
+            ...locatorIndex.sewerPages,
+            ...locatorIndex.watermainPages,
+          ])).sort((a, b) => a - b)
+        : [];
+      const slicedBuffer = await extractPagesFromPDF(pdfBuffer, unionPages);
+      const isSliced = slicedBuffer !== pdfBuffer;
+      const prompt =
+        getSinglePassPrompt(projectName, getDynamicPromptAdditions()) + '\n' +
+        buildFewShotPromptSection(projectName, { name: projectName, hasWatermain: shouldRunWatermain, hasSanitary: shouldRunSewers }) +
+        getPageInstructions(unionPages, 'structures, sewers, and watermain', isSliced);
+
+      let text = '{}';
+      try {
+        text = await getCachedOrCallLLM(`${sourceHash}_single`, prompt, 'single', async () => {
+          const subPdfPart = await preparePdfPart(slicedBuffer);
+          const response = await callWithRetry(async () => ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: [{ role: 'user', parts: [{ text: prompt }, subPdfPart] }],
+            config: { temperature: 0, responseMimeType: 'application/json' },
+          }));
+          return response.text || '{}';
+        }, projectName);
+      } catch (e: any) {
+        console.error(`      [extraction.ts] Single-pass call failed: ${e.message}`);
+      }
+
+      let raw: any = {};
+      try {
+        raw = tryParseJSONWithRepair(text);
+      } catch (e: any) {
+        console.error(`      [extraction.ts] Failed to parse single-pass response: ${e.message}`);
+      }
+
+      const facts = parseFacts({
+        projectName: raw.projectName,
+        jobNumber: raw.jobNumber,
+        date: raw.date,
+        manholes: deduplicateManholes(raw.manholes || []),
+        catchbasins: raw.catchbasins || { groups: [] },
+        sewers: deduplicateSewers(raw.sewers || []),
+        watermain: deduplicateWatermain(raw.watermain || []),
+        watermainSpecials: deduplicateSpecials(raw.watermainSpecials || []),
+        watermainValves: deduplicateValves(raw.watermainValves || []),
+        confidence: raw.confidence,
+        warnings: raw.warnings || [],
+      }, projectName);
+      facts.warnings = [...facts.warnings, ...validateExtraction(facts)];
+      facts.locatorIndex = locatorIndex;
+      return facts;
+    }
 
     console.log(`      [extraction.ts] Running extraction agents (Manholes, Sewers, Watermain) in parallel with stagger...`);
 

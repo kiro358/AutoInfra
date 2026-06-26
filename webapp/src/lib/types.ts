@@ -95,6 +95,72 @@ export interface ExtractionResult {
   locatorIndex?: { manholePages: number[]; sewerPages: number[]; watermainPages: number[] } | null;
 }
 
+// ============ Takeoff Facts (Extraction Stage output) ============
+// Facts that are physically present on the drawings. The LLM is ONLY asked for
+// these — never for dollar amounts, labor rates, or fees. Pricing/judgment is
+// applied deterministically afterwards by priceTakeoff() (see costing-rules.ts).
+
+export interface StructureFact {
+  description: string;
+  topElevation: number | null;
+  lowInvert: number | null;
+  highInvert: number | null;
+  pipeOutDiameter: number | null;
+  structureType: string | null;
+  depth: number | null;
+}
+
+export interface CatchbasinGroupFact {
+  type: 'SINGLE_CB' | 'DOUBLE_CB' | 'DITCH_INLET_CB' | 'DOUBLE_DITCH_INLET_CB';
+  quantity: number;
+  wallThickness: number | null;
+  depth: number | null;
+}
+
+export interface SewerFact {
+  runLabel: string;
+  isLineItem: boolean;
+  lineItemType?: string;
+  length: number | null;
+  pipeDiameter: number | null;
+  typeClass: number | null;
+  slope: number | null;
+  depth: number | null;
+}
+
+export interface WatermainFact {
+  sizeAndType: string;
+  length: number;
+  pipeDiameter: number;
+  ocSc: number;
+  avgCover: number;
+}
+
+export interface WatermainSpecialFact {
+  specialName: string;
+  quantity: number;
+}
+
+export interface WatermainValveFact {
+  valveSize: string;
+  quantity: number;
+}
+
+export interface TakeoffFacts {
+  projectName: string;
+  jobNumber: string;
+  date: string;
+  structures: StructureFact[];
+  catchbasins: CatchbasinGroupFact[];
+  sewers: SewerFact[];
+  watermain: WatermainFact[];
+  watermainSpecials: WatermainSpecialFact[];
+  watermainValves: WatermainValveFact[];
+  confidence: number;
+  warnings: string[];
+  locatorIndex?: { manholePages: number[]; sewerPages: number[]; watermainPages: number[] } | null;
+}
+
 // ============ Global Parameters ============
 
 export interface GlobalParams {

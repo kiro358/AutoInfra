@@ -1,8 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { normalizeSlope, snapToPipeDiameter, snapToMHSize } from './geometry';
 import {
-  normalizeSlope,
-  snapToPipeDiameter,
-  snapToMHSize,
   repairTruncatedJson,
   tryParseJSONWithRepair,
   deduplicateManholes,

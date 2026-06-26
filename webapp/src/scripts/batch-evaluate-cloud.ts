@@ -3,6 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { extractFromPDF } from '../lib/extraction';
+import { priceTakeoff } from '../lib/costing-rules';
 import { populateTemplate } from '../lib/spreadsheet';
 import { DEFAULT_PARAMS } from '../lib/constants';
 import { compareSpreadsheets, CompareResult, formatCompareResult } from './compare-sheets';
@@ -282,7 +283,8 @@ export async function processProjectCloud(project: ProjectInfo): Promise<Compare
     const gcsSourceUri = project.pdfFiles.length === 1
       ? `gs://${BUCKET_NAME}/${project.pdfFiles[0].name}`
       : undefined;
-    const result = await extractFromPDF(pdfBuffers, project.folder, gcsSourceUri);
+    const facts = await extractFromPDF(pdfBuffers, project.folder, gcsSourceUri);
+    const result = priceTakeoff(facts);
     const extractTime = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`   ✅ Extraction complete in ${extractTime}s`);
     console.log(`      Confidence: ${result.confidence}`);

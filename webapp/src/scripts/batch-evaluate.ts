@@ -16,6 +16,7 @@
 import fs from 'fs';
 import path from 'path';
 import { extractFromPDF } from '../lib/extraction';
+import { priceTakeoff } from '../lib/costing-rules';
 import { populateTemplate } from '../lib/spreadsheet';
 import { DEFAULT_PARAMS, GOLDEN_PROJECTS } from '../lib/constants';
 import { compareSpreadsheets, CompareResult } from './compare-sheets';
@@ -201,7 +202,8 @@ export async function processProject(project: ProjectInfo): Promise<CompareResul
     // Extract data — extractFromPDF handles merging internally
     console.log(`   🤖 Extracting data via Gemini...`);
     const startTime = Date.now();
-    const result = await extractFromPDF(pdfBuffers, project.folder);
+    const facts = await extractFromPDF(pdfBuffers, project.folder);
+    const result = priceTakeoff(facts);
     const extractTime = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`   ✅ Extraction complete in ${extractTime}s`);
     console.log(`      MH: ${result.manholes.length} | SW: ${result.sewers.length} | WM: ${result.watermain.length} | CB groups: ${result.catchbasins?.groups?.length || 0}`);

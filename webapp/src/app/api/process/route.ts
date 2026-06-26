@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { v4 as uuidv4 } from 'uuid';
 import { extractFromPDF } from '@/lib/extraction';
+import { priceTakeoff } from '@/lib/costing-rules';
 import { populateTemplate } from '@/lib/spreadsheet';
 import { generateQuote } from '@/lib/quote-generator';
 import { DEFAULT_PARAMS } from '@/lib/constants';
@@ -38,8 +39,11 @@ export async function POST(request: NextRequest) {
     const projectId = uuidv4();
     const pdfBuffer = Buffer.from(await file.arrayBuffer());
 
-    // Extract data using Gemini VLM
-    const extraction = await extractFromPDF(pdfBuffer, projectName);
+    // Stage 1: extract physical facts from the drawings (no pricing)
+    const facts = await extractFromPDF(pdfBuffer, projectName);
+
+    // Stage 2: apply deterministic costing rules -> priced takeoff
+    const extraction = priceTakeoff(facts);
 
     // Populate spreadsheet template
     const xlsxBuffer = await populateTemplate(extraction, params);

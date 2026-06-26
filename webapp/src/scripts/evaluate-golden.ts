@@ -13,6 +13,7 @@
 import fs from 'fs';
 import path from 'path';
 import { extractFromPDF } from '../lib/extraction';
+import { priceTakeoff } from '../lib/costing-rules';
 import { populateTemplate } from '../lib/spreadsheet';
 import { DEFAULT_PARAMS } from '../lib/constants';
 import { compareSpreadsheets, CompareResult, formatCompareResult } from './compare-sheets';
@@ -100,8 +101,9 @@ async function evaluateProject(folderName: string): Promise<CompareResult | null
     console.log(`   [evaluate-golden] Processing ${pdfBuffers.length} PDFs (${totalSizeMB.toFixed(1)} MB total):`);
     sortedPdfs.forEach((f, i) => console.log(`     ${i + 1}. ${f}`));
     
-    // Extract using merged multi-PDF pipeline
-    const result = await extractFromPDF(pdfBuffers, folderName);
+    // Extract physical facts, then apply deterministic costing
+    const facts = await extractFromPDF(pdfBuffers, folderName);
+    const result = priceTakeoff(facts);
 
     // Populate standard spreadsheet template
     const genBuffer = await populateTemplate(result, DEFAULT_PARAMS as any);

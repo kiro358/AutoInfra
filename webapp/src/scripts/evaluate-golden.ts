@@ -31,14 +31,34 @@ const GOLDEN_PROJECTS = [
   { folder: '2026-004 SHN CENTENNIAL EMERGENCY DEPARTMENT REDEVELOPMENT', label: '5. SHN Centennial (Site specials)' }
 ];
 
-const PDF_BLOCKLIST = [
-  'quote', 'quotation', 'schedule', 'bid', 'geotechnical', 'geotech',
-  'report', 'proposal', 'estimate', 'pricing', 'breakdown', 'budget',
-  'letter', 'backup', 'specifications', 'specs', 'rpt', 'contracting',
-  'invoice', 'addendum', 'tender_form', 'tender form', 'tipp',
-  'structural', 'architectural', 'hydrogeological', 'landscape',
-  'cover sheet', 'appendix'
+// Clear non-drawing documents — always excluded, even if also tagged "civil".
+const PDF_HARD_EXCLUDE = [
+  'quote', 'quotation', 'geotechnical', 'geotech', 'proposal', 'estimate',
+  'pricing', 'breakdown', 'budget', 'letter', 'backup', 'invoice', 'addendum',
+  'bid form', 'tender_form', 'tender form', 'tipp', 'report', 'rpt', 'contracting',
+  'specifications', 'specs', 'structural', 'architectural', 'hydrogeological',
+  'landscape', 'electrical', 'mechanical', 'cover sheet',
 ];
+
+// Civil/servicing drawing hints — these win even if the filename also contains a
+// blocklist-ish word like "appendix" (e.g. "Appendix 1.00 AMCAI Civil Plan Set").
+const PDF_CIVIL_HINTS = [
+  'civil', 'servicing', 'drainage', 'plan', 'pnp', 'plan and profile',
+  'plan & profile', 'storm', 'sewer', 'watermain', 'grading', 'site',
+];
+
+/** Allowlist-first PDF selection: prefer civil drawing sets, fall back to anything not hard-excluded. */
+function selectDrawingPdfs(pdfNames: string[]): string[] {
+  const notExcluded = pdfNames.filter(f => {
+    const n = f.toLowerCase();
+    return !PDF_HARD_EXCLUDE.some(b => n.includes(b));
+  });
+  const civil = notExcluded.filter(f => {
+    const n = f.toLowerCase();
+    return PDF_CIVIL_HINTS.some(c => n.includes(c));
+  });
+  return civil.length > 0 ? civil : notExcluded;
+}
 
 async function evaluateProject(folderName: string): Promise<CompareResult | null> {
   const projectDir = path.join(TRAINING_DIR, folderName);
@@ -48,10 +68,7 @@ async function evaluateProject(folderName: string): Promise<CompareResult | null
   }
 
   const files = fs.readdirSync(projectDir);
-  const pdfFiles = files.filter(f => {
-    const name = f.toLowerCase();
-    return name.endsWith('.pdf') && !PDF_BLOCKLIST.some(b => name.includes(b));
-  });
+  const pdfFiles = selectDrawingPdfs(files.filter(f => f.toLowerCase().endsWith('.pdf')));
   const xlsxFiles = files.filter(f => 
     f.toLowerCase().endsWith('.xlsx') && 
     !f.toLowerCase().includes('eval_run_') &&

@@ -78,3 +78,25 @@ describe('compareFacts — field accuracy', () => {
     expect(dia.accuracy).toBe(0); // 375 != 300 exactly
   });
 });
+
+describe('compareFacts — detection F1 excludes vacuous entity kinds', () => {
+  it('does not let an empty (0-truth, 0-pred) kind inflate the average', () => {
+    // 1 of 2 structures matched (F1 0.5); no sewers, no watermain anywhere.
+    const truth = facts({
+      structures: [
+        { description: 'MH 1', topElevation: null, lowInvert: null, highInvert: null, pipeOutDiameter: null, structureType: null, depth: null },
+        { description: 'MH 2', topElevation: null, lowInvert: null, highInvert: null, pipeOutDiameter: null, structureType: null, depth: null },
+      ],
+    });
+    const pred = facts({
+      structures: [
+        { description: 'MH 1', topElevation: null, lowInvert: null, highInvert: null, pipeOutDiameter: null, structureType: null, depth: null },
+        { description: 'MH 9', topElevation: null, lowInvert: null, highInvert: null, pipeOutDiameter: null, structureType: null, depth: null },
+      ],
+    });
+    const c = compareFacts(pred, truth);
+    // Only structures are "active"; empty sewers/watermain are excluded, so the
+    // score reflects structures alone (0.5), not (0.5 + 1 + 1)/3 = 0.83.
+    expect(c.detectionF1).toBeCloseTo(0.5);
+  });
+});

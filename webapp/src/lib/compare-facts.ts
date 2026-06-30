@@ -172,7 +172,11 @@ export function compareFacts(pred: TakeoffFacts, truth: TakeoffFacts): FactsComp
     );
   }
 
-  const detectionF1 = entities.length > 0 ? entities.reduce((s, e) => s + e.f1, 0) / entities.length : 0;
+  // Only average over entity kinds that actually have something to measure (truth
+  // present or something predicted). A kind with 0 truth AND 0 predictions is
+  // vacuous — counting its F1=1 inflates the score (e.g. no-watermain jobs).
+  const active = entities.filter((e) => e.truthCount > 0 || e.predCount > 0);
+  const detectionF1 = active.length > 0 ? active.reduce((s, e) => s + e.f1, 0) / active.length : 1;
   const totalFields = fields.reduce((s, f) => s + f.total, 0);
   const matchedFields = fields.reduce((s, f) => s + f.matched, 0);
   const fieldAccuracy = totalFields > 0 ? matchedFields / totalFields : 1;

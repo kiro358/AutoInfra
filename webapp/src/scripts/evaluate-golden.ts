@@ -17,18 +17,27 @@ import { priceTakeoff } from '../lib/costing-rules';
 import { populateTemplate } from '../lib/spreadsheet';
 import { DEFAULT_PARAMS } from '../lib/constants';
 import { compareSpreadsheets, CompareResult, formatCompareResult } from './compare-sheets';
-import { compareFacts, formatFactsComparison } from '../lib/compare-facts';
+import { compareFacts, formatFactsComparison, FactsComparison } from '../lib/compare-facts';
 import { readTruthFacts } from '../lib/truth-facts';
 
 const TRAINING_DIR = path.resolve(__dirname, '../../..', 'existing_projects_training_data');
 
-// The 5 Golden projects representative of the full dataset
+// Golden set: 12 projects with verified standard-template ground truth, spanning
+// simple storm -> complex -> multi-PDF. A larger set reduces run-to-run variance so
+// real changes are visible above noise. Override count with GOLDEN_REPEATS to average.
 const GOLDEN_PROJECTS = [
-  { folder: '2026-067 201 GEORGIAN DR,BARRIE', label: '1. Georgian Dr, Barrie (Simple storm)' },
-  { folder: '2026-068 HOLIDAY INN,TRENTON', label: '2. Holiday Inn, Trenton (Medium storm+san)' },
-  { folder: '2026-021 MATTHEWS HANGER WATERLOO', label: '3. Matthews Hangar (Complex system)' },
-  { folder: '2026-010 NEW ORILLIA E.S', label: '4. New Orillia E.S. (High density CBs)' },
-  { folder: '2026-004 SHN CENTENNIAL EMERGENCY DEPARTMENT REDEVELOPMENT', label: '5. SHN Centennial (Site specials)' }
+  { folder: '2026-067 201 GEORGIAN DR,BARRIE', label: 'Georgian Dr, Barrie (simple storm)' },
+  { folder: '2026-068 HOLIDAY INN,TRENTON', label: 'Holiday Inn, Trenton (storm+san)' },
+  { folder: '2026-021 MATTHEWS HANGER WATERLOO', label: 'Matthews Hangar (complex)' },
+  { folder: '2026-010 NEW ORILLIA E.S', label: 'New Orillia E.S. (dense CBs)' },
+  { folder: '2026-004 SHN CENTENNIAL EMERGENCY DEPARTMENT REDEVELOPMENT', label: 'SHN Centennial (site specials)' },
+  { folder: '2026-001 ECOLE SECONDAIRE CATHOLIQUE-BRAMPTON', label: 'Ecole Secondaire, Brampton' },
+  { folder: '2026-002 BRADFORD WEST GWILLIMBURY CIVIC CENTRE', label: 'Bradford Civic Centre' },
+  { folder: '2026-006 OAKVILLE FIRE HALL 9', label: 'Oakville Fire Hall 9' },
+  { folder: '2026-015 UXBRIDGE POOL SPRUNG', label: 'Uxbridge Pool Sprung' },
+  { folder: '2026-033 MILTON # 13 ELEMENTARY SCHOOL', label: 'Milton #13 Elementary' },
+  { folder: '2026-050 PANATTONI-6500 MISSISSAUGA ROAD', label: 'Panattoni 6500 Mississauga (multi-PDF)' },
+  { folder: '2026-060 PROPOSED COMMERCIAL DEVELOPMENT', label: 'Proposed Commercial Development' },
 ];
 
 // Clear non-drawing documents — always excluded, even if also tagged "civil".
@@ -60,11 +69,13 @@ function selectDrawingPdfs(pdfNames: string[]): string[] {
   return civil.length > 0 ? civil : notExcluded;
 }
 
-async function evaluateProject(folderName: string): Promise<CompareResult | null> {
+interface ProjectResult { cell: CompareResult | null; facts: FactsComparison | null; }
+
+async function evaluateProject(folderName: string): Promise<ProjectResult> {
   const projectDir = path.join(TRAINING_DIR, folderName);
   if (!fs.existsSync(projectDir)) {
     console.error(`❌ Project directory not found: ${folderName}`);
-    return null;
+    return { cell: null, facts: null };
   }
 
   const files = fs.readdirSync(projectDir);
@@ -80,7 +91,7 @@ async function evaluateProject(folderName: string): Promise<CompareResult | null
 
   if (pdfFiles.length === 0 || xlsxFiles.length === 0) {
     console.warn(`⚠️ Skipping ${folderName}: missing PDF or XLSX`);
-    return null;
+    return { cell: null, facts: null };
   }
 
   // Sort PDFs by relevance
@@ -135,9 +146,11 @@ async function evaluateProject(folderName: string): Promise<CompareResult | null
     fs.writeFileSync(genPath, genBuffer);
 
     // Redesigned extraction metric: score facts vs ground truth (model-only signal)
+    let factsCmp: FactsComparison | null = null;
     try {
       const truthFacts = await readTruthFacts(truthPath, folderName);
-      console.log(formatFactsComparison(compareFacts(facts, truthFacts)));
+      factsCmp = compareFacts(facts, truthFacts);
+      console.log(formatFactsComparison(factsCmp));
     } catch (e: any) {
       console.warn(`   [evaluate-golden] facts metric skipped: ${e.message}`);
     }
@@ -169,85 +182,98 @@ async function evaluateProject(folderName: string): Promise<CompareResult | null
     }
     console.log('');
 
-    return compareResult;
+    return { cell: compareResult, facts: factsCmp };
   } catch (e: any) {
     console.error(`❌ Error evaluating project ${folderName}:`, e.message);
-    return null;
+    return { cell: null, facts: null };
   }
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const pct = (x: number) => (x * 100).toFixed(0) + '%';
+const entityScore = (f: FactsComparison | null, kind: string) =>
+  f?.entities.find((e) => e.kind === kind) ?? null;
+
+interface Row {
+  label: string;
+  folder: string;
+  detF1s: number[];
+  lastFacts: FactsComparison | null;
+  lastCell: CompareResult | null;
 }
 
 async function main() {
   console.log('╔══════════════════════════════════════════════════════════════╗');
-  console.log('║          AutoInfra FAST GOLDEN EVALUATION LOOP               ║');
+  console.log('║                 AutoInfra GOLDEN EVALUATION                  ║');
   console.log('╚══════════════════════════════════════════════════════════════╝\n');
 
-  console.log(`Starting fast local evaluation loop on ${GOLDEN_PROJECTS.length} Golden Projects...`);
-  console.log('Evaluating sequentially to ensure stable network proxy connections...\n');
+  const REPEATS = Math.max(1, Number(process.env.GOLDEN_REPEATS || '1'));
+  console.log(`Evaluating ${GOLDEN_PROJECTS.length} projects × ${REPEATS} run(s), sequentially.\n`);
 
   const startTime = Date.now();
-  const results: (CompareResult | null)[] = [];
-  
+  const rows: Row[] = [];
+
   for (let i = 0; i < GOLDEN_PROJECTS.length; i++) {
     const p = GOLDEN_PROJECTS[i];
-    console.log(`\n------------------------------------------------------------`);
-    console.log(`[${i + 1}/${GOLDEN_PROJECTS.length}] Evaluating: ${p.label}...`);
-    const res = await evaluateProject(p.folder);
-    results.push(res);
-    
-    if (res) {
-      console.log(`✅ Success! Accuracy: ${res.overallAccuracy.toFixed(1)}%`);
-    }
+    const row: Row = { label: p.label, folder: p.folder, detF1s: [], lastFacts: null, lastCell: null };
+    for (let r = 0; r < REPEATS; r++) {
+      console.log(`\n------------------------------------------------------------`);
+      console.log(`[${i + 1}/${GOLDEN_PROJECTS.length}]${REPEATS > 1 ? ` run ${r + 1}/${REPEATS}` : ''} ${p.label}...`);
+      const res = await evaluateProject(p.folder);
+      if (res.facts) {
+        row.detF1s.push(res.facts.detectionF1);
+        row.lastFacts = res.facts;
+      }
+      if (res.cell) row.lastCell = res.cell;
+      console.log(`   → cell ${res.cell ? res.cell.overallAccuracy.toFixed(1) + '%' : 'ERR'} | detF1 ${res.facts ? pct(res.facts.detectionF1) : 'ERR'}`);
 
-    // Rate limit throttling - pause 10s between projects to respect API quotas
-    if (i < GOLDEN_PROJECTS.length - 1) {
-      console.log(`   ⏳ Waiting 10s to respect API rate limits...`);
-      await new Promise(resolve => setTimeout(resolve, 10000));
+      const isLast = i === GOLDEN_PROJECTS.length - 1 && r === REPEATS - 1;
+      if (!isLast) await sleep(8000);
     }
+    rows.push(row);
   }
-  
-  const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
 
-  console.log('\n' + '='.repeat(90));
-  console.log('                     GOLDEN SCOREBOARD RESULT');
-  console.log('='.repeat(90));
-  console.log(
-    'Project'.padEnd(50) +
-    '│ MH Str │ MH CB  │ Sewers │ WM     │ Overall'
-  );
-  console.log('─'.repeat(90));
+  const elapsedMin = ((Date.now() - startTime) / 60000).toFixed(1);
 
-  let totalOverall = 0;
-  let validCount = 0;
+  // ---------- FACTS SCOREBOARD (primary, model-only signal) ----------
+  console.log('\n' + '='.repeat(96));
+  console.log('  EXTRACTION FACTS SCOREBOARD  (entity detection F1 + field accuracy)');
+  console.log('='.repeat(96));
+  console.log('Project'.padEnd(42) + '│ detF1' + (REPEATS > 1 ? ' (min–max)' : '') + ' │ struct m/T │ runs m/T │ fieldAcc');
+  console.log('─'.repeat(96));
 
-  for (let i = 0; i < GOLDEN_PROJECTS.length; i++) {
-    const project = GOLDEN_PROJECTS[i];
-    const res = results[i];
-
-    if (!res) {
-      console.log(project.label.padEnd(50) + '│ ERROR  │ ERROR  │ ERROR  │ ERROR  │ ERROR');
-      continue;
-    }
-
-    const mhsAcc = res.reports[0].totalCells > 0 ? ((res.reports[0].matchingCells / res.reports[0].totalCells) * 100).toFixed(1) + '%' : 'N/A';
-    const cbsAcc = res.reports[1].totalCells > 0 ? ((res.reports[1].matchingCells / res.reports[1].totalCells) * 100).toFixed(1) + '%' : 'N/A';
-    const swAcc = res.reports[2].totalCells > 0 ? ((res.reports[2].matchingCells / res.reports[2].totalCells) * 100).toFixed(1) + '%' : 'N/A';
-    const wmAcc = res.reports[3].totalCells > 0 ? ((res.reports[3].matchingCells / res.reports[3].totalCells) * 100).toFixed(1) + '%' : 'N/A';
-    const overallAcc = res.overallAccuracy.toFixed(1) + '%';
-
+  let sumDet = 0, nDet = 0, structM = 0, structT = 0, runM = 0, runT = 0, fieldM = 0, fieldT = 0;
+  for (const row of rows) {
+    const has = row.detF1s.length > 0;
+    const mean = has ? row.detF1s.reduce((a, b) => a + b, 0) / row.detF1s.length : NaN;
+    const st = entityScore(row.lastFacts, 'structures');
+    const sw = entityScore(row.lastFacts, 'sewerRuns');
+    const detCell = (has ? pct(mean) : 'ERR') +
+      (REPEATS > 1 && has ? ` (${pct(Math.min(...row.detF1s))}–${pct(Math.max(...row.detF1s))})` : '');
+    const stCell = st ? `${st.matched}/${st.truthCount}` : '–';
+    const swCell = sw ? `${sw.matched}/${sw.truthCount}` : '–';
+    const faCell = row.lastFacts ? pct(row.lastFacts.fieldAccuracy) : '–';
     console.log(
-      project.label.padEnd(50) +
-      `│ ${mhsAcc.padEnd(6)} │ ${cbsAcc.padEnd(6)} │ ${swAcc.padEnd(6)} │ ${wmAcc.padEnd(6)} │ ${overallAcc}`
+      row.label.slice(0, 40).padEnd(42) +
+      `│ ${detCell.padEnd(REPEATS > 1 ? 15 : 5)} │ ${stCell.padEnd(10)} │ ${swCell.padEnd(8)} │ ${faCell}`
     );
-
-    totalOverall += res.overallAccuracy;
-    validCount++;
+    if (has) { sumDet += mean; nDet++; }
+    if (st) { structM += st.matched; structT += st.truthCount; }
+    if (sw) { runM += sw.matched; runT += sw.truthCount; }
+    if (row.lastFacts) for (const f of row.lastFacts.fields) { fieldM += f.matched; fieldT += f.total; }
   }
+  console.log('─'.repeat(96));
+  console.log(`  Mean detection F1: ${nDet ? (sumDet / nDet * 100).toFixed(1) : '0'}%   `
+    + `structures ${structM}/${structT} (${structT ? Math.round(structM / structT * 100) : 0}%)   `
+    + `runs ${runM}/${runT} (${runT ? Math.round(runM / runT * 100) : 0}%)   `
+    + `field acc ${fieldT ? Math.round(fieldM / fieldT * 100) : 0}%`);
 
-  console.log('─'.repeat(90));
-  const meanAccuracy = validCount > 0 ? (totalOverall / validCount).toFixed(1) : '0.0';
-  console.log(`🏆 MEAN SCOREBOARD ACCURACY: ${meanAccuracy}%`);
-  console.log(`⏱️ Completed in ${elapsedSec}s (approx. ${((Number(elapsedSec) / GOLDEN_PROJECTS.length)).toFixed(1)}s per project)`);
-  console.log('='.repeat(90) + '\n');
+  // ---------- legacy cell metric (secondary, extraction+costing mixed) ----------
+  const cells = rows.map((r) => r.lastCell).filter(Boolean) as CompareResult[];
+  const meanCell = cells.length ? cells.reduce((s, c) => s + c.overallAccuracy, 0) / cells.length : 0;
+  console.log(`  Legacy cell-accuracy (mixed): ${meanCell.toFixed(1)}%`);
+  console.log(`  ${rows.length} projects × ${REPEATS} run(s) in ${elapsedMin} min`);
+  console.log('='.repeat(96) + '\n');
 }
 
 if (require.main === module) {

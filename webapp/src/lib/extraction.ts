@@ -258,12 +258,26 @@ async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 6, initialDel
       return await fn();
     } catch (err: any) {
       attempt++;
-      const isRateLimit = err.status === 429 || (err.message && err.message.includes('429')) || (err.message && err.message.toLowerCase().includes('resource exhausted'));
-      const isAbort = err.name === 'AbortError' || err.message === 'This operation was aborted' || (err.message && err.message.toLowerCase().includes('abort'));
+      const msg = (err.message || '').toLowerCase();
+      const isRateLimit = err.status === 429 || msg.includes('429') || msg.includes('resource exhausted');
+      const isAbort = err.name === 'AbortError' || err.message === 'This operation was aborted' || msg.includes('abort');
       const isServerError = err.status >= 500 && err.status <= 599;
-      const isCancelled = err.status === 499 || (err.message && err.message.includes('499')) || (err.message && err.message.toLowerCase().includes('cancel'));
+      const isCancelled = err.status === 499 || msg.includes('499') || msg.includes('cancel');
+      // Transient transport failures (undici): these previously fell through and
+      // zeroed a whole project. They're almost always retryable.
+      const isNetwork =
+        err.name === 'TypeError' && msg.includes('fetch failed') ||
+        msg.includes('fetch failed') ||
+        msg.includes('econnreset') ||
+        msg.includes('etimedout') ||
+        msg.includes('econnrefused') ||
+        msg.includes('enotfound') ||
+        msg.includes('socket hang up') ||
+        msg.includes('network') ||
+        msg.includes('terminated') ||
+        (err.cause && String(err.cause.code || err.cause).toLowerCase().match(/econn|etimedout|und_err|enotfound|socket/) != null);
 
-      if (attempt >= maxRetries || (!isRateLimit && !isAbort && !isServerError && !isCancelled)) {
+      if (attempt >= maxRetries || (!isRateLimit && !isAbort && !isServerError && !isCancelled && !isNetwork)) {
         throw err;
       }
 
@@ -271,6 +285,7 @@ async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 6, initialDel
       if (isRateLimit) errType = '429 Rate Limit';
       else if (isCancelled) errType = '499 Cancelled';
       else if (isServerError) errType = `${err.status || '5xx'} Server Error`;
+      else if (isNetwork) errType = 'Network/Transport';
 
       const delay = initialDelay * Math.pow(2, attempt - 1) + Math.random() * 2000;
       console.warn(`      [extraction.ts] Attempt ${attempt} failed with ${errType}. Retrying in ${(delay / 1000).toFixed(1)}s...`);

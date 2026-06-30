@@ -11,8 +11,8 @@ import { snapToPipeDiameter, normalizeSlope } from './geometry';
 import { buildFewShotPromptSection } from './few-shot-examples';
 import { setGlobalDispatcher, Agent, ProxyAgent } from 'undici';
 import crypto from 'crypto';
-import { LOCATOR_SYSTEM_PROMPT, getManholeAgentPrompt, getSewerAgentPrompt, getWatermainAgentPrompt, getSinglePassPrompt } from './modular-prompts';
-import { renderTilesFlat } from './rasterize';
+import { getManholeAgentPrompt, getSewerAgentPrompt, getWatermainAgentPrompt, getSinglePassPrompt, getPageLocatorPrompt } from './modular-prompts';
+import { renderTilesFlat, renderPageThumbnails } from './rasterize';
 
 // Globally override Undici's default 30-second headers/body timeout and configure proxy if present
 try {
@@ -42,6 +42,9 @@ const LOCATION = process.env.GCP_LOCATION || 'us-central1';
 
 const storage = new Storage();
 const BUCKET_NAME = process.env.GCS_BUCKET || 'autoinfra-ai-eval-data';
+
+// Extraction model (override for A/B, e.g. EXTRACTION_MODEL=gemini-2.5-pro).
+const EXTRACTION_MODEL = process.env.EXTRACTION_MODEL || 'gemini-2.5-flash';
 
 
 function getGenAI() {
@@ -336,6 +339,48 @@ export async function mergePDFs(buffers: Buffer[]): Promise<Buffer> {
   return Buffer.from(pdfBytes);
 }
 
+/**
+ * Page locator: render each page to a cheap thumbnail and ask the model which
+ * pages carry servicing takeoff data (plans / profiles / schedules), so we tile
+ * only those at high DPI. Returns 1-indexed page numbers (empty => caller tiles all).
+ */
+async function locateRelevantPages(
+  ai: GoogleGenAI,
+  pdfBuffer: Buffer,
+  sourceHash: string,
+  projectName: string
+): Promise<number[]> {
+  const thumbs = await renderPageThumbnails(pdfBuffer, { maxPx: 1500 });
+  if (thumbs.length === 0) return [];
+
+  const prompt = getPageLocatorPrompt(thumbs.length);
+  const parts: any[] = [{ text: prompt }];
+  for (const t of thumbs) {
+    parts.push({ text: `Page ${t.page}:` });
+    parts.push({ inlineData: { mimeType: 'image/png', data: t.png.toString('base64') } });
+  }
+
+  const text = await getCachedOrCallLLM(`${sourceHash}_pagelocator`, prompt, 'locator', async () => {
+    const response = await callWithRetry(async () => ai.models.generateContent({
+      model: EXTRACTION_MODEL,
+      contents: [{ role: 'user', parts }],
+      config: { temperature: 0, responseMimeType: 'application/json' },
+    }));
+    return response.text || '{}';
+  }, projectName);
+
+  try {
+    const parsed = JSON.parse(text);
+    const pages: unknown = parsed.relevantPages;
+    if (!Array.isArray(pages)) return [];
+    return Array.from(new Set(
+      pages.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n >= 1 && n <= thumbs.length)
+    )).sort((a, b) => a - b);
+  } catch {
+    return [];
+  }
+}
+
 export async function extractFromPDF(
   pdfInput: Buffer | Buffer[], // Single PDF buffer or array of buffers to merge
   projectName: string,
@@ -351,133 +396,53 @@ export async function extractFromPDF(
   const sourceHash = crypto.createHash('sha256').update(sourceHashes.join(',')).digest('hex');
 
   const ai = getGenAI();
-  const apiKey = process.env.GEMINI_API_KEY;
-  const useVertex = process.env.USE_VERTEX_AI === 'true' || !apiKey;
+  const useVertex = process.env.USE_VERTEX_AI === 'true' || !process.env.GEMINI_API_KEY;
   const uploadedFiles: any[] = [];
-
-  let fileUriToUse: string | null = null;
-  let gcsPath: string | null = null;
-  let isCacheHit = false;
+  // Drawings are ingested as high-DPI image tiles (rasterize.ts) and the page
+  // locator uses per-page thumbnails — neither uploads the whole PDF, so there is
+  // no top-level PDF upload. preparePdfPart() (agents path + tile-render fallback)
+  // still uploads on demand and registers files in uploadedFiles for cleanup.
+  // gcsPath/isCacheHit are retained for the finally-block logging contract.
+  const gcsPath: string | null = null;
+  const isCacheHit = false;
+  void gcsSourceUri;
 
   try {
-    if (useVertex) {
-      if (gcsSourceUri) {
-        fileUriToUse = gcsSourceUri;
-        console.log(`      [extraction.ts] Using direct GCS URI: ${fileUriToUse}`);
-      } else if (pdfBuffer.length > 4 * 1024 * 1024) {
-        const hash = crypto.createHash('sha256').update(pdfBuffer).digest('hex');
-        const fileName = `cached-drawings/${hash}.pdf`;
-
-        const bucket = storage.bucket(BUCKET_NAME);
-        const file = bucket.file(fileName);
-
-        console.log(`      [extraction.ts] File size (${(pdfBuffer.length / 1024 / 1024).toFixed(2)}MB) > 4MB. Checking GCS cache: gs://${BUCKET_NAME}/${fileName}`);
-
-        const [exists] = await file.exists();
-        if (exists) {
-          console.log(`      [extraction.ts] ⚡ GCS Cache Hit! Reusing gs://${BUCKET_NAME}/${fileName}`);
-          isCacheHit = true;
-        } else {
-          console.log(`      [extraction.ts] Cache Miss. Uploading to GCS: gs://${BUCKET_NAME}/${fileName}`);
-          await file.save(pdfBuffer, {
-            contentType: 'application/pdf',
-            metadata: {
-              cacheControl: 'public, max-age=31536000', // Cache for 1 year
-            },
-          });
-        }
-
-        gcsPath = fileName;
-        fileUriToUse = `gs://${BUCKET_NAME}/${fileName}`;
-      }
-    } else {
-      // Google AI Studio (Free Tier) - Always upload to Files API for robust PDF parsing
-      if (pdfBuffer.length > 0 || gcsSourceUri) {
-        const tempPath = path.join(os.tmpdir(), `locator-${crypto.randomBytes(8).toString('hex')}.pdf`);
-        fs.writeFileSync(tempPath, pdfBuffer);
-        try {
-          console.log(`      [extraction.ts] File size (${(pdfBuffer.length / 1024 / 1024).toFixed(2)}MB) > 0MB or GCS source specified. Uploading to Gemini Files API...`);
-          const uploadedFileObj = await ai.files.upload({
-            file: tempPath,
-            config: { mimeType: 'application/pdf' }
-          });
-          fileUriToUse = uploadedFileObj.uri || null;
-          uploadedFiles.push(uploadedFileObj);
-          console.log(`      [extraction.ts] Uploaded successfully to Gemini Files API: ${uploadedFileObj.name} (${uploadedFileObj.uri})`);
-        } finally {
-          try {
-            fs.unlinkSync(tempPath);
-          } catch (err) {}
-        }
-      }
-    }
-
-    const pdfPart = fileUriToUse
-      ? {
-        fileData: {
-          fileUri: fileUriToUse,
-          mimeType: 'application/pdf',
-        },
-      }
-      : {
-        inlineData: {
-          mimeType: 'application/pdf',
-          data: pdfBuffer.toString('base64'),
-        },
-      };
-
     const srcDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
     const totalPages = srcDoc.getPageCount();
     console.log(`      [extraction.ts] Total pages in merged PDF: ${totalPages}`);
 
     let locatorIndex: { manholePages: number[], sewerPages: number[], watermainPages: number[] } | null = null;
 
-    if (totalPages <= 15) {
-      const allPages = Array.from({ length: totalPages }, (_, i) => i + 1);
-      locatorIndex = {
-        manholePages: allPages,
-        sewerPages: allPages,
-        watermainPages: allPages
-      };
-      console.log(`      [extraction.ts] Small/Medium PDF (<= 15 pages). Skipping locator and using all pages:`, locatorIndex);
-    } else {
-      const locatorPrompt = LOCATOR_SYSTEM_PROMPT + '\nAnalyze the drawing pages and return the JSON index.';
-      const locatorText = await getCachedOrCallLLM(`${sourceHash}_all`, locatorPrompt, 'locator', async () => {
-        const response = await callWithRetry(async () => {
-          return await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: [
-              {
-                role: 'user',
-                parts: [
-                  { text: LOCATOR_SYSTEM_PROMPT },
-                  pdfPart,
-                  { text: 'Analyze the drawing pages and return the JSON index.' }
-                ]
-              }
-            ],
-            config: {
-              temperature: 0,
-              responseMimeType: 'application/json'
-            }
-          });
-        });
-        return response.text || '{}';
-      }, projectName);
+    const allPages = Array.from({ length: totalPages }, (_, i) => i + 1);
 
+    // Thumbnail-based page locator: classify each page from a cheap downscaled
+    // image and tile only the pages that carry servicing takeoff data. Falls back
+    // to all pages on tiny sets or when the locator returns nothing. Disable with
+    // ENABLE_PAGE_LOCATOR=false.
+    if (totalPages <= 2 || process.env.ENABLE_PAGE_LOCATOR === 'false') {
+      locatorIndex = { manholePages: allPages, sewerPages: allPages, watermainPages: allPages };
+      console.log(`      [extraction.ts] Tiling all ${totalPages} page(s) (locator skipped).`);
+    } else {
+      let relevant: number[] = [];
       try {
-        const parsed = JSON.parse(locatorText);
-        if (Array.isArray(parsed.manholePages) || Array.isArray(parsed.sewerPages) || Array.isArray(parsed.watermainPages)) {
-          locatorIndex = {
-            manholePages: parsed.manholePages || [],
-            sewerPages: parsed.sewerPages || [],
-            watermainPages: parsed.watermainPages || []
-          };
-        }
-        console.log(`      [extraction.ts] Locator results:`, locatorIndex);
-      } catch (e) {
-        console.warn(`      [extraction.ts] Failed to parse locator response, falling back to all pages`, e);
+        relevant = await locateRelevantPages(ai, pdfBuffer, sourceHash, projectName);
+      } catch (e: any) {
+        console.warn(`      [extraction.ts] Page locator failed (${e.message}); using all pages.`);
       }
+      if (relevant.length > 0) {
+        locatorIndex = { manholePages: relevant, sewerPages: relevant, watermainPages: relevant };
+        console.log(`      [extraction.ts] Page locator selected ${relevant.length}/${totalPages} page(s):`, relevant);
+      }
+    }
+
+    // Fallback: if the locator produced nothing usable, tile all pages.
+    if (!locatorIndex ||
+        (locatorIndex.manholePages.length === 0 &&
+         locatorIndex.sewerPages.length === 0 &&
+         locatorIndex.watermainPages.length === 0)) {
+      locatorIndex = { manholePages: allPages, sewerPages: allPages, watermainPages: allPages };
+      console.log(`      [extraction.ts] Locator empty — tiling all ${totalPages} page(s).`);
     }
 
     const shouldRunManholes = !locatorIndex || locatorIndex.manholePages.length > 0;
@@ -593,7 +558,7 @@ export async function extractFromPDF(
         text = await getCachedOrCallLLM(`${sourceHash}_single_t${tileParts.length}`, prompt, 'single', async () => {
           const mediaParts = tileParts.length > 0 ? tileParts : [await preparePdfPart(pdfBuffer)];
           const response = await callWithRetry(async () => ai.models.generateContent({
-            model: 'gemini-2.5-flash',
+            model: EXTRACTION_MODEL,
             contents: [{ role: 'user', parts: [{ text: prompt }, ...mediaParts] }],
             config: { temperature: 0, responseMimeType: 'application/json' },
           }));
@@ -672,7 +637,7 @@ export async function extractFromPDF(
               const subPdfPart = await preparePdfPart(slicedBuffer);
               const response = await callWithRetry(async () => {
                 return await ai.models.generateContent({
-                  model: 'gemini-2.5-flash',
+                  model: EXTRACTION_MODEL,
                   contents: [
                     {
                       role: 'user',
@@ -780,7 +745,7 @@ export async function extractFromPDF(
               const subPdfPart = await preparePdfPart(slicedBuffer);
               const response = await callWithRetry(async () => {
                 return await ai.models.generateContent({
-                  model: 'gemini-2.5-flash',
+                  model: EXTRACTION_MODEL,
                   contents: [
                     {
                       role: 'user',
@@ -857,7 +822,7 @@ export async function extractFromPDF(
               const subPdfPart = await preparePdfPart(slicedBuffer);
               const response = await callWithRetry(async () => {
                 return await ai.models.generateContent({
-                  model: 'gemini-2.5-flash',
+                  model: EXTRACTION_MODEL,
                   contents: [
                     {
                       role: 'user',

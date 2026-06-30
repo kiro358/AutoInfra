@@ -125,6 +125,53 @@ export async function renderPdfPagesToTiles(
   return result;
 }
 
+/**
+ * Render every page to a single downscaled thumbnail (one image per page) for
+ * cheap page-type classification (the page locator). Resolution is high enough to
+ * read sheet titles / section headers and see whether a page is a servicing plan,
+ * profile, or schedule vs. siltation / detail / cover / notes.
+ */
+export async function renderPageThumbnails(
+  pdfBuffer: Buffer,
+  opts: { maxPx?: number } = {}
+): Promise<{ page: number; png: Buffer }[]> {
+  const { maxPx = 1500 } = opts;
+  const lib = await getPdfjs();
+  const canvasFactory = new NodeCanvasFactory();
+  const data = new Uint8Array(pdfBuffer);
+  const doc = await lib.getDocument({
+    data,
+    isEvalSupported: false,
+    useSystemFonts: true,
+    canvasFactory,
+  }).promise;
+
+  const out: { page: number; png: Buffer }[] = [];
+  try {
+    for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+      const page = await doc.getPage(pageNum);
+      try {
+        const base = page.getViewport({ scale: 1 });
+        const scale = maxPx / Math.max(base.width, base.height);
+        const viewport = page.getViewport({ scale });
+        const W = Math.ceil(viewport.width);
+        const H = Math.ceil(viewport.height);
+        const canvas = createCanvas(W, H);
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, W, H);
+        await page.render({ canvasContext: ctx as unknown as object, viewport, canvasFactory }).promise;
+        out.push({ page: pageNum, png: canvas.toBuffer('image/png') });
+      } finally {
+        page.cleanup?.();
+      }
+    }
+  } finally {
+    await doc.destroy?.();
+  }
+  return out;
+}
+
 /** Convenience: flat list of PNG tiles across the given pages, capped overall. */
 export async function renderTilesFlat(
   pdfBuffer: Buffer,

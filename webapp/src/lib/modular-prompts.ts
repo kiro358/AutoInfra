@@ -22,6 +22,27 @@ Return ONLY a JSON object matching this schema:
 const NO_PRICING_RULE = `## DO NOT ESTIMATE COSTS
 Extract only what is physically shown on the drawings (labels, dimensions, elevations, counts, materials/classes). NEVER output dollar amounts, labor rates, surcharges, grate/frame costs, or fees — those are computed separately by our costing engine. There are no cost fields in the schema below; do not invent any.`;
 
+/**
+ * Page locator (thumbnail-based). Each page is supplied as one downscaled image,
+ * preceded by a "Page N:" text marker. The model returns which pages carry the
+ * servicing takeoff data, so we tile only those at high DPI.
+ */
+export function getPageLocatorPrompt(pageCount: number): string {
+  return `You are indexing a ${pageCount}-page civil engineering drawing set. Each image is ONE page, labelled "Page N:" in the text immediately before it.
+
+Identify the pages that contain SERVICING TAKEOFF DATA an estimator needs:
+- Site SERVICING / grading plans showing PROPOSED storm or sanitary sewers, manholes, and catchbasins (pipe sizes, lengths, slopes, inverts, structure labels).
+- PROFILE sheets for those pipes.
+- Pipe / Manhole / Catchbasin SCHEDULE tables.
+- Watermain plans, profiles, or schedules.
+
+EXCLUDE pages that are: erosion / siltation / sediment control, standard details (OPSD etc.), cover or title sheets, general notes / specifications, legend-only sheets, geotechnical, landscape, architectural, structural, electrical, mechanical, or bid / tender forms.
+
+Be INCLUSIVE within servicing: if a page shows ANY proposed pipe or structure takeoff data, include it. It is better to include a borderline servicing page than to drop one.
+
+Return ONLY JSON: { "relevantPages": [number, ...] }`;
+}
+
 export function getManholeAgentPrompt(projectName: string, dynamicRules: string): string {
   return `You are a senior civil engineering estimator. Your sole task is to extract MANHOLES and CATCHBASINS facts from PDF drawings for the project: "${projectName}".
 

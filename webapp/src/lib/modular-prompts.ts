@@ -147,9 +147,11 @@ Return ONLY valid JSON matching this schema:
  * split. Opt-in via EXTRACTION_MODE=single. Output schema matches parseFacts().
  */
 export function getSinglePassPrompt(projectName: string, dynamicRules: string): string {
-  return `You are a senior civil engineering estimator extracting infrastructure FACTS from PDF servicing drawings for the project: "${projectName}".
+  return `You are a senior civil engineering estimator extracting infrastructure FACTS from civil servicing drawings for the project: "${projectName}".
 
-Work SCHEDULE-FIRST: the most reliable data is in tables/schedules (Manhole Schedule, Catchbasin Schedule, Pipe/Sewer Schedule). Read those carefully, then cross-check against plan and profile views.
+The images provided are overlapping high-resolution TILES of one or more large-format drawing sheets. Read the actual printed text/annotations. The SAME structure or pipe run appears in multiple overlapping tiles — CONSOLIDATE duplicates into a single entry; do NOT emit a row per tile or per drawn segment.
+
+Work SCHEDULE-FIRST where a Manhole/Catchbasin/Pipe schedule table exists. Otherwise read plan and profile annotations (e.g. "DCBMH 2 TOP 260.15", "17.1m-250mm PVC STM @ 0.79%", "CB 3", "DICB 1") and assemble ONE row per PROPOSED run/structure using the EXACT labels printed on the drawing.
 
 Extract these four groups in a single JSON object:
 

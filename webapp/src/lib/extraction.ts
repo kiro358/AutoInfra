@@ -12,6 +12,7 @@ import { buildFewShotPromptSection } from './few-shot-examples';
 import { setGlobalDispatcher, Agent, ProxyAgent } from 'undici';
 import crypto from 'crypto';
 import { LOCATOR_SYSTEM_PROMPT, getManholeAgentPrompt, getSewerAgentPrompt, getWatermainAgentPrompt, getSinglePassPrompt } from './modular-prompts';
+import { renderTilesFlat } from './rasterize';
 
 // Globally override Undici's default 30-second headers/body timeout and configure proxy if present
 try {
@@ -555,12 +556,14 @@ export async function extractFromPDF(
       }
     };
 
-    // --- SINGLE-PASS MODE (opt-in, schedule-first) ---
-    // One combined facts call instead of locator + 3 staggered agents. Simpler and
-    // typically more accurate when the takeoff lives in schedule tables. Enable with
-    // EXTRACTION_MODE=single. Empirical A/B vs the agent path needs the dataset + keys.
-    if ((process.env.EXTRACTION_MODE || 'agents').toLowerCase() === 'single') {
-      console.log(`      [extraction.ts] EXTRACTION_MODE=single — running one combined facts pass.`);
+    // --- SINGLE-PASS + TILED INGESTION (default) ---
+    // One combined facts call over high-DPI image TILES of the located pages.
+    // Large-format CAD sheets are illegible once the whole PDF is downsampled by
+    // the model (it then fabricates), so we rasterize and tile the pages to keep
+    // annotation text at full fidelity (see rasterize.ts). Set EXTRACTION_MODE=agents
+    // for the legacy 3-agent PDF path.
+    if ((process.env.EXTRACTION_MODE || 'single').toLowerCase() === 'single') {
+      console.log(`      [extraction.ts] EXTRACTION_MODE=single — combined facts pass over image tiles.`);
       const unionPages = locatorIndex
         ? Array.from(new Set([
             ...locatorIndex.manholePages,
@@ -568,20 +571,30 @@ export async function extractFromPDF(
             ...locatorIndex.watermainPages,
           ])).sort((a, b) => a - b)
         : [];
-      const slicedBuffer = await extractPagesFromPDF(pdfBuffer, unionPages);
-      const isSliced = slicedBuffer !== pdfBuffer;
+
+      // Rasterize located pages to legible tiles; fall back to the raw PDF if rendering fails.
+      let tileParts: any[] = [];
+      try {
+        const tiles = await renderTilesFlat(pdfBuffer, unionPages, {
+          dpi: 150, tilePx: 1600, overlapPx: 160, maxTilesPerPage: 16, maxTilesTotal: 48,
+        });
+        tileParts = tiles.map(b => ({ inlineData: { mimeType: 'image/png', data: b.toString('base64') } }));
+        console.log(`      [extraction.ts] Rendered ${tileParts.length} tile(s) from ${unionPages.length || 'all'} page(s).`);
+      } catch (e: any) {
+        console.warn(`      [extraction.ts] Tile rendering failed (${e.message}); falling back to full PDF.`);
+      }
+
       const prompt =
         getSinglePassPrompt(projectName, getDynamicPromptAdditions()) + '\n' +
-        buildFewShotPromptSection(projectName, { name: projectName, hasWatermain: shouldRunWatermain, hasSanitary: shouldRunSewers }) +
-        getPageInstructions(unionPages, 'structures, sewers, and watermain', isSliced);
+        buildFewShotPromptSection(projectName, { name: projectName, hasWatermain: shouldRunWatermain, hasSanitary: shouldRunSewers });
 
       let text = '{}';
       try {
-        text = await getCachedOrCallLLM(`${sourceHash}_single`, prompt, 'single', async () => {
-          const subPdfPart = await preparePdfPart(slicedBuffer);
+        text = await getCachedOrCallLLM(`${sourceHash}_single_t${tileParts.length}`, prompt, 'single', async () => {
+          const mediaParts = tileParts.length > 0 ? tileParts : [await preparePdfPart(pdfBuffer)];
           const response = await callWithRetry(async () => ai.models.generateContent({
             model: 'gemini-2.5-flash',
-            contents: [{ role: 'user', parts: [{ text: prompt }, subPdfPart] }],
+            contents: [{ role: 'user', parts: [{ text: prompt }, ...mediaParts] }],
             config: { temperature: 0, responseMimeType: 'application/json' },
           }));
           return response.text || '{}';

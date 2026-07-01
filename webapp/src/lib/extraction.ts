@@ -536,6 +536,45 @@ export async function extractFromPDF(
       }
     };
 
+    // Upload one image tile and return a fileData part. Inlining ~48 tiles (~30MB)
+    // exceeds the request size limit and fails as a transport error, so tiles are
+    // uploaded (Vertex -> GCS, AI Studio -> Files API) and referenced by URI.
+    const prepareImagePart = async (buffer: Buffer): Promise<any> => {
+      if (useVertex) {
+        const hash = crypto.createHash('sha256').update(buffer).digest('hex');
+        const fileName = `cached-tiles/${hash}.png`;
+        const file = storage.bucket(BUCKET_NAME).file(fileName);
+        const [exists] = await file.exists();
+        if (!exists) {
+          await file.save(buffer, { contentType: 'image/png', metadata: { cacheControl: 'public, max-age=31536000' } });
+        }
+        return { fileData: { fileUri: `gs://${BUCKET_NAME}/${fileName}`, mimeType: 'image/png' } };
+      }
+      const tempPath = path.join(os.tmpdir(), `tile-${crypto.randomBytes(8).toString('hex')}.png`);
+      fs.writeFileSync(tempPath, buffer);
+      try {
+        const up = await callWithRetry(() => ai.files.upload({ file: tempPath, config: { mimeType: 'image/png' } }));
+        uploadedFiles.push(up);
+        return { fileData: { fileUri: up.uri || '', mimeType: 'image/png' } };
+      } finally {
+        try { fs.unlinkSync(tempPath); } catch {}
+      }
+    };
+
+    // Upload tiles with bounded concurrency (Files API is one call per file).
+    const uploadTiles = async (tiles: Buffer[]): Promise<any[]> => {
+      const parts: any[] = new Array(tiles.length);
+      let next = 0;
+      const worker = async () => {
+        while (next < tiles.length) {
+          const my = next++;
+          parts[my] = await prepareImagePart(tiles[my]);
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(6, tiles.length) }, worker));
+      return parts;
+    };
+
     // --- SINGLE-PASS + TILED INGESTION (default) ---
     // One combined facts call over high-DPI image TILES of the located pages.
     // Large-format CAD sheets are illegible once the whole PDF is downsampled by
@@ -558,8 +597,8 @@ export async function extractFromPDF(
         const tiles = await renderTilesFlat(pdfBuffer, unionPages, {
           dpi: 150, tilePx: 1600, overlapPx: 160, maxTilesPerPage: 16, maxTilesTotal: 48,
         });
-        tileParts = tiles.map(b => ({ inlineData: { mimeType: 'image/png', data: b.toString('base64') } }));
-        console.log(`      [extraction.ts] Rendered ${tileParts.length} tile(s) from ${unionPages.length || 'all'} page(s).`);
+        tileParts = await uploadTiles(tiles);
+        console.log(`      [extraction.ts] Rendered + uploaded ${tileParts.length} tile(s) from ${unionPages.length || 'all'} page(s).`);
       } catch (e: any) {
         console.warn(`      [extraction.ts] Tile rendering failed (${e.message}); falling back to full PDF.`);
       }

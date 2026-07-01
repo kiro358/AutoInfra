@@ -191,15 +191,40 @@ async function evaluateProject(folderName: string): Promise<ProjectResult> {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const pct = (x: number) => (x * 100).toFixed(0) + '%';
-const entityScore = (f: FactsComparison | null, kind: string) =>
-  f?.entities.find((e) => e.kind === kind) ?? null;
 
-interface Row {
-  label: string;
+// Compact per-project result, persisted so a run killed mid-way (e.g. machine
+// sleep) can resume with GOLDEN_RESUME=true instead of re-extracting everything.
+interface Summary {
   folder: string;
-  detF1s: number[];
-  lastFacts: FactsComparison | null;
-  lastCell: CompareResult | null;
+  label: string;
+  detF1: number | null; // mean across repeats
+  structM: number; structT: number;
+  runM: number; runT: number;
+  fieldM: number; fieldT: number;
+  cellAcc: number | null;
+}
+
+const RESULTS_FILE = path.resolve(__dirname, '../../..', 'golden-results.json');
+const loadResults = (): Record<string, Summary> => {
+  try { return JSON.parse(fs.readFileSync(RESULTS_FILE, 'utf8')); } catch { return {}; }
+};
+const saveResults = (all: Record<string, Summary>) => {
+  try { fs.writeFileSync(RESULTS_FILE, JSON.stringify(all, null, 2)); } catch {}
+};
+
+function buildSummary(folder: string, label: string, detF1s: number[], facts: FactsComparison | null, cell: CompareResult | null): Summary {
+  const st = facts?.entities.find((e) => e.kind === 'structures') ?? null;
+  const sw = facts?.entities.find((e) => e.kind === 'sewerRuns') ?? null;
+  let fieldM = 0, fieldT = 0;
+  if (facts) for (const f of facts.fields) { fieldM += f.matched; fieldT += f.total; }
+  return {
+    folder, label,
+    detF1: detF1s.length ? detF1s.reduce((a, b) => a + b, 0) / detF1s.length : null,
+    structM: st?.matched ?? 0, structT: st?.truthCount ?? 0,
+    runM: sw?.matched ?? 0, runT: sw?.truthCount ?? 0,
+    fieldM, fieldT,
+    cellAcc: cell ? cell.overallAccuracy : null,
+  };
 }
 
 async function main() {
@@ -208,72 +233,67 @@ async function main() {
   console.log('╚══════════════════════════════════════════════════════════════╝\n');
 
   const REPEATS = Math.max(1, Number(process.env.GOLDEN_REPEATS || '1'));
-  console.log(`Evaluating ${GOLDEN_PROJECTS.length} projects × ${REPEATS} run(s), sequentially.\n`);
+  const RESUME = process.env.GOLDEN_RESUME === 'true';
+  console.log(`Evaluating ${GOLDEN_PROJECTS.length} projects × ${REPEATS} run(s)${RESUME ? ' (resume: skipping cached)' : ' (fresh)'}.`);
+  console.log(`Progress cache: ${RESULTS_FILE}\n`);
 
   const startTime = Date.now();
-  const rows: Row[] = [];
+  const all = RESUME ? loadResults() : {};
+  if (!RESUME) saveResults(all); // fresh baseline clears prior cache
 
   for (let i = 0; i < GOLDEN_PROJECTS.length; i++) {
     const p = GOLDEN_PROJECTS[i];
-    const row: Row = { label: p.label, folder: p.folder, detF1s: [], lastFacts: null, lastCell: null };
+    if (RESUME && all[p.folder]) {
+      const c = all[p.folder];
+      console.log(`[${i + 1}/${GOLDEN_PROJECTS.length}] ${p.label} — cached (detF1 ${c.detF1 != null ? pct(c.detF1) : 'ERR'}), skipping.`);
+      continue;
+    }
+    const detF1s: number[] = [];
+    let lastFacts: FactsComparison | null = null;
+    let lastCell: CompareResult | null = null;
     for (let r = 0; r < REPEATS; r++) {
       console.log(`\n------------------------------------------------------------`);
       console.log(`[${i + 1}/${GOLDEN_PROJECTS.length}]${REPEATS > 1 ? ` run ${r + 1}/${REPEATS}` : ''} ${p.label}...`);
       const res = await evaluateProject(p.folder);
-      if (res.facts) {
-        row.detF1s.push(res.facts.detectionF1);
-        row.lastFacts = res.facts;
-      }
-      if (res.cell) row.lastCell = res.cell;
+      if (res.facts) { detF1s.push(res.facts.detectionF1); lastFacts = res.facts; }
+      if (res.cell) lastCell = res.cell;
       console.log(`   → cell ${res.cell ? res.cell.overallAccuracy.toFixed(1) + '%' : 'ERR'} | detF1 ${res.facts ? pct(res.facts.detectionF1) : 'ERR'}`);
-
-      const isLast = i === GOLDEN_PROJECTS.length - 1 && r === REPEATS - 1;
-      if (!isLast) await sleep(8000);
+      await sleep(6000);
     }
-    rows.push(row);
+    all[p.folder] = buildSummary(p.folder, p.label, detF1s, lastFacts, lastCell);
+    saveResults(all); // persist after each project so a kill is resumable
   }
 
   const elapsedMin = ((Date.now() - startTime) / 60000).toFixed(1);
 
   // ---------- FACTS SCOREBOARD (primary, model-only signal) ----------
-  console.log('\n' + '='.repeat(96));
+  console.log('\n' + '='.repeat(92));
   console.log('  EXTRACTION FACTS SCOREBOARD  (entity detection F1 + field accuracy)');
-  console.log('='.repeat(96));
-  console.log('Project'.padEnd(42) + '│ detF1' + (REPEATS > 1 ? ' (min–max)' : '') + ' │ struct m/T │ runs m/T │ fieldAcc');
-  console.log('─'.repeat(96));
+  console.log('='.repeat(92));
+  console.log('Project'.padEnd(42) + '│ detF1 │ struct m/T │ runs m/T │ fieldAcc');
+  console.log('─'.repeat(92));
 
-  let sumDet = 0, nDet = 0, structM = 0, structT = 0, runM = 0, runT = 0, fieldM = 0, fieldT = 0;
-  for (const row of rows) {
-    const has = row.detF1s.length > 0;
-    const mean = has ? row.detF1s.reduce((a, b) => a + b, 0) / row.detF1s.length : NaN;
-    const st = entityScore(row.lastFacts, 'structures');
-    const sw = entityScore(row.lastFacts, 'sewerRuns');
-    const detCell = (has ? pct(mean) : 'ERR') +
-      (REPEATS > 1 && has ? ` (${pct(Math.min(...row.detF1s))}–${pct(Math.max(...row.detF1s))})` : '');
-    const stCell = st ? `${st.matched}/${st.truthCount}` : '–';
-    const swCell = sw ? `${sw.matched}/${sw.truthCount}` : '–';
-    const faCell = row.lastFacts ? pct(row.lastFacts.fieldAccuracy) : '–';
+  let sumDet = 0, nDet = 0, structM = 0, structT = 0, runM = 0, runT = 0, fieldM = 0, fieldT = 0, cellSum = 0, cellN = 0;
+  for (const p of GOLDEN_PROJECTS) {
+    const s = all[p.folder];
+    if (!s) { console.log(p.label.slice(0, 40).padEnd(42) + '│ (not run)'); continue; }
+    const detCell = s.detF1 != null ? pct(s.detF1) : 'ERR';
     console.log(
-      row.label.slice(0, 40).padEnd(42) +
-      `│ ${detCell.padEnd(REPEATS > 1 ? 15 : 5)} │ ${stCell.padEnd(10)} │ ${swCell.padEnd(8)} │ ${faCell}`
+      p.label.slice(0, 40).padEnd(42) +
+      `│ ${detCell.padEnd(5)} │ ${`${s.structM}/${s.structT}`.padEnd(10)} │ ${`${s.runM}/${s.runT}`.padEnd(8)} │ ${s.fieldT ? Math.round(s.fieldM / s.fieldT * 100) + '%' : '–'}`
     );
-    if (has) { sumDet += mean; nDet++; }
-    if (st) { structM += st.matched; structT += st.truthCount; }
-    if (sw) { runM += sw.matched; runT += sw.truthCount; }
-    if (row.lastFacts) for (const f of row.lastFacts.fields) { fieldM += f.matched; fieldT += f.total; }
+    if (s.detF1 != null) { sumDet += s.detF1; nDet++; }
+    structM += s.structM; structT += s.structT; runM += s.runM; runT += s.runT; fieldM += s.fieldM; fieldT += s.fieldT;
+    if (s.cellAcc != null) { cellSum += s.cellAcc; cellN++; }
   }
-  console.log('─'.repeat(96));
+  console.log('─'.repeat(92));
   console.log(`  Mean detection F1: ${nDet ? (sumDet / nDet * 100).toFixed(1) : '0'}%   `
     + `structures ${structM}/${structT} (${structT ? Math.round(structM / structT * 100) : 0}%)   `
     + `runs ${runM}/${runT} (${runT ? Math.round(runM / runT * 100) : 0}%)   `
     + `field acc ${fieldT ? Math.round(fieldM / fieldT * 100) : 0}%`);
-
-  // ---------- legacy cell metric (secondary, extraction+costing mixed) ----------
-  const cells = rows.map((r) => r.lastCell).filter(Boolean) as CompareResult[];
-  const meanCell = cells.length ? cells.reduce((s, c) => s + c.overallAccuracy, 0) / cells.length : 0;
-  console.log(`  Legacy cell-accuracy (mixed): ${meanCell.toFixed(1)}%`);
-  console.log(`  ${rows.length} projects × ${REPEATS} run(s) in ${elapsedMin} min`);
-  console.log('='.repeat(96) + '\n');
+  console.log(`  Legacy cell-accuracy (mixed): ${cellN ? (cellSum / cellN).toFixed(1) : '0'}%`);
+  console.log(`  ${nDet}/${GOLDEN_PROJECTS.length} projects scored${elapsedMin !== '0.0' ? ` in ${elapsedMin} min` : ' (cached)'}`);
+  console.log('='.repeat(92) + '\n');
 }
 
 if (require.main === module) {

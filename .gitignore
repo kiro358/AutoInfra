@@ -23,3 +23,6 @@ webapp/vendor_pricing_sheet/page_*.pdf
 webapp/vendor_pricing_sheet/page_*_transcription.md
 eval_logs/
 .eval-cache/
+
+# Golden eval progress cache (resumable runs)
+golden-results.json

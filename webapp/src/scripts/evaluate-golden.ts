@@ -23,22 +23,27 @@ import { chooseDrawingPdfs } from '../lib/dataset';
 
 const TRAINING_DIR = path.resolve(__dirname, '../../..', 'existing_projects_training_data');
 
-// Golden set: 12 projects with verified standard-template ground truth, spanning
-// simple storm -> complex -> multi-PDF. A larger set reduces run-to-run variance so
-// real changes are visible above noise. Override count with GOLDEN_REPEATS to average.
+// Golden set: 16 curated projects from the dataset manifest — all "usable"
+// (standard-template, has runs, has a findable civil drawing, not hand-scoped) and
+// not oversize. Stratified across complexity (truth runs 3 -> 89) incl. multi-sheet.
+// See build-dataset-manifest.ts. Override count with GOLDEN_REPEATS to average.
 const GOLDEN_PROJECTS = [
-  { folder: '2026-067 201 GEORGIAN DR,BARRIE', label: 'Georgian Dr, Barrie (simple storm)' },
-  { folder: '2026-068 HOLIDAY INN,TRENTON', label: 'Holiday Inn, Trenton (storm+san)' },
-  { folder: '2026-021 MATTHEWS HANGER WATERLOO', label: 'Matthews Hangar (complex)' },
-  { folder: '2026-010 NEW ORILLIA E.S', label: 'New Orillia E.S. (dense CBs)' },
-  { folder: '2026-004 SHN CENTENNIAL EMERGENCY DEPARTMENT REDEVELOPMENT', label: 'SHN Centennial (site specials)' },
-  { folder: '2026-001 ECOLE SECONDAIRE CATHOLIQUE-BRAMPTON', label: 'Ecole Secondaire, Brampton' },
-  { folder: '2026-002 BRADFORD WEST GWILLIMBURY CIVIC CENTRE', label: 'Bradford Civic Centre' },
-  { folder: '2026-006 OAKVILLE FIRE HALL 9', label: 'Oakville Fire Hall 9' },
-  { folder: '2026-015 UXBRIDGE POOL SPRUNG', label: 'Uxbridge Pool Sprung' },
-  { folder: '2026-033 MILTON # 13 ELEMENTARY SCHOOL', label: 'Milton #13 Elementary' },
-  { folder: '2026-050 PANATTONI-6500 MISSISSAUGA ROAD', label: 'Panattoni 6500 Mississauga (multi-PDF)' },
-  { folder: '2026-060 PROPOSED COMMERCIAL DEVELOPMENT', label: 'Proposed Commercial Development' },
+  { folder: '2026-067 201 GEORGIAN DR,BARRIE', label: 'Georgian Dr (2/3)' },
+  { folder: '2026-020 559 KING FOREST BURLINGTON', label: 'King Forest (5/8)' },
+  { folder: '2026-007 17551 WOODBINE AVE.,EAST GWILLIMBURY', label: 'Woodbine Ave (11/12)' },
+  { folder: '2026-068 HOLIDAY INN,TRENTON', label: 'Holiday Inn (9/13)' },
+  { folder: '2026-009 55 ERIC T. SMITH WAY,AURORA', label: 'Eric Smith Way (11/14)' },
+  { folder: '2026-021 MATTHEWS HANGER WATERLOO', label: 'Matthews Hangar (6/17)' },
+  { folder: '2026-001 ECOLE SECONDAIRE CATHOLIQUE-BRAMPTON', label: 'Ecole Secondaire (14/19)' },
+  { folder: '2026-006 OAKVILLE FIRE HALL 9', label: 'Oakville Fire Hall (10/20)' },
+  { folder: '2026-010 NEW ORILLIA E.S', label: 'New Orillia (12/20)' },
+  { folder: '2026-002 BRADFORD WEST GWILLIMBURY CIVIC CENTRE', label: 'Bradford Civic (10/21)' },
+  { folder: '2026-029 WHITE OAL -12131 WOODBINEAVE', label: 'White Oak Woodbine (19/22)' },
+  { folder: '2026-033 MILTON # 13 ELEMENTARY SCHOOL', label: 'Milton #13 (17/27)' },
+  { folder: '2026-025 INDUSTRIAL DEVELOPMENT-ULTIMATE DRIVE', label: 'Ultimate Drive (19/29)' },
+  { folder: '2026-005 ONTARIO TECH UNIVERSITY STUDENT COMMUNITY BLDG 1A & 1B', label: 'Ontario Tech (25/36)' },
+  { folder: '2026-060 PROPOSED COMMERCIAL DEVELOPMENT', label: 'Proposed Commercial (32/56, multi)' },
+  { folder: '2026-050 PANATTONI-6500 MISSISSAUGA ROAD', label: 'Panattoni (85/89, multi)' },
 ];
 
 interface ProjectResult { cell: CompareResult | null; facts: FactsComparison | null; }

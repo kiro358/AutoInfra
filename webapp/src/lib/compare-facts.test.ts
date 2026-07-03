@@ -21,6 +21,21 @@ describe('normalizeLabel / runSignature', () => {
     expect(runSignature('MH 1-MH 2')).toBe(runSignature('MH2-MH1'));
     expect(runSignature('MH 1-MH 2/INS')).toBe(runSignature('MH 1-MH 2'));
   });
+  it('strips note suffixes from structure labels', () => {
+    expect(normalizeLabel('MH 1/O.P.')).toBe('MH1');
+    expect(normalizeLabel('MH 8/EXT.DROP')).toBe('MH8');
+    expect(normalizeLabel('CBMH 1/RIP RAP')).toBe('CBMH1');
+  });
+  it('handles /P.INS. and " / INS." run-note variants', () => {
+    expect(runSignature('MH 3-MH 4/P.INS.')).toBe(runSignature('MH 3-MH 4'));
+    expect(runSignature('MH 9-MH 10 / INS.')).toBe(runSignature('MH 9-MH 10'));
+  });
+  it('keeps the connection endpoint (CONN) instead of collapsing to one node', () => {
+    // "MH 8-CONN." must NOT reduce to the same signature as bare "MH 8".
+    expect(runSignature('MH 8-CONN.')).not.toBe(runSignature('MH 8'));
+    expect(runSignature('MH 8-CONN.')).toBe(runSignature('MH8-CONN'));
+    expect(runSignature('DICB 1-CONN.')).toBe(runSignature('DICB 1-PLUG'));
+  });
 });
 
 describe('compareFacts — entity detection', () => {

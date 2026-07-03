@@ -43,24 +43,38 @@ export interface FactsComparison {
 
 // ---- normalization & value matching ----
 
-/** Normalize a structure label for comparison: strip parens, spaces, punctuation. */
+/**
+ * Normalize a structure label for comparison: drop estimator note suffixes
+ * (e.g. "MH 1/O.P.", "MH 8/EXT.DROP", "CBMH 1/RIP RAP" -> the bare ID), parens,
+ * spaces, and punctuation.
+ */
 export function normalizeLabel(label: string): string {
   return (label || '')
     .toUpperCase()
     .replace(/\(.*?\)/g, '')
+    .split('/')[0] // drop note suffix after the first slash
     .replace(/[^A-Z0-9]/g, '');
 }
 
-/** Order-insensitive endpoint signature for a pipe run label ("A-B" == "B-A"). */
+/**
+ * Order-insensitive endpoint signature for a pipe run label ("A-B" == "B-A").
+ * Drops note suffixes ("/INS.", "/P.INS.", " / INS.", "c/w …") that would corrupt
+ * the endpoint tokens, and maps connection sentinels (CONN/PLUG/OUTLET) to a
+ * single stable token so "MH 8-CONN." keeps its second endpoint instead of
+ * collapsing to a single node (which caused false matches).
+ */
 export function runSignature(label: string): string {
-  const cleaned = (label || '')
-    .toUpperCase()
-    .replace(/\bTO\b/gi, '-')
-    .replace(/\/INS/g, '')
-    .replace(/CONN/g, '')
-    .replace(/\s+/g, '');
-  const tokens = cleaned.split('-').map((t) => t.replace(/[^A-Z0-9]/g, '')).filter(Boolean);
-  return tokens.sort().join('|');
+  let s = (label || '').toUpperCase();
+  s = s.replace(/\bC\/W.*$/, '');   // "c/w ROD.GRATE ..." note
+  s = s.replace(/\/.*$/, '');        // anything after the first slash (/INS., /P.INS., /O.P., ...)
+  s = s.replace(/\bTO\b/g, '-');
+  s = s.replace(/\s+/g, '');
+  const tokens = s
+    .split('-')
+    .map((t) => t.replace(/[^A-Z0-9]/g, ''))
+    .filter(Boolean)
+    .map((t) => (/^(CONN|PLUG|OUTLET)/.test(t) ? 'CONN' : t));
+  return Array.from(new Set(tokens)).sort().join('|');
 }
 
 function numClose(a: number | null, b: number | null, relTol = 0.05): boolean {

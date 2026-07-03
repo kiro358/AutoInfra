@@ -40,33 +40,39 @@ const GOLDEN_PROJECTS = [
   { folder: '2026-060 PROPOSED COMMERCIAL DEVELOPMENT', label: 'Proposed Commercial Development' },
 ];
 
-// Clear non-drawing documents — always excluded, even if also tagged "civil".
+// HARD excludes: never a drawing set, no civil hint can rescue.
 const PDF_HARD_EXCLUDE = [
-  'quote', 'quotation', 'geotechnical', 'geotech', 'proposal', 'estimate',
-  'pricing', 'breakdown', 'budget', 'letter', 'backup', 'invoice', 'addendum',
-  'bid form', 'tender_form', 'tender form', 'tipp', 'report', 'rpt', 'contracting',
-  'specifications', 'specs', 'structural', 'architectural', 'hydrogeological',
-  'landscape', 'electrical', 'mechanical', 'cover sheet',
+  'quote', 'quotation', 'geotechnical', 'geotech', 'hydrogeological', 'proposal',
+  'estimate', 'pricing', 'breakdown', 'budget', 'letter', 'backup', 'invoice',
+  'addendum', 'bid form', 'tender_form', 'tender form', 'tipp', 'report', 'rpt', 'contracting',
 ];
 
-// Civil/servicing drawing hints — these win even if the filename also contains a
-// blocklist-ish word like "appendix" (e.g. "Appendix 1.00 AMCAI Civil Plan Set").
+// SOFT excludes: discipline tags that legitimately co-occur with a bundled civil set
+// (e.g. "05-Civil Drawings & Specs.pdf"). A STRONG civil hint overrides these.
+const PDF_SOFT_EXCLUDE = [
+  'specifications', 'specs', 'structural', 'architectural', 'landscape',
+  'electrical', 'mechanical', 'cover sheet',
+];
+
+// STRONG civil hints override a soft exclude.
+const PDF_STRONG_CIVIL = ['civil', 'servicing', 'storm', 'sewer', 'watermain', 'grading', 'site servicing'];
+// Broader hints used to PREFER drawing sets among the survivors.
 const PDF_CIVIL_HINTS = [
-  'civil', 'servicing', 'drainage', 'plan', 'pnp', 'plan and profile',
-  'plan & profile', 'storm', 'sewer', 'watermain', 'grading', 'site',
+  ...PDF_STRONG_CIVIL, 'drainage', 'plan', 'pnp', 'plan and profile', 'plan & profile', 'site',
 ];
 
-/** Allowlist-first PDF selection: prefer civil drawing sets, fall back to anything not hard-excluded. */
+/**
+ * Prefer civil drawing sets; hard-drop non-drawings; let a strong civil hint rescue
+ * a soft-tagged file (so "05-Civil Drawings & Specs.pdf" isn't killed by "specs").
+ */
 function selectDrawingPdfs(pdfNames: string[]): string[] {
-  const notExcluded = pdfNames.filter(f => {
-    const n = f.toLowerCase();
-    return !PDF_HARD_EXCLUDE.some(b => n.includes(b));
-  });
-  const civil = notExcluded.filter(f => {
-    const n = f.toLowerCase();
-    return PDF_CIVIL_HINTS.some(c => n.includes(c));
-  });
-  return civil.length > 0 ? civil : notExcluded;
+  const lc = (f: string) => f.toLowerCase();
+  const notHard = pdfNames.filter(f => !PDF_HARD_EXCLUDE.some(b => lc(f).includes(b)));
+  const keep = notHard.filter(f =>
+    PDF_STRONG_CIVIL.some(c => lc(f).includes(c)) || !PDF_SOFT_EXCLUDE.some(b => lc(f).includes(b))
+  );
+  const civil = keep.filter(f => PDF_CIVIL_HINTS.some(c => lc(f).includes(c)));
+  return civil.length > 0 ? civil : keep;
 }
 
 interface ProjectResult { cell: CompareResult | null; facts: FactsComparison | null; }
@@ -140,6 +146,9 @@ async function evaluateProject(folderName: string): Promise<ProjectResult> {
 
     const genDir = path.join(projectDir, 'generated_spreadsheets');
     if (!fs.existsSync(genDir)) fs.mkdirSync(genDir);
+
+    // Persist raw predicted facts so metric changes can be re-scored offline (no LLM).
+    try { fs.writeFileSync(path.join(genDir, 'predicted_facts.json'), JSON.stringify(facts, null, 2)); } catch {}
 
     const genFilename = `eval_run_golden_${Date.now()}.xlsx`;
     const genPath = path.join(genDir, genFilename);

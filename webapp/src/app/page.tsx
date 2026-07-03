@@ -69,7 +69,6 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [activeTab, setActiveTab] = useState<'manholes' | 'sewers' | 'watermain'>('sewers');
-  const [flywheelStatus, setFlywheelStatus] = useState<'idle' | 'local' | 'cloud'>('idle');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Scoreboard states
@@ -104,25 +103,6 @@ export default function HomePage() {
     fetchScoreboard();
   }, [fetchScoreboard]);
 
-  const handleFlywheel = async (mode: 'local' | 'cloud') => {
-    if (!confirm(`Are you sure you want to run the optimization loop in ${mode} mode? This may consume resources and update models.`)) return;
-    
-    setFlywheelStatus(mode);
-    try {
-      const res = await fetch('/api/flywheel', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode })
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to trigger flywheel');
-      alert(data.message);
-    } catch (err) {
-      alert(`Error: ${err instanceof Error ? err.message : 'Unknown error'}`);
-    } finally {
-      setFlywheelStatus('idle');
-    }
-  };
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -183,29 +163,9 @@ export default function HomePage() {
 
   return (
     <div className="app-container">
-      {/* Header with Flywheel Controls */}
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 40, padding: '16px 0', borderBottom: '1px solid var(--gray-800)' }}>
         <div style={{ fontWeight: 700, fontSize: 20, color: 'var(--white)' }}>
           AutoInfra <span style={{ fontSize: 12, padding: '4px 8px', background: 'var(--primary-900)', color: 'var(--primary-300)', borderRadius: 12, marginLeft: 8 }}>Beta</span>
-        </div>
-        <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-          <span style={{ fontSize: 13, color: 'var(--gray-400)' }}>AI Optimization Flywheel:</span>
-          <button 
-            className="btn btn-secondary"
-            style={{ padding: '6px 12px', fontSize: 13 }}
-            onClick={() => handleFlywheel('local')}
-            disabled={flywheelStatus !== 'idle'}
-          >
-            {flywheelStatus === 'local' ? 'Running...' : 'Run Local'}
-          </button>
-          <button 
-            className="btn btn-primary"
-            style={{ padding: '6px 12px', fontSize: 13 }}
-            onClick={() => handleFlywheel('cloud')}
-            disabled={flywheelStatus !== 'idle'}
-          >
-            {flywheelStatus === 'cloud' ? 'Starting...' : 'Run in Cloud'}
-          </button>
         </div>
       </header>
 

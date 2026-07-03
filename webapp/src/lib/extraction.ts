@@ -251,7 +251,7 @@ function parseFacts(raw: any, projectName: string): TakeoffFacts {
   };
 }
 
-async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 6, initialDelay = 10000): Promise<T> {
+async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 4, initialDelay = 8000): Promise<T> {
   let attempt = 0;
   while (true) {
     try {
@@ -287,7 +287,8 @@ async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 6, initialDel
       else if (isServerError) errType = `${err.status || '5xx'} Server Error`;
       else if (isNetwork) errType = 'Network/Transport';
 
-      const delay = initialDelay * Math.pow(2, attempt - 1) + Math.random() * 2000;
+      // Cap the backoff so a failing call doesn't burn minutes of dead sleep.
+      const delay = Math.min(30000, initialDelay * Math.pow(2, attempt - 1)) + Math.random() * 2000;
       console.warn(`      [extraction.ts] Attempt ${attempt} failed with ${errType}. Retrying in ${(delay / 1000).toFixed(1)}s...`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
@@ -607,40 +608,61 @@ export async function extractFromPDF(
         getSinglePassPrompt(projectName, getDynamicPromptAdditions()) + '\n' +
         buildFewShotPromptSection(projectName, { name: projectName, hasWatermain: shouldRunWatermain, hasSanitary: shouldRunSewers });
 
-      let text = '{}';
-      try {
-        text = await getCachedOrCallLLM(`${sourceHash}_single_t${tileParts.length}`, prompt, 'single', async () => {
-          const mediaParts = tileParts.length > 0 ? tileParts : [await preparePdfPart(pdfBuffer)];
-          const response = await callWithRetry(async () => ai.models.generateContent({
-            model: EXTRACTION_MODEL,
-            contents: [{ role: 'user', parts: [{ text: prompt }, ...mediaParts] }],
-            config: { temperature: 0, responseMimeType: 'application/json' },
-          }));
-          return response.text || '{}';
-        }, projectName);
-      } catch (e: any) {
-        console.error(`      [extraction.ts] Single-pass call failed: ${e.message}`);
+      // A single call over many tiles times out / truncates its JSON above ~32
+      // tiles, so split into batches of <=BATCH_TILES and merge the parsed facts.
+      const BATCH_TILES = 18;
+      const tileBatches: any[][] = [];
+      for (let i = 0; i < tileParts.length; i += BATCH_TILES) tileBatches.push(tileParts.slice(i, i + BATCH_TILES));
+      if (tileBatches.length === 0) tileBatches.push([]); // no tiles -> PDF fallback below
+      if (tileBatches.length > 1) console.log(`      [extraction.ts] Splitting ${tileParts.length} tiles into ${tileBatches.length} batched calls.`);
+
+      const raw: any = { manholes: [], catchbasins: { groups: [] }, sewers: [], watermain: [], watermainSpecials: [], watermainValves: [], warnings: [] };
+      for (let bi = 0; bi < tileBatches.length; bi++) {
+        const media = tileBatches[bi].length > 0 ? tileBatches[bi] : [await preparePdfPart(pdfBuffer)];
+        let text = '{}';
+        try {
+          text = await getCachedOrCallLLM(`${sourceHash}_single_b${bi}of${tileBatches.length}`, prompt, 'single', async () => {
+            const response = await callWithRetry(async () => ai.models.generateContent({
+              model: EXTRACTION_MODEL,
+              contents: [{ role: 'user', parts: [{ text: prompt }, ...media] }],
+              config: { temperature: 0, responseMimeType: 'application/json' },
+            }));
+            return response.text || '{}';
+          }, projectName);
+        } catch (e: any) {
+          console.error(`      [extraction.ts] Single-pass batch ${bi + 1}/${tileBatches.length} failed: ${e.message}`);
+        }
+        let part: any = {};
+        try { part = tryParseJSONWithRepair(text); } catch (e: any) {
+          console.error(`      [extraction.ts] Batch ${bi + 1} parse failed: ${e.message}`);
+        }
+        if (Array.isArray(part.manholes)) raw.manholes.push(...part.manholes);
+        if (part.catchbasins?.groups) raw.catchbasins.groups.push(...part.catchbasins.groups);
+        if (Array.isArray(part.sewers)) raw.sewers.push(...part.sewers);
+        if (Array.isArray(part.watermain)) raw.watermain.push(...part.watermain);
+        if (Array.isArray(part.watermainSpecials)) raw.watermainSpecials.push(...part.watermainSpecials);
+        if (Array.isArray(part.watermainValves)) raw.watermainValves.push(...part.watermainValves);
+        if (Array.isArray(part.warnings)) raw.warnings.push(...part.warnings);
       }
 
-      let raw: any = {};
-      try {
-        raw = tryParseJSONWithRepair(text);
-      } catch (e: any) {
-        console.error(`      [extraction.ts] Failed to parse single-pass response: ${e.message}`);
+      // Merge catchbasin groups seen across batches by type (sum quantities).
+      const cbByType = new Map<string, any>();
+      for (const g of raw.catchbasins.groups) {
+        const key = String(g.type || 'SINGLE_CB');
+        const ex = cbByType.get(key);
+        if (ex) ex.quantity = (ex.quantity || 0) + (g.quantity || 0);
+        else cbByType.set(key, { ...g });
       }
 
       const facts = parseFacts({
-        projectName: raw.projectName,
-        jobNumber: raw.jobNumber,
-        date: raw.date,
-        manholes: deduplicateManholes(raw.manholes || []),
-        catchbasins: raw.catchbasins || { groups: [] },
-        sewers: deduplicateSewers(raw.sewers || []),
-        watermain: deduplicateWatermain(raw.watermain || []),
-        watermainSpecials: deduplicateSpecials(raw.watermainSpecials || []),
-        watermainValves: deduplicateValves(raw.watermainValves || []),
-        confidence: raw.confidence,
-        warnings: raw.warnings || [],
+        manholes: deduplicateManholes(raw.manholes),
+        catchbasins: { groups: Array.from(cbByType.values()) },
+        sewers: deduplicateSewers(raw.sewers),
+        watermain: deduplicateWatermain(raw.watermain),
+        watermainSpecials: deduplicateSpecials(raw.watermainSpecials),
+        watermainValves: deduplicateValves(raw.watermainValves),
+        confidence: 0.9,
+        warnings: raw.warnings,
       }, projectName);
       facts.warnings = [...facts.warnings, ...validateExtraction(facts)];
       facts.locatorIndex = locatorIndex;

@@ -4,8 +4,8 @@ const nextConfig: NextConfig = {
   // Standalone output for Docker/Cloud Run deployment
   output: 'standalone',
   
-  // Allow server-side modules that aren't compatible with webpack bundling
-  serverExternalPackages: ['exceljs', 'pdfkit', 'sharp', 'pdf-lib'],
+  // Allow server-side modules that aren't compatible with bundling (native/CJS).
+  serverExternalPackages: ['exceljs', 'pdfkit', 'sharp', 'pdf-lib', '@napi-rs/canvas', 'pdfjs-dist'],
   
   // Increase API body size limit for PDF uploads
   experimental: {

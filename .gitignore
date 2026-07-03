@@ -26,3 +26,6 @@ eval_logs/
 
 # Golden eval progress cache (resumable runs)
 golden-results.json
+
+# Dataset manifest (regenerable; lists private project/PDF names)
+dataset-manifest.json

@@ -19,6 +19,7 @@ import { DEFAULT_PARAMS } from '../lib/constants';
 import { compareSpreadsheets, CompareResult, formatCompareResult } from './compare-sheets';
 import { compareFacts, formatFactsComparison, FactsComparison } from '../lib/compare-facts';
 import { readTruthFacts } from '../lib/truth-facts';
+import { chooseDrawingPdfs } from '../lib/dataset';
 
 const TRAINING_DIR = path.resolve(__dirname, '../../..', 'existing_projects_training_data');
 
@@ -40,41 +41,6 @@ const GOLDEN_PROJECTS = [
   { folder: '2026-060 PROPOSED COMMERCIAL DEVELOPMENT', label: 'Proposed Commercial Development' },
 ];
 
-// HARD excludes: never a drawing set, no civil hint can rescue.
-const PDF_HARD_EXCLUDE = [
-  'quote', 'quotation', 'geotechnical', 'geotech', 'hydrogeological', 'proposal',
-  'estimate', 'pricing', 'breakdown', 'budget', 'letter', 'backup', 'invoice',
-  'addendum', 'bid form', 'tender_form', 'tender form', 'tipp', 'report', 'rpt', 'contracting',
-];
-
-// SOFT excludes: discipline tags that legitimately co-occur with a bundled civil set
-// (e.g. "05-Civil Drawings & Specs.pdf"). A STRONG civil hint overrides these.
-const PDF_SOFT_EXCLUDE = [
-  'specifications', 'specs', 'structural', 'architectural', 'landscape',
-  'electrical', 'mechanical', 'cover sheet',
-];
-
-// STRONG civil hints override a soft exclude.
-const PDF_STRONG_CIVIL = ['civil', 'servicing', 'storm', 'sewer', 'watermain', 'grading', 'site servicing'];
-// Broader hints used to PREFER drawing sets among the survivors.
-const PDF_CIVIL_HINTS = [
-  ...PDF_STRONG_CIVIL, 'drainage', 'plan', 'pnp', 'plan and profile', 'plan & profile', 'site',
-];
-
-/**
- * Prefer civil drawing sets; hard-drop non-drawings; let a strong civil hint rescue
- * a soft-tagged file (so "05-Civil Drawings & Specs.pdf" isn't killed by "specs").
- */
-function selectDrawingPdfs(pdfNames: string[]): string[] {
-  const lc = (f: string) => f.toLowerCase();
-  const notHard = pdfNames.filter(f => !PDF_HARD_EXCLUDE.some(b => lc(f).includes(b)));
-  const keep = notHard.filter(f =>
-    PDF_STRONG_CIVIL.some(c => lc(f).includes(c)) || !PDF_SOFT_EXCLUDE.some(b => lc(f).includes(b))
-  );
-  const civil = keep.filter(f => PDF_CIVIL_HINTS.some(c => lc(f).includes(c)));
-  return civil.length > 0 ? civil : keep;
-}
-
 interface ProjectResult { cell: CompareResult | null; facts: FactsComparison | null; }
 
 async function evaluateProject(folderName: string): Promise<ProjectResult> {
@@ -85,7 +51,7 @@ async function evaluateProject(folderName: string): Promise<ProjectResult> {
   }
 
   const files = fs.readdirSync(projectDir);
-  const pdfFiles = selectDrawingPdfs(files.filter(f => f.toLowerCase().endsWith('.pdf')));
+  const pdfFiles = chooseDrawingPdfs(projectDir); // recursive: finds nested civil drawing sets
   const xlsxFiles = files.filter(f => 
     f.toLowerCase().endsWith('.xlsx') && 
     !f.toLowerCase().includes('eval_run_') &&

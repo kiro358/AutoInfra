@@ -137,40 +137,7 @@ async function getCachedOrCallLLM(
       return fs.readFileSync(cachePath, 'utf8');
     }
 
-    if (projectName) {
-      const pDir = path.resolve(__dirname, '../../../existing_projects_training_data', projectName);
-      const latestJsonPath = path.join(pDir, 'generated_spreadsheets/latest_result.json');
-      if (fs.existsSync(latestJsonPath)) {
-        console.log(`      [extraction.ts] 🛠️  Generating cache entry for ${agentType} using latest_result.json`);
-        const parsed = JSON.parse(fs.readFileSync(latestJsonPath, 'utf8'));
-        let mockResult: any = {};
-        if (agentType === 'locator') {
-          mockResult = parsed.locatorIndex || {
-            manholePages: Array.from({ length: 15 }, (_, i) => i + 1),
-            sewerPages: Array.from({ length: 15 }, (_, i) => i + 1),
-            watermainPages: Array.from({ length: 15 }, (_, i) => i + 1)
-          };
-        } else if (agentType === 'manholes') {
-          mockResult = {
-            manholes: parsed.manholes || [],
-            catchbasins: parsed.catchbasins || { groups: [], laborRates: {} }
-          };
-        } else if (agentType === 'sewers') {
-          mockResult = {
-            sewers: parsed.sewers || []
-          };
-        } else if (agentType === 'watermain') {
-          mockResult = {
-            watermain: parsed.watermain || [],
-            watermainSpecials: parsed.watermainSpecials || [],
-            watermainValves: parsed.watermainValves || []
-          };
-        }
-        const text = JSON.stringify(mockResult, null, 2);
-        fs.writeFileSync(cachePath, text, 'utf8');
-        return text;
-      }
-    }
+    // (eval cache stores real model responses; no ground-truth seeding)
 
     const resultText = await callLLM();
     if (resultText && resultText !== '{}') {

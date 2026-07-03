@@ -12,7 +12,7 @@ import { buildFewShotPromptSection } from './few-shot-examples';
 import { setGlobalDispatcher, Agent, ProxyAgent } from 'undici';
 import crypto from 'crypto';
 import { getSinglePassPrompt, getPageLocatorPrompt } from './modular-prompts';
-import { renderTilesFlat, renderPageThumbnails } from './rasterize';
+import { renderTilesFlat, renderPageThumbnails, IMAGE_MIME } from './rasterize';
 
 // Globally override Undici's default 30-second headers/body timeout and configure proxy if present
 try {
@@ -295,7 +295,7 @@ async function locateRelevantPages(
   const parts: any[] = [{ text: prompt }];
   for (const t of thumbs) {
     parts.push({ text: `Page ${t.page}:` });
-    parts.push({ inlineData: { mimeType: 'image/png', data: t.png.toString('base64') } });
+    parts.push({ inlineData: { mimeType: IMAGE_MIME, data: t.img.toString('base64') } });
   }
 
   const text = await getCachedOrCallLLM(`${sourceHash}_pagelocator`, prompt, 'locator', async () => {
@@ -454,20 +454,20 @@ export async function extractFromPDF(
     const prepareImagePart = async (buffer: Buffer): Promise<any> => {
       if (useVertex) {
         const hash = crypto.createHash('sha256').update(buffer).digest('hex');
-        const fileName = `cached-tiles/${hash}.png`;
+        const fileName = `cached-tiles/${hash}.jpg`;
         const file = storage.bucket(BUCKET_NAME).file(fileName);
         const [exists] = await file.exists();
         if (!exists) {
-          await file.save(buffer, { contentType: 'image/png', metadata: { cacheControl: 'public, max-age=31536000' } });
+          await file.save(buffer, { contentType: IMAGE_MIME, metadata: { cacheControl: 'public, max-age=31536000' } });
         }
-        return { fileData: { fileUri: `gs://${BUCKET_NAME}/${fileName}`, mimeType: 'image/png' } };
+        return { fileData: { fileUri: `gs://${BUCKET_NAME}/${fileName}`, mimeType: IMAGE_MIME } };
       }
-      const tempPath = path.join(os.tmpdir(), `tile-${crypto.randomBytes(8).toString('hex')}.png`);
+      const tempPath = path.join(os.tmpdir(), `tile-${crypto.randomBytes(8).toString('hex')}.jpg`);
       fs.writeFileSync(tempPath, buffer);
       try {
-        const up = await callWithRetry(() => ai.files.upload({ file: tempPath, config: { mimeType: 'image/png' } }));
+        const up = await callWithRetry(() => ai.files.upload({ file: tempPath, config: { mimeType: IMAGE_MIME } }));
         uploadedFiles.push(up);
-        return { fileData: { fileUri: up.uri || '', mimeType: 'image/png' } };
+        return { fileData: { fileUri: up.uri || '', mimeType: IMAGE_MIME } };
       } finally {
         try { fs.unlinkSync(tempPath); } catch {}
       }

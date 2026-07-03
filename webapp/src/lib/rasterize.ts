@@ -4,13 +4,20 @@
  * Civil drawings are 24"×36" (or larger) sheets. Sending the whole PDF to the
  * model lets the provider downsample each page below legibility, so fine
  * schedule/annotation text becomes unreadable and the model fabricates. Instead
- * we rasterize the located pages at ~150 DPI and split them into overlapping
+ * we rasterize the located pages at ~150 DPI, split into overlapping JPEG
  * tiles small enough that the model sees the text at full fidelity.
  *
  * Uses pdfjs-dist (no system deps) + @napi-rs/canvas (prebuilt) so it runs both
  * locally and on Cloud Run without GraphicsMagick/Ghostscript.
  */
 import { createCanvas, type SKRSContext2D, type Canvas } from '@napi-rs/canvas';
+
+// Tiles/thumbnails are encoded as JPEG: for CAD line-art on white it is 3-5x
+// smaller than PNG (faster uploads, smaller model payload) with negligible
+// legibility loss at high quality. Callers must use this mime type.
+export const IMAGE_MIME = 'image/jpeg';
+const TILE_JPEG_QUALITY = 90;
+const THUMB_JPEG_QUALITY = 80;
 
 export interface TileOptions {
   dpi?: number;
@@ -21,7 +28,7 @@ export interface TileOptions {
 
 export interface PageTiles {
   page: number; // 1-indexed
-  tiles: Buffer[]; // PNG buffers, reading order (row-major)
+  tiles: Buffer[]; // JPEG buffers, reading order (row-major)
 }
 
 // pdfjs needs a canvas factory to create intermediate canvases in Node.
@@ -111,7 +118,7 @@ export async function renderPdfPagesToTiles(
             if (sw <= 0 || sh <= 0) continue;
             const tile = createCanvas(sw, sh);
             tile.getContext('2d').drawImage(full, sx, sy, sw, sh, 0, 0, sw, sh);
-            tiles.push(tile.toBuffer('image/png'));
+            tiles.push(tile.toBuffer('image/jpeg', TILE_JPEG_QUALITY));
           }
         }
         result.push({ page: pageNum, tiles });
@@ -134,7 +141,7 @@ export async function renderPdfPagesToTiles(
 export async function renderPageThumbnails(
   pdfBuffer: Buffer,
   opts: { maxPx?: number } = {}
-): Promise<{ page: number; png: Buffer }[]> {
+): Promise<{ page: number; img: Buffer }[]> {
   const { maxPx = 1500 } = opts;
   const lib = await getPdfjs();
   const canvasFactory = new NodeCanvasFactory();
@@ -146,7 +153,7 @@ export async function renderPageThumbnails(
     canvasFactory,
   }).promise;
 
-  const out: { page: number; png: Buffer }[] = [];
+  const out: { page: number; img: Buffer }[] = [];
   try {
     for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
       const page = await doc.getPage(pageNum);
@@ -161,7 +168,7 @@ export async function renderPageThumbnails(
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, W, H);
         await page.render({ canvasContext: ctx as unknown as object, viewport, canvasFactory }).promise;
-        out.push({ page: pageNum, png: canvas.toBuffer('image/png') });
+        out.push({ page: pageNum, img: canvas.toBuffer('image/jpeg', THUMB_JPEG_QUALITY) });
       } finally {
         page.cleanup?.();
       }
@@ -172,7 +179,7 @@ export async function renderPageThumbnails(
   return out;
 }
 
-/** Convenience: flat list of PNG tiles across the given pages, capped overall. */
+/** Convenience: flat list of JPEG tiles across the given pages, capped overall. */
 export async function renderTilesFlat(
   pdfBuffer: Buffer,
   pages: number[],

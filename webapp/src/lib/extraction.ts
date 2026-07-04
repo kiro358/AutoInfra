@@ -238,7 +238,8 @@ async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 4, initialDel
 
       // Cap the backoff so a failing call doesn't burn minutes of dead sleep.
       const delay = Math.min(30000, initialDelay * Math.pow(2, attempt - 1)) + Math.random() * 2000;
-      console.warn(`      [extraction.ts] Attempt ${attempt} failed with ${errType}. Retrying in ${(delay / 1000).toFixed(1)}s...`);
+      const causeStr = err.cause ? ` cause=${String(err.cause.code || err.cause.message || err.cause)}` : '';
+      console.warn(`      [extraction.ts] Attempt ${attempt} failed with ${errType} (${err.message}${causeStr}). Retrying in ${(delay / 1000).toFixed(1)}s...`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
   }

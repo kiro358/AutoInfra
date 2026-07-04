@@ -6,12 +6,19 @@
 import fs from 'fs';
 import path from 'path';
 
-// HARD excludes: never a drawing set; no civil hint can rescue.
+// PATH-level hard excludes: strong "not a drawing" signals that disqualify a PDF
+// wherever they appear in its path (e.g. a "granular quote/" subfolder).
+export const PDF_HARD_EXCLUDE_PATH = [
+  'quote', 'quotation', 'invoice', 'geotechnical', 'geotech', 'hydrogeological',
+  'estimate', 'pricing', 'budget', 'proposal', 'unit price',
+];
+
+// BASENAME-level hard excludes: never a drawing set, but matched on the filename
+// only so a real "…Civil.pdf" inside e.g. a "… & TENDER FORM" folder isn't dropped.
 export const PDF_HARD_EXCLUDE = [
-  'quote', 'quotation', 'geotechnical', 'geotech', 'hydrogeological', 'proposal',
-  'estimate', 'pricing', 'breakdown', 'budget', 'letter', 'backup', 'invoice',
-  'addendum', 'bid form', 'tender_form', 'tender form', 'tipp', 'report', 'rpt',
-  'contracting', 'designated substance', 'unit price',
+  'breakdown', 'letter', 'backup', 'addendum', 'bid form', 'tender_form',
+  'tender form', 'tipp', 'report', 'rpt', 'contracting', 'designated substance',
+  'bid leveling', 'leveling', 'locate', 'locates',
 ];
 
 // SOFT excludes: discipline tags that co-occur with a bundled civil set. A STRONG
@@ -27,6 +34,14 @@ export const PDF_CIVIL_HINTS = [...PDF_STRONG_CIVIL, 'drainage', 'plan', 'pnp', 
 const lc = (f: string) => f.toLowerCase();
 
 /**
+ * Whole-word (token) match: `hasWord('topsite bid', 'site')` is false, but
+ * `hasWord('site servicing plan', 'site')` is true. Prevents civil hints like
+ * "site" from firing on unrelated substrings ("topSITE", "offSITE").
+ */
+const hasWord = (text: string, kw: string) =>
+  new RegExp('(?:^|[^a-z0-9])' + kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:[^a-z0-9]|$)', 'i').test(text);
+
+/**
  * Choose the civil drawing PDFs from a list of relative paths.
  * HARD/SOFT excludes match the FILENAME (so a folder like "… & TENDER FORM" that
  * holds a servicing drawing isn't wrongly dropped); civil HINTS match the full
@@ -34,11 +49,14 @@ const lc = (f: string) => f.toLowerCase();
  */
 export function selectDrawingPdfs(relPaths: string[]): string[] {
   const base = (f: string) => lc(path.basename(f));
-  const notHard = relPaths.filter((f) => !PDF_HARD_EXCLUDE.some((b) => base(f).includes(b)));
-  const keep = notHard.filter((f) =>
-    PDF_STRONG_CIVIL.some((c) => lc(f).includes(c)) || !PDF_SOFT_EXCLUDE.some((b) => base(f).includes(b))
+  const notHard = relPaths.filter((f) =>
+    !PDF_HARD_EXCLUDE_PATH.some((b) => lc(f).includes(b)) &&
+    !PDF_HARD_EXCLUDE.some((b) => base(f).includes(b))
   );
-  const civil = keep.filter((f) => PDF_CIVIL_HINTS.some((c) => lc(f).includes(c)));
+  const keep = notHard.filter((f) =>
+    PDF_STRONG_CIVIL.some((c) => hasWord(lc(f), c)) || !PDF_SOFT_EXCLUDE.some((b) => base(f).includes(b))
+  );
+  const civil = keep.filter((f) => PDF_CIVIL_HINTS.some((c) => hasWord(lc(f), c)));
   return civil.length > 0 ? civil : keep;
 }
 

@@ -50,9 +50,20 @@ Each manhole/structure (and non-structure line items like "SANITARY", "GREENSTOR
 Counted by type (SINGLE_CB, DOUBLE_CB, DITCH_INLET_CB, DOUBLE_DITCH_INLET_CB): quantity, wallThickness (in, or null), depth (m, or null).
 
 ## SEWERS ("sewers")
-Each pipe run: runLabel (exact; add /INS. or CONN. suffixes if shown), isLineItem=false, length (m),
-pipeDiameter (mm, one of: ${PIPE_DIAMETERS.join(', ')}), typeClass, slope (%; convert ‰ by /10), depth (m).
-Non-pipe items (SWALE, DEWATERING, ...): isLineItem=true with null pipe fields.
+One row per PROPOSED pipe run BETWEEN TWO STRUCTURES.
+- runLabel MUST be the two connected structures as "FROM-TO", using their EXACT structure
+  labels — e.g. "MH 5-MH 4", "CBMH 2-MH 3", "CB 3-WYE". This is REQUIRED even when the drawing
+  only prints a dimension callout on the pipe (e.g. "30.0m-375mm PVC STM @ 1.69%"): trace the
+  pipe to the structure at each end and label it by those. NEVER put the dimension text in runLabel.
+  - If the downstream end ties into an existing / off-site structure, use "-CONN." (e.g. "MH 1A-CONN.").
+  - Add a "/INS." suffix only if the run is marked insulated.
+- Put the pipe's numbers in the FIELDS (not the label): isLineItem=false, length (m), pipeDiameter
+  (mm, one of: ${PIPE_DIAMETERS.join(', ')}), typeClass, slope (%; convert ‰ by /10), depth (m).
+- DO NOT create a run for: pipe CROSSINGS ("SEWER CROSSING", "STM/SAN CROSSING"), bare notes about
+  connecting to existing infrastructure that aren't a new pipe, or landscape/architectural callouts.
+  One physical proposed pipe = one row; consolidate the same run seen across overlapping tiles.
+Non-pipe line items that still belong on the sewer sheet (SWALE, DEWATERING, ...): isLineItem=true
+with null pipe fields.
 
 ## WATERMAIN ("watermain", "watermainSpecials", "watermainValves")
 Runs: sizeAndType, length, pipeDiameter, ocSc, avgCover. Specials/valves: name/size + quantity only.

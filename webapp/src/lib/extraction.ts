@@ -208,6 +208,20 @@ function parseFacts(raw: any, projectName: string): TakeoffFacts {
   };
 }
 
+/** Run fn over items with at most `limit` in flight; preserves input order. */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, idx: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const idx = next++;
+      results[idx] = await fn(items[idx], idx);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  return results;
+}
+
 async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 7, initialDelay = 6000): Promise<T> {
   let attempt = 0;
   while (true) {
@@ -528,15 +542,16 @@ export async function extractFromPDF(
 
       // A single call over many tiles times out / truncates its JSON above ~32
       // tiles, so split into batches of <=BATCH_TILES and merge the parsed facts.
-      const BATCH_TILES = Number(process.env.BATCH_TILES) || 8;
+      // Batches are independent, so run up to BATCH_CONCURRENCY of them at once.
+      const BATCH_TILES = Number(process.env.BATCH_TILES) || 16;
+      const BATCH_CONCURRENCY = Number(process.env.BATCH_CONCURRENCY) || 3;
       const tileBatches: any[][] = [];
       for (let i = 0; i < tileParts.length; i += BATCH_TILES) tileBatches.push(tileParts.slice(i, i + BATCH_TILES));
       if (tileBatches.length === 0) tileBatches.push([]); // no tiles -> PDF fallback below
-      if (tileBatches.length > 1) console.log(`      [extraction.ts] Splitting ${tileParts.length} tiles into ${tileBatches.length} batched calls.`);
+      if (tileBatches.length > 1) console.log(`      [extraction.ts] Splitting ${tileParts.length} tiles into ${tileBatches.length} batched calls (concurrency ${BATCH_CONCURRENCY}).`);
 
-      const raw: any = { manholes: [], catchbasins: { groups: [] }, sewers: [], watermain: [], watermainSpecials: [], watermainValves: [], warnings: [] };
-      for (let bi = 0; bi < tileBatches.length; bi++) {
-        const media = tileBatches[bi].length > 0 ? tileBatches[bi] : [await preparePdfPart(pdfBuffer)];
+      const parts = await mapLimit(tileBatches, BATCH_CONCURRENCY, async (batch, bi) => {
+        const media = batch.length > 0 ? batch : [await preparePdfPart(pdfBuffer)];
         let text = '{}';
         try {
           text = await getCachedOrCallLLM(`${sourceHash}_single_b${bi}of${tileBatches.length}`, prompt, 'single', async () => {
@@ -557,10 +572,14 @@ export async function extractFromPDF(
         } catch (e: any) {
           console.error(`      [extraction.ts] Single-pass batch ${bi + 1}/${tileBatches.length} failed: ${e.message}`);
         }
-        let part: any = {};
-        try { part = tryParseJSONWithRepair(text); } catch (e: any) {
+        try { return tryParseJSONWithRepair(text); } catch (e: any) {
           console.error(`      [extraction.ts] Batch ${bi + 1} parse failed: ${e.message}`);
+          return {} as any;
         }
+      });
+
+      const raw: any = { manholes: [], catchbasins: { groups: [] }, sewers: [], watermain: [], watermainSpecials: [], watermainValves: [], warnings: [] };
+      for (const part of parts) {
         if (Array.isArray(part.manholes)) raw.manholes.push(...part.manholes);
         if (part.catchbasins?.groups) raw.catchbasins.groups.push(...part.catchbasins.groups);
         if (Array.isArray(part.sewers)) raw.sewers.push(...part.sewers);

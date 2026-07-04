@@ -169,7 +169,6 @@ async function evaluateProject(folderName: string): Promise<ProjectResult> {
   }
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const pct = (x: number) => (x * 100).toFixed(0) + '%';
 
 // Compact per-project result, persisted so a run killed mid-way (e.g. machine
@@ -221,24 +220,29 @@ async function main() {
   const all = RESUME ? loadResults() : {};
   if (!RESUME) saveResults(all); // fresh baseline clears prior cache
 
-  for (let i = 0; i < GOLDEN_PROJECTS.length; i++) {
-    const p = GOLDEN_PROJECTS[i];
+  const N = GOLDEN_PROJECTS.length;
+  const CONCURRENCY = Number(process.env.GOLDEN_CONCURRENCY) || 3;
+  const todo: { p: typeof GOLDEN_PROJECTS[number]; i: number }[] = [];
+  GOLDEN_PROJECTS.forEach((p, i) => {
     if (RESUME && all[p.folder]) {
       const c = all[p.folder];
-      console.log(`[${i + 1}/${GOLDEN_PROJECTS.length}] ${p.label} — cached (detF1 ${c.detF1 != null ? pct(c.detF1) : 'ERR'}), skipping.`);
-      continue;
+      console.log(`[${i + 1}/${N}] ${p.label} — cached (detF1 ${c.detF1 != null ? pct(c.detF1) : 'ERR'}), skipping.`);
+    } else {
+      todo.push({ p, i });
     }
+  });
+  console.log(`Running ${todo.length} project(s) with concurrency ${CONCURRENCY}.\n`);
+
+  const runOne = async ({ p, i }: { p: typeof GOLDEN_PROJECTS[number]; i: number }) => {
     const detF1s: number[] = [];
     let lastFacts: FactsComparison | null = null;
     let lastCell: CompareResult | null = null;
     for (let r = 0; r < REPEATS; r++) {
-      console.log(`\n------------------------------------------------------------`);
-      console.log(`[${i + 1}/${GOLDEN_PROJECTS.length}]${REPEATS > 1 ? ` run ${r + 1}/${REPEATS}` : ''} ${p.label}...`);
+      console.log(`[${i + 1}/${N}]${REPEATS > 1 ? ` run ${r + 1}/${REPEATS}` : ''} ${p.label} — extracting...`);
       const res = await evaluateProject(p.folder);
       if (res.facts) { detF1s.push(res.facts.detectionF1); lastFacts = res.facts; }
       if (res.cell) lastCell = res.cell;
-      console.log(`   → cell ${res.cell ? res.cell.overallAccuracy.toFixed(1) + '%' : 'ERR'} | detF1 ${res.facts ? pct(res.facts.detectionF1) : 'ERR'}`);
-      await sleep(6000);
+      console.log(`   → ${p.label}: cell ${res.cell ? res.cell.overallAccuracy.toFixed(1) + '%' : 'ERR'} | detF1 ${res.facts ? pct(res.facts.detectionF1) : 'ERR'}`);
     }
     // Don't cache a project whose extraction came back EMPTY while its ground truth
     // has data — that's a transport failure (UND_ERR_SOCKET etc.), not a real 0.
@@ -248,12 +252,18 @@ async function main() {
     const predEmpty = !lastFacts || ((st?.predCount ?? 0) === 0 && (sw?.predCount ?? 0) === 0);
     const truthHasData = (st?.truthCount ?? 0) > 0 || (sw?.truthCount ?? 0) > 0;
     if (predEmpty && truthHasData) {
-      console.log(`   ⚠ extraction returned nothing (likely transport failure) — NOT caching; a resume will retry it.`);
-      continue;
+      console.log(`   ⚠ ${p.label} returned nothing (likely transport failure) — NOT caching; a resume will retry it.`);
+      return;
     }
     all[p.folder] = buildSummary(p.folder, p.label, detF1s, lastFacts, lastCell);
     saveResults(all); // persist after each project so a kill is resumable
-  }
+  };
+
+  // Concurrency pool over the outstanding projects.
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(CONCURRENCY, todo.length)) }, async () => {
+    while (next < todo.length) { const idx = next++; await runOne(todo[idx]); }
+  }));
 
   const elapsedMin = ((Date.now() - startTime) / 60000).toFixed(1);
 

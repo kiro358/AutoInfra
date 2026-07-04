@@ -29,7 +29,15 @@ try {
     setGlobalDispatcher(new Agent({
       headersTimeout: 300000, // 5 minutes in milliseconds
       bodyTimeout: 300000,
-      connectTimeout: 300000
+      connectTimeout: 300000,
+      // Larger tiled inference calls take many seconds server-side; without TCP
+      // keepalive the idle socket gets closed on the path (UND_ERR_SOCKET) before
+      // the response arrives. Enable SO_KEEPALIVE probes to hold it open, and don't
+      // reuse potentially-dead keep-alive sockets.
+      keepAliveTimeout: 2000,
+      keepAliveMaxTimeout: 5000,
+      pipelining: 0,
+      connect: { timeout: 60000, keepAlive: true, keepAliveInitialDelay: 5000 },
     }));
     console.log('      [extraction.ts] Undici global dispatcher configured with 5m timeouts (No Proxy).');
   }
@@ -520,7 +528,7 @@ export async function extractFromPDF(
 
       // A single call over many tiles times out / truncates its JSON above ~32
       // tiles, so split into batches of <=BATCH_TILES and merge the parsed facts.
-      const BATCH_TILES = 18;
+      const BATCH_TILES = Number(process.env.BATCH_TILES) || 8;
       const tileBatches: any[][] = [];
       for (let i = 0; i < tileParts.length; i += BATCH_TILES) tileBatches.push(tileParts.slice(i, i + BATCH_TILES));
       if (tileBatches.length === 0) tileBatches.push([]); // no tiles -> PDF fallback below
@@ -532,12 +540,19 @@ export async function extractFromPDF(
         let text = '{}';
         try {
           text = await getCachedOrCallLLM(`${sourceHash}_single_b${bi}of${tileBatches.length}`, prompt, 'single', async () => {
-            const response = await callWithRetry(async () => ai.models.generateContent({
-              model: EXTRACTION_MODEL,
-              contents: [{ role: 'user', parts: [{ text: prompt }, ...media] }],
-              config: { temperature: 0, responseMimeType: 'application/json' },
-            }));
-            return response.text || '{}';
+            // Stream the response: large tiled inference takes many seconds, and a
+            // non-streaming request leaves the socket idle long enough to be dropped
+            // (UND_ERR_SOCKET). Streaming keeps tokens flowing so the socket stays live.
+            return await callWithRetry(async () => {
+              const stream = await ai.models.generateContentStream({
+                model: EXTRACTION_MODEL,
+                contents: [{ role: 'user', parts: [{ text: prompt }, ...media] }],
+                config: { temperature: 0, responseMimeType: 'application/json' },
+              });
+              let acc = '';
+              for await (const chunk of stream) acc += chunk.text || '';
+              return acc || '{}';
+            });
           }, projectName);
         } catch (e: any) {
           console.error(`      [extraction.ts] Single-pass batch ${bi + 1}/${tileBatches.length} failed: ${e.message}`);

@@ -240,6 +240,17 @@ async function main() {
       console.log(`   → cell ${res.cell ? res.cell.overallAccuracy.toFixed(1) + '%' : 'ERR'} | detF1 ${res.facts ? pct(res.facts.detectionF1) : 'ERR'}`);
       await sleep(6000);
     }
+    // Don't cache a project whose extraction came back EMPTY while its ground truth
+    // has data — that's a transport failure (UND_ERR_SOCKET etc.), not a real 0.
+    // Leaving it uncached lets a later resume retry it on a better network window.
+    const st = lastFacts?.entities.find((e) => e.kind === 'structures');
+    const sw = lastFacts?.entities.find((e) => e.kind === 'sewerRuns');
+    const predEmpty = !lastFacts || ((st?.predCount ?? 0) === 0 && (sw?.predCount ?? 0) === 0);
+    const truthHasData = (st?.truthCount ?? 0) > 0 || (sw?.truthCount ?? 0) > 0;
+    if (predEmpty && truthHasData) {
+      console.log(`   ⚠ extraction returned nothing (likely transport failure) — NOT caching; a resume will retry it.`);
+      continue;
+    }
     all[p.folder] = buildSummary(p.folder, p.label, detF1s, lastFacts, lastCell);
     saveResults(all); // persist after each project so a kill is resumable
   }

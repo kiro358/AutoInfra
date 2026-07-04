@@ -208,7 +208,7 @@ function parseFacts(raw: any, projectName: string): TakeoffFacts {
   };
 }
 
-async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 4, initialDelay = 8000): Promise<T> {
+async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 7, initialDelay = 6000): Promise<T> {
   let attempt = 0;
   while (true) {
     try {

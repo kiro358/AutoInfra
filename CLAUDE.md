@@ -68,12 +68,29 @@ npm install
 npm run dev                     # http://localhost:3000
 npm test                        # vitest unit suite (no dataset required)
 
-# Local golden-set eval (needs existing_projects_training_data/ present):
-npm run evaluate:golden         # prints the facts metric + legacy cell diff
+# Golden-set eval (needs existing_projects_training_data/ present).
+# Two-tier + variance-aware — single-run noise is large, so ALWAYS use repeats to tell
+# a real change from noise, and iterate on the focus set before the full regression run.
+npm run evaluate:golden                                   # full 16-project set, 1 run
 
-# Try the single-pass extractor instead of the 3-agent path:
-EXTRACTION_MODE=single npm run evaluate:golden
+# Fast FOCUS loop (the current problem projects) with variance bands:
+GOLDEN_FOCUS=true  GOLDEN_REPEATS=3 npm run evaluate:golden
+# Arbitrary subset (great for local iteration on a couple of projects):
+GOLDEN_FILTER="orillia,king forest" GOLDEN_REPEATS=3 npm run evaluate:golden
+# Full REGRESSION gate before accepting a change (VM recommended, ~15-25 min):
+GOLDEN_REPEATS=3 npm run evaluate:golden
+
+# Knobs: GOLDEN_CONCURRENCY (projects in parallel, def 3), BATCH_CONCURRENCY / BATCH_TILES
+# (tile calls), GOLDEN_RESUME=true (skip cached), ENABLE_EVAL_CACHE=false (never seed cache).
+# A filtered run only updates the filtered projects in golden-results.json (others kept),
+# so a focus run won't clobber the full baseline. The scoreboard prints mean + [lo–hi] band.
+# Metric/matching/costing changes can be re-scored OFFLINE from the persisted
+# generated_spreadsheets/predicted_facts.json — no LLM calls.
 ```
+
+Run the eval on stable infra: local works for a small filtered set (streaming rides the
+laptop's flaky network), but the full set belongs on the throwaway GCP VM using **Vertex**
+(`USE_VERTEX_AI=true`) — GCP-internal networking has none of the local `UND_ERR_SOCKET` drops.
 
 Model access: **Gemini** via either Vertex AI (`USE_VERTEX_AI=true`, needs
 `GCP_PROJECT_ID`) or Google AI Studio (`GEMINI_API_KEY`). Current model: `gemini-2.5-flash`.

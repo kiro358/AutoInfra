@@ -176,11 +176,33 @@ const pct = (x: number) => (x * 100).toFixed(0) + '%';
 interface Summary {
   folder: string;
   label: string;
-  detF1: number | null; // mean across repeats
-  structM: number; structT: number;
-  runM: number; runT: number;
+  repeats: number;
+  detF1: number | null;                 // mean across repeats
+  detF1Lo: number | null; detF1Hi: number | null; // min/max across repeats (variance band)
+  structM: number; structT: number;     // structM = mean matched across repeats
+  runM: number; runT: number;           // runM = mean matched across repeats
+  runMLo: number; runMHi: number;       // min/max matched runs (the noisiest metric)
   fieldM: number; fieldT: number;
-  cellAcc: number | null;
+  cellAcc: number | null;               // mean
+}
+
+// One repeat's metrics, so buildSummary can report mean + variance across repeats
+// (single-run noise is large enough to swamp real changes — see REDESIGN §eval).
+interface RepMetrics {
+  detF1: number; structM: number; structT: number; runM: number; runT: number;
+  fieldM: number; fieldT: number; cellAcc: number | null;
+}
+function factsToMetrics(facts: FactsComparison, cell: CompareResult | null): RepMetrics {
+  const st = facts.entities.find((e) => e.kind === 'structures');
+  const sw = facts.entities.find((e) => e.kind === 'sewerRuns');
+  let fieldM = 0, fieldT = 0;
+  for (const f of facts.fields) { fieldM += f.matched; fieldT += f.total; }
+  return {
+    detF1: facts.detectionF1,
+    structM: st?.matched ?? 0, structT: st?.truthCount ?? 0,
+    runM: sw?.matched ?? 0, runT: sw?.truthCount ?? 0,
+    fieldM, fieldT, cellAcc: cell ? cell.overallAccuracy : null,
+  };
 }
 
 const RESULTS_FILE = path.resolve(__dirname, '../../..', 'golden-results.json');
@@ -191,18 +213,21 @@ const saveResults = (all: Record<string, Summary>) => {
   try { fs.writeFileSync(RESULTS_FILE, JSON.stringify(all, null, 2)); } catch {}
 };
 
-function buildSummary(folder: string, label: string, detF1s: number[], facts: FactsComparison | null, cell: CompareResult | null): Summary {
-  const st = facts?.entities.find((e) => e.kind === 'structures') ?? null;
-  const sw = facts?.entities.find((e) => e.kind === 'sewerRuns') ?? null;
-  let fieldM = 0, fieldT = 0;
-  if (facts) for (const f of facts.fields) { fieldM += f.matched; fieldT += f.total; }
+const mean = (a: number[]) => a.reduce((x, y) => x + y, 0) / a.length;
+
+function buildSummary(folder: string, label: string, reps: RepMetrics[]): Summary {
+  const det = reps.map((r) => r.detF1);
+  const runs = reps.map((r) => r.runM);
+  const cells = reps.map((r) => r.cellAcc).filter((x): x is number => x != null);
   return {
-    folder, label,
-    detF1: detF1s.length ? detF1s.reduce((a, b) => a + b, 0) / detF1s.length : null,
-    structM: st?.matched ?? 0, structT: st?.truthCount ?? 0,
-    runM: sw?.matched ?? 0, runT: sw?.truthCount ?? 0,
-    fieldM, fieldT,
-    cellAcc: cell ? cell.overallAccuracy : null,
+    folder, label, repeats: reps.length,
+    detF1: mean(det),
+    detF1Lo: Math.min(...det), detF1Hi: Math.max(...det),
+    structM: mean(reps.map((r) => r.structM)), structT: reps[0].structT,
+    runM: mean(runs), runT: reps[0].runT,
+    runMLo: Math.min(...runs), runMHi: Math.max(...runs),
+    fieldM: mean(reps.map((r) => r.fieldM)), fieldT: reps[0].fieldT,
+    cellAcc: cells.length ? mean(cells) : null,
   };
 }
 
@@ -213,49 +238,57 @@ async function main() {
 
   const REPEATS = Math.max(1, Number(process.env.GOLDEN_REPEATS || '1'));
   const RESUME = process.env.GOLDEN_RESUME === 'true';
-  console.log(`Evaluating ${GOLDEN_PROJECTS.length} projects × ${REPEATS} run(s)${RESUME ? ' (resume: skipping cached)' : ' (fresh)'}.`);
+  const CONCURRENCY = Number(process.env.GOLDEN_CONCURRENCY) || 3;
+
+  // Two-tier workflow: iterate on a small FOCUS set fast, then run the full set as a
+  // regression gate. GOLDEN_FILTER=<substrings> runs an arbitrary subset; GOLDEN_FOCUS=true
+  // uses the curated focus set (current run-extraction / high-variance problem projects).
+  const FOCUS_SET = ['orillia', 'woodbine', 'king forest', 'oakville', 'ultimate', 'ecole', 'white oak', 'matthews'];
+  const rawFilter = process.env.GOLDEN_FILTER || (process.env.GOLDEN_FOCUS === 'true' ? FOCUS_SET.join(',') : '');
+  const filters = rawFilter.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const projects = filters.length
+    ? GOLDEN_PROJECTS.filter((p) => filters.some((f) => p.folder.toLowerCase().includes(f) || p.label.toLowerCase().includes(f)))
+    : GOLDEN_PROJECTS;
+  const N = projects.length;
+
+  console.log(`Evaluating ${N}${filters.length ? `/${GOLDEN_PROJECTS.length} (filter: ${filters.join(', ')})` : ''} project(s) × ${REPEATS} run(s)${RESUME ? ' (resume)' : ''}, concurrency ${CONCURRENCY}.`);
   console.log(`Progress cache: ${RESULTS_FILE}\n`);
 
   const startTime = Date.now();
-  const all = RESUME ? loadResults() : {};
-  if (!RESUME) saveResults(all); // fresh baseline clears prior cache
+  const all = loadResults();                                  // preserve prior results (esp. non-filtered projects)
+  if (!RESUME) projects.forEach((p) => delete all[p.folder]); // fresh: re-run only the selected ones
 
-  const N = GOLDEN_PROJECTS.length;
-  const CONCURRENCY = Number(process.env.GOLDEN_CONCURRENCY) || 3;
   const todo: { p: typeof GOLDEN_PROJECTS[number]; i: number }[] = [];
-  GOLDEN_PROJECTS.forEach((p, i) => {
-    if (RESUME && all[p.folder]) {
-      const c = all[p.folder];
-      console.log(`[${i + 1}/${N}] ${p.label} — cached (detF1 ${c.detF1 != null ? pct(c.detF1) : 'ERR'}), skipping.`);
+  projects.forEach((p, i) => {
+    if (all[p.folder]) {
+      console.log(`[${i + 1}/${N}] ${p.label} — cached (detF1 ${all[p.folder].detF1 != null ? pct(all[p.folder].detF1!) : 'ERR'}), skipping.`);
     } else {
       todo.push({ p, i });
     }
   });
-  console.log(`Running ${todo.length} project(s) with concurrency ${CONCURRENCY}.\n`);
+  console.log(`Running ${todo.length} project(s).\n`);
 
   const runOne = async ({ p, i }: { p: typeof GOLDEN_PROJECTS[number]; i: number }) => {
-    const detF1s: number[] = [];
+    const reps: RepMetrics[] = [];
     let lastFacts: FactsComparison | null = null;
-    let lastCell: CompareResult | null = null;
     for (let r = 0; r < REPEATS; r++) {
       console.log(`[${i + 1}/${N}]${REPEATS > 1 ? ` run ${r + 1}/${REPEATS}` : ''} ${p.label} — extracting...`);
       const res = await evaluateProject(p.folder);
-      if (res.facts) { detF1s.push(res.facts.detectionF1); lastFacts = res.facts; }
-      if (res.cell) lastCell = res.cell;
-      console.log(`   → ${p.label}: cell ${res.cell ? res.cell.overallAccuracy.toFixed(1) + '%' : 'ERR'} | detF1 ${res.facts ? pct(res.facts.detectionF1) : 'ERR'}`);
+      if (res.facts) { reps.push(factsToMetrics(res.facts, res.cell)); lastFacts = res.facts; }
+      console.log(`   → ${p.label}${REPEATS > 1 ? ` r${r + 1}` : ''}: cell ${res.cell ? res.cell.overallAccuracy.toFixed(1) + '%' : 'ERR'} | detF1 ${res.facts ? pct(res.facts.detectionF1) : 'ERR'}`);
     }
-    // Don't cache a project whose extraction came back EMPTY while its ground truth
-    // has data — that's a transport failure (UND_ERR_SOCKET etc.), not a real 0.
-    // Leaving it uncached lets a later resume retry it on a better network window.
+    // Don't cache a project whose extraction came back EMPTY while its ground truth has
+    // data — that's a transport failure (UND_ERR_SOCKET etc.), not a real 0. Leaving it
+    // uncached lets a later resume retry it on a better network window.
     const st = lastFacts?.entities.find((e) => e.kind === 'structures');
     const sw = lastFacts?.entities.find((e) => e.kind === 'sewerRuns');
     const predEmpty = !lastFacts || ((st?.predCount ?? 0) === 0 && (sw?.predCount ?? 0) === 0);
     const truthHasData = (st?.truthCount ?? 0) > 0 || (sw?.truthCount ?? 0) > 0;
-    if (predEmpty && truthHasData) {
+    if (reps.length === 0 || (predEmpty && truthHasData)) {
       console.log(`   ⚠ ${p.label} returned nothing (likely transport failure) — NOT caching; a resume will retry it.`);
       return;
     }
-    all[p.folder] = buildSummary(p.folder, p.label, detF1s, lastFacts, lastCell);
+    all[p.folder] = buildSummary(p.folder, p.label, reps);
     saveResults(all); // persist after each project so a kill is resumable
   };
 
@@ -268,33 +301,35 @@ async function main() {
   const elapsedMin = ((Date.now() - startTime) / 60000).toFixed(1);
 
   // ---------- FACTS SCOREBOARD (primary, model-only signal) ----------
-  console.log('\n' + '='.repeat(92));
-  console.log('  EXTRACTION FACTS SCOREBOARD  (entity detection F1 + field accuracy)');
-  console.log('='.repeat(92));
-  console.log('Project'.padEnd(42) + '│ detF1 │ struct m/T │ runs m/T │ fieldAcc');
-  console.log('─'.repeat(92));
+  const anyRepeats = projects.some((p) => (all[p.folder]?.repeats ?? 1) > 1);
+  console.log('\n' + '='.repeat(96));
+  console.log('  EXTRACTION FACTS SCOREBOARD' + (anyRepeats ? '  (mean across repeats; [lo–hi] = variance band)' : ''));
+  console.log('='.repeat(96));
+  console.log('Project'.padEnd(40) + `│ detF1${anyRepeats ? ' [band]   ' : '  '}│ struct m/T │ runs m/T${anyRepeats ? ' [band]' : ''}  │ field`);
+  console.log('─'.repeat(96));
 
   let sumDet = 0, nDet = 0, structM = 0, structT = 0, runM = 0, runT = 0, fieldM = 0, fieldT = 0, cellSum = 0, cellN = 0;
-  for (const p of GOLDEN_PROJECTS) {
+  for (const p of projects) {
     const s = all[p.folder];
-    if (!s) { console.log(p.label.slice(0, 40).padEnd(42) + '│ (not run)'); continue; }
-    const detCell = s.detF1 != null ? pct(s.detF1) : 'ERR';
+    if (!s) { console.log(p.label.slice(0, 38).padEnd(40) + '│ (not run)'); continue; }
+    const det = (s.detF1 != null ? pct(s.detF1) : 'ERR') + (anyRepeats && s.detF1Lo != null ? ` [${pct(s.detF1Lo)}–${pct(s.detF1Hi!)}]` : '');
+    const runsCell = `${s.repeats > 1 ? s.runM.toFixed(1) : Math.round(s.runM)}/${s.runT}` + (anyRepeats ? ` [${s.runMLo}–${s.runMHi}]` : '');
     console.log(
-      p.label.slice(0, 40).padEnd(42) +
-      `│ ${detCell.padEnd(5)} │ ${`${s.structM}/${s.structT}`.padEnd(10)} │ ${`${s.runM}/${s.runT}`.padEnd(8)} │ ${s.fieldT ? Math.round(s.fieldM / s.fieldT * 100) + '%' : '–'}`
+      p.label.slice(0, 38).padEnd(40) +
+      `│ ${det.padEnd(anyRepeats ? 14 : 5)} │ ${`${Math.round(s.structM)}/${s.structT}`.padEnd(10)} │ ${runsCell.padEnd(anyRepeats ? 14 : 8)} │ ${s.fieldT ? Math.round(s.fieldM / s.fieldT * 100) + '%' : '–'}`
     );
     if (s.detF1 != null) { sumDet += s.detF1; nDet++; }
     structM += s.structM; structT += s.structT; runM += s.runM; runT += s.runT; fieldM += s.fieldM; fieldT += s.fieldT;
     if (s.cellAcc != null) { cellSum += s.cellAcc; cellN++; }
   }
-  console.log('─'.repeat(92));
+  console.log('─'.repeat(96));
   console.log(`  Mean detection F1: ${nDet ? (sumDet / nDet * 100).toFixed(1) : '0'}%   `
-    + `structures ${structM}/${structT} (${structT ? Math.round(structM / structT * 100) : 0}%)   `
-    + `runs ${runM}/${runT} (${runT ? Math.round(runM / runT * 100) : 0}%)   `
+    + `structures ${Math.round(structM)}/${structT} (${structT ? Math.round(structM / structT * 100) : 0}%)   `
+    + `runs ${runM.toFixed(1)}/${runT} (${runT ? Math.round(runM / runT * 100) : 0}%)   `
     + `field acc ${fieldT ? Math.round(fieldM / fieldT * 100) : 0}%`);
   console.log(`  Legacy cell-accuracy (mixed): ${cellN ? (cellSum / cellN).toFixed(1) : '0'}%`);
-  console.log(`  ${nDet}/${GOLDEN_PROJECTS.length} projects scored${elapsedMin !== '0.0' ? ` in ${elapsedMin} min` : ' (cached)'}`);
-  console.log('='.repeat(92) + '\n');
+  console.log(`  ${nDet}/${N} projects scored${elapsedMin !== '0.0' ? ` in ${elapsedMin} min` : ' (cached)'}${anyRepeats ? ` × ${REPEATS} repeats` : ''}`);
+  console.log('='.repeat(96) + '\n');
 }
 
 if (require.main === module) {

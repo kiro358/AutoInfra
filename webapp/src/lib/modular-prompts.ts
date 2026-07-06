@@ -42,15 +42,23 @@ Work SCHEDULE-FIRST where a Manhole/Catchbasin/Pipe schedule table exists. Other
 Extract these four groups in a single JSON object:
 
 ## STRUCTURES ("manholes")
-Each manhole/structure (and non-structure line items like "SANITARY", "GREENSTORM", "MOB.") as a row:
+Each PROPOSED manhole/structure (and non-structure line items like "SANITARY", "GREENSTORM", "MOB.") as a row.
+List each proposed structure exactly ONCE. Do NOT list existing structures (labelled "EX."/"EXIST."),
+structures on adjacent properties/streets, or the same structure seen in several overlapping tiles more
+than once — over-listing structures is a common error. Prefer the boxed/bubbled structure labels on the plan.
 - description (exact label; drop ST/STM/SAN prefixes: STMH 1 -> MH 1), topElevation, lowInvert, highInvert,
   pipeOutDiameter (mm), structureType, depth (m, if stated). Use null where not shown.
 
 ## CATCHBASINS ("catchbasins.groups")
 Counted by type (SINGLE_CB, DOUBLE_CB, DITCH_INLET_CB, DOUBLE_DITCH_INLET_CB): quantity, wallThickness (in, or null), depth (m, or null).
 
-## SEWERS ("sewers")
-One row per PROPOSED pipe run BETWEEN TWO STRUCTURES.
+## SEWERS ("sewers") — THIS IS THE MOST IMPORTANT SECTION; DO NOT SKIP IT
+One row per PROPOSED pipe run BETWEEN TWO STRUCTURES. A servicing plan ALWAYS has pipe runs
+connecting its structures — if you found N storm/sanitary structures there are usually a
+similar number of pipe runs. Returning structures with an EMPTY sewers list is almost always a
+MISTAKE: go back and read the pipe segments. Every proposed pipe on the plan carries a dimension
+callout next to it like "23.38m-250mmØ PVC STM @0.5%" or "16.78m-300mmØ PVC STM @0.5%" — EACH of
+those callouts is one sewer run; scan every pipe line and list them all.
 - EMIT EVERY proposed pipe run you can see — most site plans annotate runs only with a
   dimension callout on the pipe (e.g. "30.0m-375mm PVC STM @ 1.69%") rather than a schedule
   table; extract each one. NEVER drop a pipe just because it's hard to label.

@@ -12,6 +12,34 @@ function facts(overrides: Partial<TakeoffFacts> = {}): TakeoffFacts {
   };
 }
 
+const run = (o: Partial<TakeoffFacts['sewers'][number]>) => ({
+  runLabel: '', isLineItem: false, length: null, pipeDiameter: null,
+  typeClass: null, slope: null, depth: null, ...o,
+});
+
+describe('sewer run matching (endpoint label + physical-attribute fallback)', () => {
+  const sewerScore = (pred: TakeoffFacts, truth: TakeoffFacts) =>
+    compareFacts(pred, truth).entities.find((e) => e.kind === 'sewerRuns')!;
+
+  it('matches a dimension-labeled pred run to an endpoint-labeled truth run by attributes', () => {
+    const pred = facts({ sewers: [run({ runLabel: '45.0m-250mm PVC STM @0.5%', length: 45, pipeDiameter: 250, slope: 0.5 })] });
+    const truth = facts({ sewers: [run({ runLabel: 'MH 5-MH 4', length: 45, pipeDiameter: 250, slope: 0.5 })] });
+    expect(sewerScore(pred, truth).matched).toBe(1);
+  });
+
+  it('does not attr-match runs of different diameter or far-off length', () => {
+    const truth = facts({ sewers: [run({ runLabel: 'MH 5-MH 4', length: 45, pipeDiameter: 250, slope: 0.5 })] });
+    expect(sewerScore(facts({ sewers: [run({ runLabel: 'x', length: 45, pipeDiameter: 300, slope: 0.5 })] }), truth).matched).toBe(0);
+    expect(sewerScore(facts({ sewers: [run({ runLabel: 'x', length: 80, pipeDiameter: 250, slope: 0.5 })] }), truth).matched).toBe(0);
+  });
+
+  it('still prefers exact endpoint-label matches', () => {
+    const pred = facts({ sewers: [run({ runLabel: 'MH2-MH1', length: 45, pipeDiameter: 250 })] });
+    const truth = facts({ sewers: [run({ runLabel: 'MH 1-MH 2', length: 45, pipeDiameter: 250 })] });
+    expect(sewerScore(pred, truth).matched).toBe(1);
+  });
+});
+
 describe('normalizeLabel / runSignature', () => {
   it('normalizes structure labels ignoring case, spaces, punctuation, parens', () => {
     expect(normalizeLabel('CBMH 2')).toBe(normalizeLabel('cbmh-2'));

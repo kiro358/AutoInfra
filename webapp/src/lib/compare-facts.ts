@@ -115,6 +115,34 @@ function matchByKey<T>(pred: T[], truth: T[], key: (t: T) => string) {
   return { matched, pairs };
 }
 
+// A sewer run is a physical pipe. Many drawings label runs only by a dimension
+// callout ("45.0m-250mm PVC STM @0.5%"), not by FROM-TO structures, so endpoint-label
+// matching misses them even when the pipe itself is captured correctly. As a fallback
+// we match an unmatched pred/truth run pair by physical attributes: same diameter,
+// close length, and (when both present) close slope.
+function sewerAttrMatch(p: SewerFact, t: SewerFact): boolean {
+  if (p.pipeDiameter == null || t.pipeDiameter == null || p.pipeDiameter !== t.pipeDiameter) return false;
+  if (p.length == null || t.length == null) return false;
+  if (Math.abs(p.length - t.length) > Math.max(1.0, 0.05 * t.length)) return false;
+  if (p.slope != null && t.slope != null && Math.abs(p.slope - t.slope) > 0.15) return false;
+  return true;
+}
+
+export function matchSewerRuns(pred: SewerFact[], truth: SewerFact[]) {
+  // Phase 1: endpoint-label signature (strict, preferred).
+  const first = matchByKey<SewerFact>(pred, truth, (s) => runSignature(s.runLabel));
+  const usedPred = new Set(first.pairs.map((x) => x.p));
+  const usedTruth = new Set(first.pairs.map((x) => x.t));
+  const pairs = [...first.pairs];
+  // Phase 2: attribute fallback on the leftovers (greedy, one pred per truth).
+  for (const t of truth) {
+    if (usedTruth.has(t)) continue;
+    const p = pred.find((q) => !usedPred.has(q) && sewerAttrMatch(q, t));
+    if (p) { usedPred.add(p); usedTruth.add(t); pairs.push({ p, t }); }
+  }
+  return { matched: pairs.length, pairs };
+}
+
 function prf(matched: number, predCount: number, truthCount: number): EntityScore {
   const precision = predCount > 0 ? matched / predCount : truthCount === 0 ? 1 : 0;
   const recall = truthCount > 0 ? matched / truthCount : 1;
@@ -161,7 +189,7 @@ export function compareFacts(pred: TakeoffFacts, truth: TakeoffFacts): FactsComp
   {
     const predRuns = pred.sewers.filter((s) => !s.isLineItem);
     const truthRuns = truth.sewers.filter((s) => !s.isLineItem);
-    const m = matchByKey<SewerFact>(predRuns, truthRuns, (s) => runSignature(s.runLabel));
+    const m = matchSewerRuns(predRuns, truthRuns);
     entities.push({ ...prf(m.matched, predRuns.length, truthRuns.length), kind: 'sewerRuns' });
     fields.push(
       ...scoreFields(m.pairs, [

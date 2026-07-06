@@ -51,10 +51,13 @@ Counted by type (SINGLE_CB, DOUBLE_CB, DITCH_INLET_CB, DOUBLE_DITCH_INLET_CB): q
 
 ## SEWERS ("sewers")
 One row per PROPOSED pipe run BETWEEN TWO STRUCTURES.
-- runLabel MUST be the two connected structures as "FROM-TO", using their EXACT structure
-  labels — e.g. "MH 5-MH 4", "CBMH 2-MH 3", "CB 3-WYE". This is REQUIRED even when the drawing
-  only prints a dimension callout on the pipe (e.g. "30.0m-375mm PVC STM @ 1.69%"): trace the
-  pipe to the structure at each end and label it by those. NEVER put the dimension text in runLabel.
+- EMIT EVERY proposed pipe run you can see — most site plans annotate runs only with a
+  dimension callout on the pipe (e.g. "30.0m-375mm PVC STM @ 1.69%") rather than a schedule
+  table; extract each one. NEVER drop a pipe just because it's hard to label.
+- Prefer to label runLabel by the two connected structures as "FROM-TO" using their EXACT
+  labels — e.g. "MH 5-MH 4", "CBMH 2-MH 3", "CB 3-WYE" — tracing the pipe to the structure at
+  each end. If you genuinely cannot determine both end structures, STILL emit the run and use
+  the printed callout text as runLabel; put the numbers in the fields regardless.
   - If the downstream end ties into an existing / off-site structure, use "-CONN." (e.g. "MH 1A-CONN.").
   - Add a "/INS." suffix only if the run is marked insulated.
 - Put the pipe's numbers in the FIELDS (not the label): isLineItem=false, length (m), pipeDiameter

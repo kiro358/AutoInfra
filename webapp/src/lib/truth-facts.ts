@@ -92,6 +92,8 @@ export async function readTruthFacts(xlsxPath: string, projectName: string): Pro
       for (let r = 14; r <= 55; r++) {
         const label = cell(ws, `B${r}`);
         if (label === null || label === '' || String(label).toUpperCase().includes('TOTAL')) continue;
+        // Skip "STORM:" / "SANITARY:" section-header rows — they're not sewer runs.
+        if (/^(storm|sanitary|stm|san)\s*:?\s*$/i.test(String(label).trim())) continue;
         const length = num(cell(ws, `C${r}`));
         sewers.push({
           runLabel: String(label),

@@ -4,7 +4,9 @@ Working notes for AI agents (and humans) iterating on this repo. Keep it current
 when you change the architecture, update this file in the same commit.
 
 See `REDESIGN.md` for the full diagnosis and the target architecture. This file is the
-quick operational map.
+quick operational map. **See `EVAL_METHODOLOGY.md` before trying to improve accuracy** — it
+is the playbook (measure the ruler first, hunt bugs offline for free, batch fixes → one
+regression run, `npm run analyze:eval`) that keeps us out of the per-project grinding trap.
 
 ## What this is
 

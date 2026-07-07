@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "evaluate:golden": "tsx src/scripts/evaluate-golden.ts",
-    "dataset:manifest": "tsx src/scripts/build-dataset-manifest.ts"
+    "dataset:manifest": "tsx src/scripts/build-dataset-manifest.ts",
+    "analyze:eval": "tsx src/scripts/analyze-eval.ts"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.19.0",

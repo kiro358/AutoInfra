@@ -158,20 +158,35 @@ async function getCachedOrCallLLM(
   }
 }
 
+// A predicted "structure" is really a non-structure plan callout if it names one of
+// these features and carries no structure code (MH/CB/CBMH/chamber/…). Used to drop the
+// bike-racks / transformers / crossings / valves the model over-lists as structures.
+const STRUCT_JUNK = /\b(crossing|bike|transformer|water meter|backflow|retaining|snow|mud mat|railing|duct bank|bollard|landscape|powerdrain|depressed|sign)\b|\b(meter|valve|wall|fence|curb|entrance|rack|pole)\b/i;
+const STRUCT_CODE = /\b(D?CBMH|DI?CB|MH|CB|HS|OS|OGS|CHAMBER|TANK|STMH|SANMH)\b/i;
+function isNonStructure(desc: string): boolean {
+  return STRUCT_JUNK.test(desc) && !STRUCT_CODE.test(desc);
+}
+
 function parseFacts(raw: any, projectName: string): TakeoffFacts {
   return {
     projectName: raw.projectName || projectName,
     jobNumber: raw.jobNumber || '',
     date: raw.date || new Date().toISOString().split('T')[0],
-    structures: (raw.manholes || []).map((m: any) => ({
-      description: String(m.description || ''),
-      topElevation: m.topElevation != null ? Number(m.topElevation) : null,
-      lowInvert: m.lowInvert != null ? Number(m.lowInvert) : null,
-      highInvert: m.highInvert != null ? Number(m.highInvert) : null,
-      pipeOutDiameter: m.pipeOutDiameter != null ? Number(m.pipeOutDiameter) : null,
-      structureType: m.structureType ? String(m.structureType) : null,
-      depth: m.depth != null ? Number(m.depth) : null,
-    })),
+    structures: (raw.manholes || [])
+      // Drop non-structure plan callouts the model wrongly lists as structures
+      // (bike racks, transformers, retaining walls, water meters, crossings, valves,
+      // curbs, …). Only filter items with a clear junk keyword AND no structure code,
+      // so real structures like "SANITARY CONTROL MH" or "C100 CHAMBER" are kept.
+      .filter((m: any) => !isNonStructure(String(m.description || '')))
+      .map((m: any) => ({
+        description: String(m.description || ''),
+        topElevation: m.topElevation != null ? Number(m.topElevation) : null,
+        lowInvert: m.lowInvert != null ? Number(m.lowInvert) : null,
+        highInvert: m.highInvert != null ? Number(m.highInvert) : null,
+        pipeOutDiameter: m.pipeOutDiameter != null ? Number(m.pipeOutDiameter) : null,
+        structureType: m.structureType ? String(m.structureType) : null,
+        depth: m.depth != null ? Number(m.depth) : null,
+      })),
     catchbasins: (raw.catchbasins?.groups || []).map((g: any) => ({
       type: String(g.type || 'SINGLE_CB') as CatchbasinGroupFact['type'],
       quantity: Number(g.quantity) || 0,

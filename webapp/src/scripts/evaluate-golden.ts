@@ -190,6 +190,7 @@ interface Summary {
 // (single-run noise is large enough to swamp real changes — see REDESIGN §eval).
 interface RepMetrics {
   detF1: number; structM: number; structT: number; runM: number; runT: number;
+  structP: number; runP: number; // predicted counts (to detect empty/transport-failed repeats)
   fieldM: number; fieldT: number; cellAcc: number | null;
 }
 function factsToMetrics(facts: FactsComparison, cell: CompareResult | null): RepMetrics {
@@ -201,6 +202,7 @@ function factsToMetrics(facts: FactsComparison, cell: CompareResult | null): Rep
     detF1: facts.detectionF1,
     structM: st?.matched ?? 0, structT: st?.truthCount ?? 0,
     runM: sw?.matched ?? 0, runT: sw?.truthCount ?? 0,
+    structP: st?.predCount ?? 0, runP: sw?.predCount ?? 0,
     fieldM, fieldT, cellAcc: cell ? cell.overallAccuracy : null,
   };
 }
@@ -270,25 +272,23 @@ async function main() {
 
   const runOne = async ({ p, i }: { p: typeof GOLDEN_PROJECTS[number]; i: number }) => {
     const reps: RepMetrics[] = [];
-    let lastFacts: FactsComparison | null = null;
     for (let r = 0; r < REPEATS; r++) {
       console.log(`[${i + 1}/${N}]${REPEATS > 1 ? ` run ${r + 1}/${REPEATS}` : ''} ${p.label} — extracting...`);
       const res = await evaluateProject(p.folder);
-      if (res.facts) { reps.push(factsToMetrics(res.facts, res.cell)); lastFacts = res.facts; }
+      if (res.facts) reps.push(factsToMetrics(res.facts, res.cell));
       console.log(`   → ${p.label}${REPEATS > 1 ? ` r${r + 1}` : ''}: cell ${res.cell ? res.cell.overallAccuracy.toFixed(1) + '%' : 'ERR'} | detF1 ${res.facts ? pct(res.facts.detectionF1) : 'ERR'}`);
     }
-    // Don't cache a project whose extraction came back EMPTY while its ground truth has
-    // data — that's a transport failure (UND_ERR_SOCKET etc.), not a real 0. Leaving it
-    // uncached lets a later resume retry it on a better network window.
-    const st = lastFacts?.entities.find((e) => e.kind === 'structures');
-    const sw = lastFacts?.entities.find((e) => e.kind === 'sewerRuns');
-    const predEmpty = !lastFacts || ((st?.predCount ?? 0) === 0 && (sw?.predCount ?? 0) === 0);
-    const truthHasData = (st?.truthCount ?? 0) > 0 || (sw?.truthCount ?? 0) > 0;
-    if (reps.length === 0 || (predEmpty && truthHasData)) {
-      console.log(`   ⚠ ${p.label} returned nothing (likely transport failure) — NOT caching; a resume will retry it.`);
+    // A repeat that came back EMPTY while ground truth has data is a transport failure
+    // (UND_ERR_SOCKET etc.), not a real 0 — drop those repeats and average the rest. Only
+    // skip caching if EVERY repeat was empty (so a single transient blip doesn't discard a
+    // project, and a later resume can retry a fully-failed one).
+    const truthHasData = reps.length > 0 && (reps[0].structT > 0 || reps[0].runT > 0);
+    const good = reps.filter((r) => r.structP + r.runP > 0);
+    if (reps.length === 0 || (good.length === 0 && truthHasData)) {
+      console.log(`   ⚠ ${p.label} returned nothing on all repeats (likely transport failure) — NOT caching; a resume will retry it.`);
       return;
     }
-    all[p.folder] = buildSummary(p.folder, p.label, reps);
+    all[p.folder] = buildSummary(p.folder, p.label, good.length ? good : reps);
     saveResults(all); // persist after each project so a kill is resumable
   };
 

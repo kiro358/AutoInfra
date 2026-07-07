@@ -54,6 +54,15 @@ const BUCKET_NAME = process.env.GCS_BUCKET || 'autoinfra-ai-eval-data';
 // Extraction model (override for A/B, e.g. EXTRACTION_MODEL=gemini-2.5-pro).
 const EXTRACTION_MODEL = process.env.EXTRACTION_MODEL || 'gemini-2.5-flash';
 
+// Per-PDF prep is deterministic (located pages + rendered/uploaded tiles), so memoize it by
+// source hash. This makes GOLDEN_REPEATS (and any repeated extraction of the same PDF in one
+// process) skip the locator call + re-render + re-upload — big time saving and it avoids
+// re-sending the locator thumbnails on every repeat. Process-scoped, so production (one
+// extraction per PDF) never hits it. Disable with REUSE_PREP=false.
+const REUSE_PREP = process.env.REUSE_PREP !== 'false';
+const locatorMemo = new Map<string, number[]>();
+const tilePartsMemo = new Map<string, any[]>();
+
 
 function getGenAI() {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -401,10 +410,17 @@ export async function extractFromPDF(
       console.log(`      [extraction.ts] Tiling all ${totalPages} page(s) (locator skipped).`);
     } else {
       let relevant: number[] = [];
-      try {
-        relevant = await locateRelevantPages(ai, pdfBuffer, sourceHash, projectName);
-      } catch (e: any) {
-        console.warn(`      [extraction.ts] Page locator failed (${e.message}); using all pages.`);
+      const memoedPages = REUSE_PREP ? locatorMemo.get(sourceHash) : undefined;
+      if (memoedPages) {
+        relevant = memoedPages;
+        console.log(`      [extraction.ts] Reusing memoized locator pages (${relevant.length}).`);
+      } else {
+        try {
+          relevant = await locateRelevantPages(ai, pdfBuffer, sourceHash, projectName);
+          if (REUSE_PREP && relevant.length > 0) locatorMemo.set(sourceHash, relevant);
+        } catch (e: any) {
+          console.warn(`      [extraction.ts] Page locator failed (${e.message}); using all pages.`);
+        }
       }
       if (relevant.length > 0) {
         locatorIndex = { manholePages: relevant, sewerPages: relevant, watermainPages: relevant };
@@ -541,21 +557,28 @@ export async function extractFromPDF(
 
       // Rasterize located pages to legible tiles; fall back to the raw PDF if rendering fails.
       let tileParts: any[] = [];
-      try {
-        // Cover EVERY located page fully. A flat 48-tile cap silently dropped ~half the
-        // tiles on multi-page servicing sets, so big projects only "saw" part of the plan
-        // and missed whole pipe systems (e.g. Panattoni's trunk sewers). Scale the budget
-        // with page count (streaming + Vertex handle the extra batches); cap for cost.
-        const PER_PAGE = 16;
-        const nPages = unionPages.length || 1;
-        const maxTilesTotal = Math.min(Number(process.env.MAX_TILES_TOTAL) || 192, nPages * PER_PAGE);
-        const tiles = await renderTilesFlat(pdfBuffer, unionPages, {
-          dpi: 150, tilePx: 1600, overlapPx: 160, maxTilesPerPage: PER_PAGE, maxTilesTotal,
-        });
-        tileParts = await uploadTiles(tiles);
-        console.log(`      [extraction.ts] Rendered + uploaded ${tileParts.length} tile(s) from ${unionPages.length || 'all'} page(s).`);
-      } catch (e: any) {
-        console.warn(`      [extraction.ts] Tile rendering failed (${e.message}); falling back to full PDF.`);
+      const memoedTiles = REUSE_PREP ? tilePartsMemo.get(sourceHash) : undefined;
+      if (memoedTiles) {
+        tileParts = memoedTiles;
+        console.log(`      [extraction.ts] Reusing ${tileParts.length} memoized tile(s) (skip re-render/upload).`);
+      } else {
+        try {
+          // Cover EVERY located page fully. A flat 48-tile cap silently dropped ~half the
+          // tiles on multi-page servicing sets, so big projects only "saw" part of the plan
+          // and missed whole pipe systems (e.g. Panattoni's trunk sewers). Scale the budget
+          // with page count (streaming + Vertex handle the extra batches); cap for cost.
+          const PER_PAGE = 16;
+          const nPages = unionPages.length || 1;
+          const maxTilesTotal = Math.min(Number(process.env.MAX_TILES_TOTAL) || 192, nPages * PER_PAGE);
+          const tiles = await renderTilesFlat(pdfBuffer, unionPages, {
+            dpi: 150, tilePx: 1600, overlapPx: 160, maxTilesPerPage: PER_PAGE, maxTilesTotal,
+          });
+          tileParts = await uploadTiles(tiles);
+          if (REUSE_PREP && tileParts.length > 0) tilePartsMemo.set(sourceHash, tileParts);
+          console.log(`      [extraction.ts] Rendered + uploaded ${tileParts.length} tile(s) from ${unionPages.length || 'all'} page(s).`);
+        } catch (e: any) {
+          console.warn(`      [extraction.ts] Tile rendering failed (${e.message}); falling back to full PDF.`);
+        }
       }
 
       const prompt =

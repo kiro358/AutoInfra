@@ -417,7 +417,10 @@ export async function extractFromPDF(
       } else {
         try {
           relevant = await locateRelevantPages(ai, pdfBuffer, sourceHash, projectName);
-          if (REUSE_PREP && relevant.length > 0) locatorMemo.set(sourceHash, relevant);
+          if (REUSE_PREP && relevant.length > 0) {
+            if (locatorMemo.size > 64) locatorMemo.clear(); // bound memory in long-lived servers
+            locatorMemo.set(sourceHash, relevant);
+          }
         } catch (e: any) {
           console.warn(`      [extraction.ts] Page locator failed (${e.message}); using all pages.`);
         }
@@ -574,7 +577,10 @@ export async function extractFromPDF(
             dpi: 150, tilePx: 1600, overlapPx: 160, maxTilesPerPage: PER_PAGE, maxTilesTotal,
           });
           tileParts = await uploadTiles(tiles);
-          if (REUSE_PREP && tileParts.length > 0) tilePartsMemo.set(sourceHash, tileParts);
+          if (REUSE_PREP && tileParts.length > 0) {
+            if (tilePartsMemo.size > 64) tilePartsMemo.clear(); // bound memory in long-lived servers
+            tilePartsMemo.set(sourceHash, tileParts);
+          }
           console.log(`      [extraction.ts] Rendered + uploaded ${tileParts.length} tile(s) from ${unionPages.length || 'all'} page(s).`);
         } catch (e: any) {
           console.warn(`      [extraction.ts] Tile rendering failed (${e.message}); falling back to full PDF.`);

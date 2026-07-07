@@ -527,8 +527,15 @@ export async function extractFromPDF(
       // Rasterize located pages to legible tiles; fall back to the raw PDF if rendering fails.
       let tileParts: any[] = [];
       try {
+        // Cover EVERY located page fully. A flat 48-tile cap silently dropped ~half the
+        // tiles on multi-page servicing sets, so big projects only "saw" part of the plan
+        // and missed whole pipe systems (e.g. Panattoni's trunk sewers). Scale the budget
+        // with page count (streaming + Vertex handle the extra batches); cap for cost.
+        const PER_PAGE = 16;
+        const nPages = unionPages.length || 1;
+        const maxTilesTotal = Math.min(Number(process.env.MAX_TILES_TOTAL) || 192, nPages * PER_PAGE);
         const tiles = await renderTilesFlat(pdfBuffer, unionPages, {
-          dpi: 150, tilePx: 1600, overlapPx: 160, maxTilesPerPage: 16, maxTilesTotal: 48,
+          dpi: 150, tilePx: 1600, overlapPx: 160, maxTilesPerPage: PER_PAGE, maxTilesTotal,
         });
         tileParts = await uploadTiles(tiles);
         console.log(`      [extraction.ts] Rendered + uploaded ${tileParts.length} tile(s) from ${unionPages.length || 'all'} page(s).`);

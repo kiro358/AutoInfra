@@ -99,7 +99,12 @@ export async function readTruthFacts(xlsxPath: string, projectName: string): Pro
           length,
           pipeDiameter: num(cell(ws, `D${r}`)),
           typeClass: num(cell(ws, `E${r}`)),
-          slope: num(cell(ws, `F${r}`)),
+          // NOTE: this estimator's sewer sheet has NO slope column — column F is a
+          // constant "V/‖ O/OO" factor (always ~1.1), not the pipe slope. Reading it as
+          // slope poisons attribute-matching (rejects real pipes on a bogus slope delta)
+          // and makes the slope field-metric meaningless. The drawings carry slope, the
+          // truth sheet doesn't, so we can't score it — leave it null.
+          slope: null,
           depth: num(cell(ws, `G${r}`)),
         });
       }

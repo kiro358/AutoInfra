@@ -202,6 +202,19 @@ export function compareFacts(pred: TakeoffFacts, truth: TakeoffFacts): FactsComp
     );
   }
 
+  // Catchbasins — counted by type; compare per-type quantities (recall/precision on units)
+  {
+    const cbTypes = ['SINGLE_CB', 'DOUBLE_CB', 'DITCH_INLET_CB', 'DOUBLE_DITCH_INLET_CB'] as const;
+    const qty = (list: typeof pred.catchbasins, ty: string) =>
+      list.filter((c) => c.type === ty).reduce((s, c) => s + (c.quantity || 0), 0);
+    let cbM = 0, cbT = 0, cbP = 0;
+    for (const ty of cbTypes) {
+      const tq = qty(truth.catchbasins, ty), pq = qty(pred.catchbasins, ty);
+      cbM += Math.min(tq, pq); cbT += tq; cbP += pq;
+    }
+    if (cbT > 0 || cbP > 0) entities.push({ ...prf(cbM, cbP, cbT), kind: 'catchbasins' });
+  }
+
   // Watermain runs — match by normalized size/type
   {
     const m = matchByKey<WatermainFact>(pred.watermain, truth.watermain, (w) => normalizeLabel(w.sizeAndType));

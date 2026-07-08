@@ -128,6 +128,24 @@ function sewerAttrMatch(p: SewerFact, t: SewerFact): boolean {
   return true;
 }
 
+// Endpoint structure tokens of a run label, for partial matching (drop /notes and the
+// CONN/PLUG/WYE sentinels, which are ends the drawing abstracts rather than named structures).
+function runEndpoints(label: string): string[] {
+  return String(label).split(/[-–]/)
+    .map((p) => normalizeLabel(p.split('/')[0]))
+    .filter((x) => x && x !== 'CONN' && x !== 'PLUG' && x !== 'WYE');
+}
+
+// The same physical run where truth names an endpoint the drawing abstracted (truth
+// "MH 2-CONN." vs pred "MH 2-MH 1") shares one endpoint + the diameter. Require a close-ish
+// length too so two different pipes out of the same structure can't false-match.
+function sewerSharedEndpointMatch(p: SewerFact, t: SewerFact): boolean {
+  if (p.pipeDiameter == null || t.pipeDiameter == null || p.pipeDiameter !== t.pipeDiameter) return false;
+  if (p.length == null || t.length == null || Math.abs(p.length - t.length) > Math.max(3, 0.25 * t.length)) return false;
+  const te = runEndpoints(t.runLabel);
+  return te.length > 0 && runEndpoints(p.runLabel).some((x) => te.includes(x));
+}
+
 export function matchSewerRuns(pred: SewerFact[], truth: SewerFact[]) {
   // Phase 1: endpoint-label signature (strict, preferred).
   const first = matchByKey<SewerFact>(pred, truth, (s) => runSignature(s.runLabel));
@@ -138,6 +156,12 @@ export function matchSewerRuns(pred: SewerFact[], truth: SewerFact[]) {
   for (const t of truth) {
     if (usedTruth.has(t)) continue;
     const p = pred.find((q) => !usedPred.has(q) && sewerAttrMatch(q, t));
+    if (p) { usedPred.add(p); usedTruth.add(t); pairs.push({ p, t }); }
+  }
+  // Phase 3: shared endpoint + same diameter + close-ish length.
+  for (const t of truth) {
+    if (usedTruth.has(t)) continue;
+    const p = pred.find((q) => !usedPred.has(q) && sewerSharedEndpointMatch(q, t));
     if (p) { usedPred.add(p); usedTruth.add(t); pairs.push({ p, t }); }
   }
   return { matched: pairs.length, pairs };

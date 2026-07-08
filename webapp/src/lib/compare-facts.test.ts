@@ -38,6 +38,19 @@ describe('sewer run matching (endpoint label + physical-attribute fallback)', ()
     const truth = facts({ sewers: [run({ runLabel: 'MH 1-MH 2', length: 45, pipeDiameter: 250 })] });
     expect(sewerScore(pred, truth).matched).toBe(1);
   });
+
+  it('matches a shared endpoint when truth abstracts the far end (CONN) and length is close', () => {
+    // truth "MH 2-CONN." (far end abstracted) vs pred "MH 2-MH 1" (far end named), same dia, ~length
+    const pred = facts({ sewers: [run({ runLabel: 'MH 2-MH 1', length: 98.7, pipeDiameter: 450 })] });
+    const truth = facts({ sewers: [run({ runLabel: 'MH 2-CONN.', length: 104, pipeDiameter: 450 })] });
+    expect(sewerScore(pred, truth).matched).toBe(1);
+  });
+
+  it('does NOT shared-endpoint-match a different pipe out of the same structure (far length)', () => {
+    const pred = facts({ sewers: [run({ runLabel: 'MH 2-MH 9', length: 8, pipeDiameter: 450 })] });
+    const truth = facts({ sewers: [run({ runLabel: 'MH 2-CONN.', length: 104, pipeDiameter: 450 })] });
+    expect(sewerScore(pred, truth).matched).toBe(0);
+  });
 });
 
 describe('normalizeLabel / runSignature', () => {

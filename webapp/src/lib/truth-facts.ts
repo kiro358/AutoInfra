@@ -112,12 +112,18 @@ export async function readTruthFacts(xlsxPath: string, projectName: string): Pro
       }
     } else if (isWMSheet(name)) {
       for (let r = 13; r <= 19; r++) {
+        // The "SIZE & TYPE" label (col B) is usually blank — the real data is length (C) +
+        // diameter (D). Key on those, not B, or we drop every watermain run (and then score
+        // the model's correct watermain as a false positive). Derive a label from the size.
+        const length = num(cell(ws, `C${r}`));
+        const dia = num(cell(ws, `D${r}`));
+        if (length == null && dia == null) continue;
         const size = cell(ws, `B${r}`);
-        if (size === null || size === '') continue;
+        if (size != null && /total/i.test(String(size))) continue;
         watermain.push({
-          sizeAndType: String(size),
-          length: num(cell(ws, `C${r}`)) ?? 0,
-          pipeDiameter: num(cell(ws, `D${r}`)) ?? 0,
+          sizeAndType: size != null && String(size) !== '' ? String(size) : (dia != null ? `${dia}mm` : ''),
+          length: length ?? 0,
+          pipeDiameter: dia ?? 0,
           ocSc: num(cell(ws, `F${r}`)) ?? 1.1,
           avgCover: num(cell(ws, `J${r}`)) ?? 1.8,
         });

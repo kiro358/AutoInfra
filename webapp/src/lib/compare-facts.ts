@@ -167,6 +167,22 @@ export function matchSewerRuns(pred: SewerFact[], truth: SewerFact[]) {
   return { matched: pairs.length, pairs };
 }
 
+// Watermain: prefer a real size/type label match, else match on diameter + close length
+// (truth watermain rows carry length+diameter but usually a blank size/type label).
+function matchWatermain(pred: WatermainFact[], truth: WatermainFact[]) {
+  const first = matchByKey<WatermainFact>(pred, truth, (w) => normalizeLabel(w.sizeAndType));
+  const usedPred = new Set(first.pairs.map((x) => x.p));
+  const usedTruth = new Set(first.pairs.map((x) => x.t));
+  const pairs = [...first.pairs];
+  for (const t of truth) {
+    if (usedTruth.has(t)) continue;
+    const p = pred.find((q) => !usedPred.has(q) && q.pipeDiameter != null && t.pipeDiameter != null
+      && q.pipeDiameter === t.pipeDiameter && Math.abs(q.length - t.length) <= Math.max(2, 0.1 * t.length));
+    if (p) { usedPred.add(p); usedTruth.add(t); pairs.push({ p, t }); }
+  }
+  return { matched: pairs.length, pairs };
+}
+
 function prf(matched: number, predCount: number, truthCount: number): EntityScore {
   const precision = predCount > 0 ? matched / predCount : truthCount === 0 ? 1 : 0;
   const recall = truthCount > 0 ? matched / truthCount : 1;
@@ -239,9 +255,10 @@ export function compareFacts(pred: TakeoffFacts, truth: TakeoffFacts): FactsComp
     if (cbT > 0 || cbP > 0) entities.push({ ...prf(cbM, cbP, cbT), kind: 'catchbasins' });
   }
 
-  // Watermain runs — match by normalized size/type
+  // Watermain runs — truth's size/type label is usually blank, so match on diameter + close
+  // length (attribute), falling back from any label match. Same physical-pipe logic as sewers.
   {
-    const m = matchByKey<WatermainFact>(pred.watermain, truth.watermain, (w) => normalizeLabel(w.sizeAndType));
+    const m = matchWatermain(pred.watermain, truth.watermain);
     entities.push({ ...prf(m.matched, pred.watermain.length, truth.watermain.length), kind: 'watermainRuns' });
     fields.push(
       ...scoreFields(m.pairs, [

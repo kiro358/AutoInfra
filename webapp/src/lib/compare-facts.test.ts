@@ -53,6 +53,14 @@ describe('sewer run matching (endpoint label + physical-attribute fallback)', ()
   });
 });
 
+describe('watermain matching (blank truth labels → attribute match)', () => {
+  it('matches watermain by diameter + close length when the truth size/type label is blank', () => {
+    const pred = facts({ watermain: [{ sizeAndType: '200mm FIRE PROTECTION WATERMAIN', length: 90, pipeDiameter: 200, ocSc: 1.1, avgCover: 1.8 }] });
+    const truth = facts({ watermain: [{ sizeAndType: '200mm', length: 92, pipeDiameter: 200, ocSc: 1.1, avgCover: 1.8 }] });
+    expect(compareFacts(pred, truth).entities.find((e) => e.kind === 'watermainRuns')!.matched).toBe(1);
+  });
+});
+
 describe('normalizeLabel / runSignature', () => {
   it('normalizes structure labels ignoring case, spaces, punctuation, parens', () => {
     expect(normalizeLabel('CBMH 2')).toBe(normalizeLabel('cbmh-2'));

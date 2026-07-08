@@ -21,7 +21,11 @@ import { compareFacts, normalizeLabel } from '../lib/compare-facts';
 import { readTruthFacts } from '../lib/truth-facts';
 import { TakeoffFacts } from '../lib/types';
 
-const TRAINING_DIR = process.env.PREDICTIONS_DIR || path.resolve(__dirname, '../../..', 'existing_projects_training_data');
+// Truth xlsx always come from the canonical training dir; predictions can come from a
+// separate dir (e.g. a fresh export overlaid to a scratch dir) via PREDICTIONS_DIR. This
+// keeps analysis non-destructive — no need to overwrite local predicted_facts.
+const TRUTH_DIR = path.resolve(__dirname, '../../..', 'existing_projects_training_data');
+const PRED_DIR = process.env.PREDICTIONS_DIR || TRUTH_DIR;
 
 function goldenFolders(): string[] {
   const src = fs.readFileSync(path.resolve(__dirname, 'evaluate-golden.ts'), 'utf8');
@@ -39,10 +43,10 @@ async function main() {
   let wmFP = 0, analyzed = 0, missing = 0;
 
   for (const f of folders) {
-    const pf = path.join(TRAINING_DIR, f, 'generated_spreadsheets', 'predicted_facts.json');
+    const pf = path.join(PRED_DIR, f, 'generated_spreadsheets', 'predicted_facts.json');
     if (!fs.existsSync(pf)) { missing++; continue; }
     const pred = JSON.parse(fs.readFileSync(pf, 'utf8')) as TakeoffFacts;
-    const dir = path.join(TRAINING_DIR, f);
+    const dir = path.join(TRUTH_DIR, f);
     const xlsx = fs.readdirSync(dir).find((x) => x.toLowerCase().endsWith('.xlsx') && !/eval_run|backup|quote|budget/i.test(x));
     if (!xlsx) { missing++; continue; }
     let truth: TakeoffFacts;

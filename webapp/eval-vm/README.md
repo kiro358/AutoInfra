@@ -21,6 +21,8 @@ gcloud compute instances create autoinfra-eval --zone=us-central1-a --machine-ty
 ## Analyze fresh predictions offline (free)
 ```bash
 gsutil cp gs://autoinfra-ai-eval-data/eval-run/predictions.tgz /tmp/
-tar xzf /tmp/predictions.tgz -C existing_projects_training_data --strip-components=1  # overlay fresh predicted_facts.json
-npm run analyze:eval
+mkdir -p /tmp/fresh && tar xzf /tmp/predictions.tgz -C /tmp/fresh --strip-components=1
+# analyze:eval reads predictions from PREDICTIONS_DIR + truth from the real training dir
+# (non-destructive — doesn't overwrite your local predicted_facts):
+PREDICTIONS_DIR=/tmp/fresh npm run analyze:eval
 ```

@@ -176,32 +176,56 @@ function isNonStructure(desc: string): boolean {
   return STRUCT_JUNK.test(desc) && !STRUCT_CODE.test(desc);
 }
 
-function parseFacts(raw: any, projectName: string): TakeoffFacts {
+// Plain catchbasins (CB/DCB/DICB/DDICB + number — NOT CBMH/DCBMH, which ARE structures) belong
+// in the CB count block by type, not the manhole/structure list. The model routinely lists them
+// as individual structures and leaves catchbasins empty; return the CB type so we can reclassify.
+function plainCatchbasinType(desc: string): CatchbasinGroupFact['type'] | null {
+  const n = String(desc).replace(/[^a-z0-9]/gi, '').toUpperCase();
+  if (/^DDICB\d/.test(n)) return 'DOUBLE_DITCH_INLET_CB';
+  if (/^DICB\d/.test(n)) return 'DITCH_INLET_CB';
+  if (/^DCB\d/.test(n)) return 'DOUBLE_CB';
+  if (/^CB\d/.test(n)) return 'SINGLE_CB';
+  return null;
+}
+
+export function parseFacts(raw: any, projectName: string): TakeoffFacts {
+  // Drop non-structure callouts, then split real structures from plain catchbasins the model
+  // mis-listed as structures (reclassified into the CB block below).
+  const candidateStructs = (raw.manholes || []).filter((m: any) => !isNonStructure(String(m.description || '')));
+  const realStructs = candidateStructs.filter((m: any) => !plainCatchbasinType(String(m.description || '')));
+
+  // Merge the model's explicit CB groups with CBs reclassified from the structure list. Prefer
+  // an explicit group quantity per type when present; else use the reclassified individual count
+  // (max, so a project that populated both isn't double-counted).
+  const cbFromStructs: Record<string, number> = {};
+  for (const m of candidateStructs) {
+    const t = plainCatchbasinType(String(m.description || ''));
+    if (t) cbFromStructs[t] = (cbFromStructs[t] || 0) + 1;
+  }
+  const groupByType: Record<string, CatchbasinGroupFact> = {};
+  for (const g of (raw.catchbasins?.groups || [])) {
+    const t = String(g.type || 'SINGLE_CB') as CatchbasinGroupFact['type'];
+    groupByType[t] = { type: t, quantity: Number(g.quantity) || 0, wallThickness: g.wallThickness != null ? Number(g.wallThickness) : null, depth: g.depth != null ? Number(g.depth) : null };
+  }
+  for (const [t, cnt] of Object.entries(cbFromStructs)) {
+    if (!groupByType[t]) groupByType[t] = { type: t as CatchbasinGroupFact['type'], quantity: cnt, wallThickness: null, depth: null };
+    else groupByType[t].quantity = Math.max(groupByType[t].quantity, cnt);
+  }
+
   return {
     projectName: raw.projectName || projectName,
     jobNumber: raw.jobNumber || '',
     date: raw.date || new Date().toISOString().split('T')[0],
-    structures: (raw.manholes || [])
-      // Drop non-structure plan callouts the model wrongly lists as structures
-      // (bike racks, transformers, retaining walls, water meters, crossings, valves,
-      // curbs, …). Only filter items with a clear junk keyword AND no structure code,
-      // so real structures like "SANITARY CONTROL MH" or "C100 CHAMBER" are kept.
-      .filter((m: any) => !isNonStructure(String(m.description || '')))
-      .map((m: any) => ({
-        description: String(m.description || ''),
-        topElevation: m.topElevation != null ? Number(m.topElevation) : null,
-        lowInvert: m.lowInvert != null ? Number(m.lowInvert) : null,
-        highInvert: m.highInvert != null ? Number(m.highInvert) : null,
-        pipeOutDiameter: m.pipeOutDiameter != null ? Number(m.pipeOutDiameter) : null,
-        structureType: m.structureType ? String(m.structureType) : null,
-        depth: m.depth != null ? Number(m.depth) : null,
-      })),
-    catchbasins: (raw.catchbasins?.groups || []).map((g: any) => ({
-      type: String(g.type || 'SINGLE_CB') as CatchbasinGroupFact['type'],
-      quantity: Number(g.quantity) || 0,
-      wallThickness: g.wallThickness != null ? Number(g.wallThickness) : null,
-      depth: g.depth != null ? Number(g.depth) : null,
+    structures: realStructs.map((m: any) => ({
+      description: String(m.description || ''),
+      topElevation: m.topElevation != null ? Number(m.topElevation) : null,
+      lowInvert: m.lowInvert != null ? Number(m.lowInvert) : null,
+      highInvert: m.highInvert != null ? Number(m.highInvert) : null,
+      pipeOutDiameter: m.pipeOutDiameter != null ? Number(m.pipeOutDiameter) : null,
+      structureType: m.structureType ? String(m.structureType) : null,
+      depth: m.depth != null ? Number(m.depth) : null,
     })),
+    catchbasins: Object.values(groupByType),
     sewers: (raw.sewers || []).map((s: Record<string, unknown>) => ({
       runLabel: String(s.runLabel || ''),
       isLineItem: Boolean(s.isLineItem),

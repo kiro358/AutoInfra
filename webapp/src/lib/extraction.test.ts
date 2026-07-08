@@ -8,7 +8,35 @@ import {
   deduplicateWatermain,
   deduplicateSpecials,
   deduplicateValves,
+  parseFacts,
 } from './extraction';
+
+describe('parseFacts structure/catchbasin categorization', () => {
+  it('reclassifies plain catchbasins out of structures into CB group counts by type', () => {
+    const f = parseFacts({
+      manholes: [
+        { description: 'MH 1' }, { description: 'CBMH 2' },   // real structures (kept)
+        { description: 'CB 1' }, { description: 'CB 2' },      // plain CB -> SINGLE_CB x2
+        { description: 'DICB 1' },                             // -> DITCH_INLET_CB x1
+        { description: 'PROP. BIKE RACKS' },                   // junk (dropped)
+      ],
+      catchbasins: { groups: [] },
+    }, 'test');
+    expect(f.structures.map((s) => s.description).sort()).toEqual(['CBMH 2', 'MH 1']);
+    const cb = Object.fromEntries(f.catchbasins.map((c) => [c.type, c.quantity]));
+    expect(cb['SINGLE_CB']).toBe(2);
+    expect(cb['DITCH_INLET_CB']).toBe(1);
+  });
+
+  it('prefers an explicit CB group count over reclassified individuals (no double-count)', () => {
+    const f = parseFacts({
+      manholes: [{ description: 'CB 1' }, { description: 'CB 2' }],
+      catchbasins: { groups: [{ type: 'SINGLE_CB', quantity: 5 }] },
+    }, 'test');
+    expect(f.catchbasins.find((c) => c.type === 'SINGLE_CB')!.quantity).toBe(5); // max(5,2)
+    expect(f.structures.length).toBe(0);
+  });
+});
 
 describe('normalizeSlope', () => {
   it('passes through plausible percent slopes (<= 10)', () => {

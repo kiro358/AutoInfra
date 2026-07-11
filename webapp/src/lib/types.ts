@@ -159,6 +159,9 @@ export interface TakeoffFacts {
   confidence: number;
   warnings: string[];
   locatorIndex?: { manholePages: number[]; sewerPages: number[]; watermainPages: number[] } | null;
+  // Cost telemetry for a single extraction (all LLM calls summed): lets the eval
+  // report tokens/tiles per project so cost changes (DPI, tile budget) are measurable.
+  cost?: { promptTokens: number; outputTokens: number; totalTokens: number; llmCalls: number; tiles: number; dpi: number };
 }
 
 // ============ Global Parameters ============

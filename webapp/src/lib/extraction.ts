@@ -60,6 +60,23 @@ const EXTRACTION_MODEL = process.env.EXTRACTION_MODEL || 'gemini-2.5-flash';
 // re-sending the locator thumbnails on every repeat. Process-scoped, so production (one
 // extraction per PDF) never hits it. Disable with REUSE_PREP=false.
 const REUSE_PREP = process.env.REUSE_PREP !== 'false';
+
+// Tiling knobs — the image-token cost of an extraction scales with rasterized
+// pixel area (≈ DPI²), so these are the primary cost levers. Kept configurable so
+// the eval can A/B cost vs accuracy on stable infra (see cost telemetry on facts.cost).
+const TILE_DPI = Number(process.env.TILE_DPI) || 150;
+const TILE_PX = Number(process.env.TILE_PX) || 1600;
+const TILE_OVERLAP = Number(process.env.TILE_OVERLAP) || 160;
+
+// Sum a streamed/one-shot response's usageMetadata into a per-extraction cost accumulator.
+type CostAcc = { promptTokens: number; outputTokens: number; totalTokens: number; llmCalls: number; tiles: number; dpi: number };
+function addUsage(cost: CostAcc, usage: any) {
+  if (!usage) return;
+  cost.llmCalls++;
+  cost.promptTokens += usage.promptTokenCount || 0;
+  cost.outputTokens += usage.candidatesTokenCount || 0;
+  cost.totalTokens += usage.totalTokenCount || 0;
+}
 const locatorMemo = new Map<string, number[]>();
 const tilePartsMemo = new Map<string, any[]>();
 
@@ -357,7 +374,8 @@ async function locateRelevantPages(
   ai: GoogleGenAI,
   pdfBuffer: Buffer,
   sourceHash: string,
-  projectName: string
+  projectName: string,
+  cost?: CostAcc
 ): Promise<number[]> {
   const thumbs = await renderPageThumbnails(pdfBuffer, { maxPx: 1500 });
   if (thumbs.length === 0) return [];
@@ -375,6 +393,7 @@ async function locateRelevantPages(
       contents: [{ role: 'user', parts }],
       config: { temperature: 0, responseMimeType: 'application/json' },
     }));
+    if (cost) addUsage(cost, (response as any).usageMetadata);
     return response.text || '{}';
   }, projectName);
 
@@ -422,6 +441,7 @@ export async function extractFromPDF(
     console.log(`      [extraction.ts] Total pages in merged PDF: ${totalPages}`);
 
     let locatorIndex: { manholePages: number[], sewerPages: number[], watermainPages: number[] } | null = null;
+    const cost: CostAcc = { promptTokens: 0, outputTokens: 0, totalTokens: 0, llmCalls: 0, tiles: 0, dpi: TILE_DPI };
 
     const allPages = Array.from({ length: totalPages }, (_, i) => i + 1);
 
@@ -440,7 +460,7 @@ export async function extractFromPDF(
         console.log(`      [extraction.ts] Reusing memoized locator pages (${relevant.length}).`);
       } else {
         try {
-          relevant = await locateRelevantPages(ai, pdfBuffer, sourceHash, projectName);
+          relevant = await locateRelevantPages(ai, pdfBuffer, sourceHash, projectName, cost);
           if (REUSE_PREP && relevant.length > 0) {
             if (locatorMemo.size > 64) locatorMemo.clear(); // bound memory in long-lived servers
             locatorMemo.set(sourceHash, relevant);
@@ -598,7 +618,7 @@ export async function extractFromPDF(
           const nPages = unionPages.length || 1;
           const maxTilesTotal = Math.min(Number(process.env.MAX_TILES_TOTAL) || 192, nPages * PER_PAGE);
           const tiles = await renderTilesFlat(pdfBuffer, unionPages, {
-            dpi: 150, tilePx: 1600, overlapPx: 160, maxTilesPerPage: PER_PAGE, maxTilesTotal,
+            dpi: TILE_DPI, tilePx: TILE_PX, overlapPx: TILE_OVERLAP, maxTilesPerPage: PER_PAGE, maxTilesTotal,
           });
           tileParts = await uploadTiles(tiles);
           if (REUSE_PREP && tileParts.length > 0) {
@@ -610,6 +630,8 @@ export async function extractFromPDF(
           console.warn(`      [extraction.ts] Tile rendering failed (${e.message}); falling back to full PDF.`);
         }
       }
+
+      cost.tiles = tileParts.length;
 
       const prompt =
         getSinglePassPrompt(projectName, getDynamicPromptAdditions()) + '\n' +
@@ -639,8 +661,9 @@ export async function extractFromPDF(
                 contents: [{ role: 'user', parts: [{ text: prompt }, ...media] }],
                 config: { temperature: 0, responseMimeType: 'application/json' },
               });
-              let acc = '';
-              for await (const chunk of stream) acc += chunk.text || '';
+              let acc = '', usage: any = null;
+              for await (const chunk of stream) { acc += chunk.text || ''; if (chunk.usageMetadata) usage = chunk.usageMetadata; }
+              addUsage(cost, usage);
               return acc || '{}';
             });
           }, projectName);
@@ -685,6 +708,8 @@ export async function extractFromPDF(
       }, projectName);
       facts.warnings = [...facts.warnings, ...validateExtraction(facts)];
       facts.locatorIndex = locatorIndex;
+      facts.cost = cost;
+      console.log(`      [extraction.ts] cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);
       return facts;
 
   } catch (err: any) {

@@ -108,7 +108,14 @@ is empirical: validate the facts metric on the dataset and A/B single-pass vs ag
 
 ## Where the levers are
 
-- **Prompts**: `modular-prompts.ts` (agent prompts + `getSinglePassPrompt`). Few-shot:
+- **Cost**: image-token cost scales with rasterized pixel area (≈DPI²). Knobs (env):
+  `TILE_DPI` (def 150), `TILE_PX` (1600), `TILE_OVERLAP` (160), `PER_PAGE`/`MAX_TILES_TOTAL`,
+  `BATCH_TILES`/`BATCH_CONCURRENCY`. Every extraction records `facts.cost` (tokens/tiles/llmCalls/dpi;
+  `totalTokens` includes gemini-2.5-flash thinking tokens) and the golden scoreboard prints a run-level
+  COST line — so DPI/budget A/Bs are measurable. Don't cut DPI blind: validate legibility (pipe callouts).
+- **Prompts**: `modular-prompts.ts` (agent prompts + `getSinglePassPrompt`). `getSinglePassPrompt` does a
+  MANDATORY pipe-scan-first step (emit `pipeScan` before deriving sewers) and forces sewers-before-manholes
+  output order so truncated dense responses keep the pipe runs. Few-shot:
   `few_shot_examples.json` (still contains legacy pricing in examples — harmless, parseFacts
   ignores it; strip when convenient).
 - **Pricing**: `costing-rules.ts::DEFAULT_COSTING`. This is the ONLY place dollars live.

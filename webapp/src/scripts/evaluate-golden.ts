@@ -47,7 +47,7 @@ const GOLDEN_PROJECTS = [
   { folder: '2026-050 PANATTONI-6500 MISSISSAUGA ROAD', label: 'Panattoni (85/89, multi)' },
 ];
 
-interface ProjectResult { cell: CompareResult | null; facts: FactsComparison | null; }
+interface ProjectResult { cell: CompareResult | null; facts: FactsComparison | null; cost?: { totalTokens: number; tiles: number; llmCalls: number; dpi: number } | null; }
 
 async function evaluateProject(folderName: string): Promise<ProjectResult> {
   const projectDir = path.join(TRAINING_DIR, folderName);
@@ -161,7 +161,7 @@ async function evaluateProject(folderName: string): Promise<ProjectResult> {
     }
     console.log('');
 
-    return { cell: compareResult, facts: factsCmp };
+    return { cell: compareResult, facts: factsCmp, cost: facts.cost ?? null };
   } catch (e: any) {
     console.error(`❌ Error evaluating project ${folderName}:`, e.message);
     return { cell: null, facts: null };
@@ -269,11 +269,13 @@ async function main() {
   });
   console.log(`Running ${todo.length} project(s).\n`);
 
+  const costAgg = { tokens: 0, tiles: 0, calls: 0, extractions: 0, dpi: 0 };
   const runOne = async ({ p, i }: { p: typeof GOLDEN_PROJECTS[number]; i: number }) => {
     const reps: RepMetrics[] = [];
     for (let r = 0; r < REPEATS; r++) {
       console.log(`[${i + 1}/${N}]${REPEATS > 1 ? ` run ${r + 1}/${REPEATS}` : ''} ${p.label} — extracting...`);
       const res = await evaluateProject(p.folder);
+      if (res.cost) { costAgg.tokens += res.cost.totalTokens; costAgg.tiles += res.cost.tiles; costAgg.calls += res.cost.llmCalls; costAgg.extractions++; costAgg.dpi = res.cost.dpi; }
       if (res.facts) reps.push(factsToMetrics(res.facts, res.cell));
       console.log(`   → ${p.label}${REPEATS > 1 ? ` r${r + 1}` : ''}: cell ${res.cell ? res.cell.overallAccuracy.toFixed(1) + '%' : 'ERR'} | detF1 ${res.facts ? pct(res.facts.detectionF1) : 'ERR'}`);
     }
@@ -328,6 +330,11 @@ async function main() {
     + `field acc ${fieldT ? Math.round(fieldM / fieldT * 100) : 0}%`);
   console.log(`  Legacy cell-accuracy (mixed): ${cellN ? (cellSum / cellN).toFixed(1) : '0'}%`);
   console.log(`  ${nDet}/${N} projects scored${elapsedMin !== '0.0' ? ` in ${elapsedMin} min` : ' (cached)'}${anyRepeats ? ` × ${REPEATS} repeats` : ''}`);
+  if (costAgg.extractions > 0) {
+    const per = (n: number) => (n / costAgg.extractions);
+    console.log(`  COST @${costAgg.dpi}dpi: ${(costAgg.tokens / 1e6).toFixed(2)}M tokens, ${costAgg.tiles} tiles, ${costAgg.calls} LLM calls over ${costAgg.extractions} extraction(s)`
+      + ` — avg ${Math.round(per(costAgg.tokens) / 1000)}k tok / ${per(costAgg.tiles).toFixed(1)} tiles per extraction`);
+  }
   console.log('='.repeat(96) + '\n');
 }
 

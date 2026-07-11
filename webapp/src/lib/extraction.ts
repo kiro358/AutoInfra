@@ -67,6 +67,10 @@ const REUSE_PREP = process.env.REUSE_PREP !== 'false';
 const TILE_DPI = Number(process.env.TILE_DPI) || 150;
 const TILE_PX = Number(process.env.TILE_PX) || 1600;
 const TILE_OVERLAP = Number(process.env.TILE_OVERLAP) || 160;
+// Explicit output ceiling: thinking tokens + JSON response share this budget. Vertex
+// defaults it to 8192, which starves dense responses (see the batch call). 32768 leaves
+// ample room for thinking + a full takeoff. gemini-2.5-flash supports up to 65536.
+const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS) || 32768;
 
 // Sum a streamed/one-shot response's usageMetadata into a per-extraction cost accumulator.
 type CostAcc = { promptTokens: number; outputTokens: number; totalTokens: number; llmCalls: number; tiles: number; dpi: number };
@@ -659,7 +663,13 @@ export async function extractFromPDF(
               const stream = await ai.models.generateContentStream({
                 model: EXTRACTION_MODEL,
                 contents: [{ role: 'user', parts: [{ text: prompt }, ...media] }],
-                config: { temperature: 0, responseMimeType: 'application/json' },
+                // gemini-2.5-flash thinking (~4k tokens) shares the maxOutputTokens
+                // budget with the JSON response. Vertex defaults this to 8192, so on
+                // dense projects thinking + the (longer, pipe-scan-first) response blew
+                // past the cap and the response truncated — dropping structures (emitted
+                // last) to 0 and halving sewers. Set an explicit, ample ceiling so the
+                // full response always fits. (AI Studio's larger default masked this locally.)
+                config: { temperature: 0, responseMimeType: 'application/json', maxOutputTokens: MAX_OUTPUT_TOKENS },
               });
               let acc = '', usage: any = null;
               for await (const chunk of stream) { acc += chunk.text || ''; if (chunk.usageMetadata) usage = chunk.usageMetadata; }

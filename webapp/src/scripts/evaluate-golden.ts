@@ -18,10 +18,11 @@ import { populateTemplate } from '../lib/spreadsheet';
 import { DEFAULT_PARAMS } from '../lib/constants';
 import { compareSpreadsheets, CompareResult, formatCompareResult } from './compare-sheets';
 import { compareFacts, formatFactsComparison, FactsComparison } from '../lib/compare-facts';
-import { readTruthFacts } from '../lib/truth-facts';
+import { resolveTruthFacts, loadTruthManifest } from '../lib/truth-facts';
 import { chooseDrawingPdfs } from '../lib/dataset';
 
 const TRAINING_DIR = path.resolve(__dirname, '../../..', 'existing_projects_training_data');
+const TRUTH_MANIFEST = loadTruthManifest(path.resolve(__dirname, '../../..', 'truth-manifest.json'));
 
 // Golden set: 16 curated projects from the dataset manifest — all "usable"
 // (standard-template, has runs, has a findable civil drawing, not hand-scoped) and
@@ -55,20 +56,21 @@ async function evaluateProject(folderName: string): Promise<ProjectResult> {
     return { cell: null, facts: null };
   }
 
-  const files = fs.readdirSync(projectDir);
   const pdfFiles = chooseDrawingPdfs(projectDir); // recursive: finds nested civil drawing sets
-  const xlsxFiles = files.filter(f => 
-    f.toLowerCase().endsWith('.xlsx') && 
-    !f.toLowerCase().includes('eval_run_') &&
-    !f.toLowerCase().includes('backup') &&
-    !f.toLowerCase().includes('quote') &&
-    !f.toLowerCase().includes('sand') &&
-    !f.toLowerCase().includes('budget')
-  );
 
-  if (pdfFiles.length === 0 || xlsxFiles.length === 0) {
-    console.warn(`⚠️ Skipping ${folderName}: missing PDF or XLSX`);
+  // Robust ground-truth selection: manifest-driven (merge genuine site splits /
+  // pin canonical file / exclude), else richest non-empty candidate. Replaces
+  // the old readdir[0] pick, which landed on empty/partial decoys for several
+  // projects. See truth-facts.ts::resolveTruthFacts.
+  const resolvedTruth = await resolveTruthFacts(projectDir, folderName, TRUTH_MANIFEST);
+
+  if (pdfFiles.length === 0 || !resolvedTruth) {
+    console.warn(`⚠️ Skipping ${folderName}: missing PDF or no usable ground-truth workbook`);
     return { cell: null, facts: null };
+  }
+  const truthPath = path.join(projectDir, resolvedTruth.primary);
+  if (resolvedTruth.sources.length > 1) {
+    console.log(`   [evaluate-golden] Truth merged from ${resolvedTruth.sources.length} workbooks: ${resolvedTruth.sources.join(', ')}`);
   }
 
   // Sort PDFs by relevance
@@ -92,8 +94,6 @@ async function evaluateProject(folderName: string): Promise<ProjectResult> {
     const sizeB = fs.statSync(path.join(projectDir, b)).size;
     return sizeB - sizeA;
   });
-
-  const truthPath = path.join(projectDir, xlsxFiles[0]);
 
   try {
     // Read ALL drawing PDF buffers
@@ -128,8 +128,7 @@ async function evaluateProject(folderName: string): Promise<ProjectResult> {
     // Redesigned extraction metric: score facts vs ground truth (model-only signal)
     let factsCmp: FactsComparison | null = null;
     try {
-      const truthFacts = await readTruthFacts(truthPath, folderName);
-      factsCmp = compareFacts(facts, truthFacts);
+      factsCmp = compareFacts(facts, resolvedTruth.facts);
       console.log(formatFactsComparison(factsCmp));
     } catch (e: any) {
       console.warn(`   [evaluate-golden] facts metric skipped: ${e.message}`);

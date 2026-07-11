@@ -18,13 +18,14 @@
 import fs from 'fs';
 import path from 'path';
 import { compareFacts, normalizeLabel } from '../lib/compare-facts';
-import { readTruthFacts } from '../lib/truth-facts';
+import { resolveTruthFacts, loadTruthManifest } from '../lib/truth-facts';
 import { TakeoffFacts } from '../lib/types';
 
 // Truth xlsx always come from the canonical training dir; predictions can come from a
 // separate dir (e.g. a fresh export overlaid to a scratch dir) via PREDICTIONS_DIR. This
 // keeps analysis non-destructive — no need to overwrite local predicted_facts.
 const TRUTH_DIR = path.resolve(__dirname, '../../..', 'existing_projects_training_data');
+const TRUTH_MANIFEST = loadTruthManifest(path.resolve(__dirname, '../../..', 'truth-manifest.json'));
 const PRED_DIR = process.env.PREDICTIONS_DIR || TRUTH_DIR;
 
 function goldenFolders(): string[] {
@@ -47,10 +48,12 @@ async function main() {
     if (!fs.existsSync(pf)) { missing++; continue; }
     const pred = JSON.parse(fs.readFileSync(pf, 'utf8')) as TakeoffFacts;
     const dir = path.join(TRUTH_DIR, f);
-    const xlsx = fs.readdirSync(dir).find((x) => x.toLowerCase().endsWith('.xlsx') && !/eval_run|backup|quote|budget/i.test(x));
-    if (!xlsx) { missing++; continue; }
     let truth: TakeoffFacts;
-    try { truth = await readTruthFacts(path.join(dir, xlsx), f); } catch { missing++; continue; }
+    try {
+      const resolved = await resolveTruthFacts(dir, f, TRUTH_MANIFEST);
+      if (!resolved) { missing++; continue; }
+      truth = resolved.facts;
+    } catch { missing++; continue; }
 
     const c = compareFacts(pred, truth);
     analyzed++;

@@ -8,6 +8,8 @@
  * grouped catchbasin block.
  */
 import ExcelJS from 'exceljs';
+import fs from 'fs';
+import path from 'path';
 import { TakeoffFacts, StructureFact, SewerFact, WatermainFact, CatchbasinGroupFact } from './types';
 
 function cell(sheet: ExcelJS.Worksheet, ref: string): string | number | null {
@@ -144,4 +146,133 @@ export async function readTruthFacts(xlsxPath: string, projectName: string): Pro
     confidence: 1,
     warnings: [],
   };
+}
+
+// ---------------------------------------------------------------------------
+// Truth selection & merging
+//
+// A project folder can hold several .xlsx: the real takeoff, near-identical
+// copies, non-matching alternate designs, empty appendix/removals sheets, and
+// genuine per-block/street SPLITS of one site. The eval historically picked
+// `xlsxFiles[0]` (readdir order), which silently landed on EMPTY or PARTIAL
+// workbooks for several projects (truth => 0 => the model's correct extraction
+// scored as all false positives). resolveTruthFacts() replaces that with:
+//   1. a curated manifest (merge genuine splits / pin the canonical file /
+//      exclude unscoreable projects), else
+//   2. auto-pick the RICHEST NON-EMPTY candidate — never an empty decoy.
+// ---------------------------------------------------------------------------
+
+// Files in a project folder that are never ground truth (generated runs,
+// backups, quotes, material-quote sheets). NOTE: unlike the old filter this
+// does NOT drop "budget"/"sand" wholesale — some projects' only estimate is a
+// "…BUDGET.xlsx", and "sand" only appears in "Sand & Gravel Material Quotes".
+const TRUTH_JUNK = /eval_run_|backup|\bquote\b|material\s*quote|sand\s*&\s*gravel/i;
+
+export interface TruthManifestEntry {
+  truth?: string;       // single canonical workbook (basename)
+  merge?: string[];     // genuine multi-workbook split to combine (basenames)
+  exclude?: boolean;    // unscoreable — skip this project
+  note?: string;
+}
+export type TruthManifest = Record<string, TruthManifestEntry>;
+
+export function loadTruthManifest(manifestPath: string): TruthManifest {
+  try {
+    const raw = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    delete raw._readme;
+    return raw as TruthManifest;
+  } catch {
+    return {};
+  }
+}
+
+export function listTruthCandidates(projectDir: string): string[] {
+  return fs.readdirSync(projectDir).filter(
+    (f) => f.toLowerCase().endsWith('.xlsx') && !TRUTH_JUNK.test(f)
+  );
+}
+
+function truthTotal(t: TakeoffFacts): number {
+  return (
+    t.sewers.filter((x) => !x.isLineItem).length +
+    t.watermain.length +
+    t.structures.length +
+    t.catchbasins.reduce((a, c) => a + (c.quantity || 0), 0)
+  );
+}
+
+/** Combine several workbooks (a genuine site split) into one TakeoffFacts. */
+export function mergeTruthFacts(parts: TakeoffFacts[], projectName: string): TakeoffFacts {
+  const merged: TakeoffFacts = {
+    projectName, jobNumber: '', date: '',
+    structures: [], catchbasins: [], sewers: [], watermain: [],
+    watermainSpecials: [], watermainValves: [], confidence: 1, warnings: [],
+  };
+  for (const p of parts) {
+    merged.structures.push(...p.structures);
+    merged.sewers.push(...p.sewers);
+    merged.watermain.push(...p.watermain);
+    for (const cb of p.catchbasins) {
+      const ex = merged.catchbasins.find((c) => c.type === cb.type);
+      if (ex) ex.quantity += cb.quantity;
+      else merged.catchbasins.push({ ...cb });
+    }
+  }
+  return merged;
+}
+
+export interface ResolvedTruth {
+  facts: TakeoffFacts;
+  sources: string[];   // workbook basenames that fed the truth
+  primary: string;     // best single file (for the legacy cell metric)
+}
+
+/**
+ * Resolve a project's ground truth robustly. Returns null when the project is
+ * excluded or has no usable workbook. Manifest overrides win; otherwise the
+ * richest non-empty candidate is chosen (so empty decoys are never selected).
+ */
+export async function resolveTruthFacts(
+  projectDir: string,
+  projectName: string,
+  manifest: TruthManifest = {}
+): Promise<ResolvedTruth | null> {
+  const entry = manifest[projectName];
+  if (entry?.exclude) return null;
+
+  const candidates = listTruthCandidates(projectDir);
+  if (candidates.length === 0) return null;
+
+  let chosen: string[];
+  if (entry?.merge?.length) {
+    chosen = entry.merge;
+  } else if (entry?.truth) {
+    chosen = [entry.truth];
+  } else if (candidates.length === 1) {
+    chosen = candidates;
+  } else {
+    // Auto: score every candidate, prefer the richest non-empty one.
+    const scored = await Promise.all(
+      candidates.map(async (f) => {
+        try {
+          return { f, total: truthTotal(await readTruthFacts(path.join(projectDir, f), projectName)) };
+        } catch {
+          return { f, total: -1 };
+        }
+      })
+    );
+    scored.sort((a, b) => b.total - a.total);
+    chosen = [scored[0].f];
+  }
+
+  const parts = await Promise.all(chosen.map((f) => readTruthFacts(path.join(projectDir, f), projectName)));
+  const facts = parts.length === 1 ? parts[0] : mergeTruthFacts(parts, projectName);
+  // Primary = the richest of the chosen files (used by the legacy cell metric,
+  // which can only compare against a single workbook).
+  let primary = chosen[0], best = -1;
+  for (let i = 0; i < parts.length; i++) {
+    const t = truthTotal(parts[i]);
+    if (t > best) { best = t; primary = chosen[i]; }
+  }
+  return { facts, sources: chosen, primary };
 }

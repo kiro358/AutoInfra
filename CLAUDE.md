@@ -119,6 +119,13 @@ is empirical: validate the facts metric on the dataset and A/B single-pass vs ag
   + `compare-jsons.ts` (legacy semantic). Golden set is defined in **two** disjoint places
   (`evaluate-golden.ts` and `constants.ts::GOLDEN_PROJECTS`) — reconcile against the real
   dataset before trusting it.
+- **Truth selection**: a project folder holds copies, non-matching alternate designs, empty
+  appendix/removals decoys, and genuine per-block/street SPLITS. `truth-facts.ts::resolveTruthFacts`
+  picks canonically: `truth-manifest.json` (repo root) overrides win (merge splits / pin the
+  canonical file / `exclude` unscoreable projects), else it auto-picks the **richest non-empty**
+  candidate — never an empty decoy. The old `xlsxFiles[0]` (readdir order) silently scored several
+  projects against empty truth. When adding projects to the golden set, audit their workbooks
+  (offline count) and add a manifest entry if the auto-pick is wrong.
 
 ## Scripts (`src/scripts/`) — live vs legacy
 

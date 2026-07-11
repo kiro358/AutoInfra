@@ -37,6 +37,20 @@ export function getSinglePassPrompt(projectName: string, dynamicRules: string): 
 
 The images provided are overlapping high-resolution TILES of one or more large-format drawing sheets. Read the actual printed text/annotations. The SAME structure or pipe run appears in multiple overlapping tiles — CONSOLIDATE duplicates into a single entry; do NOT emit a row per tile or per drawn segment.
 
+## STEP 0 — MANDATORY PIPE SCAN (do this FIRST, before anything else)
+Before extracting structures or anything else, sweep EVERY tile pipe-by-pipe and copy the VERBATIM
+dimension callout of every storm/sanitary pipe segment into a "pipeScan" string array — e.g.
+"17.34m-825mmØ CONC STM @0.5%", "12.91m-250mm PVC STM @1.0%", "Ex.1200Ø CONC STM 58.7m @0.34%".
+Do not stop until you have swept all tiles; a servicing plan has many pipes, and skipping this step
+is the #1 cause of missed runs. Then derive the "sewers" array below with ONE row per PROPOSED
+(non-"Ex.") entry in pipeScan. Emit "pipeScan" in your output (it is your working list, kept for audit).
+Doing the pipe scan first also prevents the common error of dumping catchbasins into the structure list.
+
+OUTPUT KEY ORDER (important): emit the JSON keys in this exact order — "pipeScan", "sewers",
+"catchbasins", "watermain", "watermainSpecials", "watermainValves", "manholes", "warnings". Sewers
+MUST come before manholes so that if the response is truncated, the pipe runs (the hardest-won and
+most important data) are already emitted rather than lost at the end.
+
 Work SCHEDULE-FIRST where a Manhole/Catchbasin/Pipe schedule table exists. Otherwise read plan and profile annotations (e.g. "DCBMH 2 TOP 260.15", "17.1m-250mm PVC STM @ 0.79%", "CB 3", "DICB 1") and assemble ONE row per PROPOSED run/structure using the EXACT labels printed on the drawing.
 
 Extract these four groups in a single JSON object:

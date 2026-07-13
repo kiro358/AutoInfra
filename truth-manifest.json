@@ -1,8 +1,8 @@
 {
   "_readme": "Canonical ground-truth workbook selection per project, overriding the fragile readdir-order pick. `truth`: single workbook. `merge`: genuine multi-workbook site split (block/street) to combine. `exclude`: unscoreable (unreadable format or ambiguous scope). Projects not listed auto-resolve to the richest non-empty candidate. See truth-facts.ts::resolveTruthFacts. Audited 2026-07 against entity counts + drawing match.",
   "2026-029 WHITE OAL -12131 WOODBINEAVE": {
-    "merge": ["WHITE OAL BLOCK 1.xlsx", "WHITE OAL BLOCK 2.xlsx", "STREET A.xlsx", "WOODBINE AVENUE.xlsx"],
-    "note": "genuine 4-way geographic split (93 sewers total); readdir picked only STREET A (22)"
+    "merge": ["WHITE OAL BLOCK 1.xlsx", "WHITE OAL BLOCK 2.xlsx"],
+    "note": "truth aligned to DRAWN scope: only Blk1+Blk2 servicing plans exist as drawings (58 sewers). Street A has no drawing PDF and Woodbine only an offsite addendum, so their workbooks (STREET A.xlsx / WOODBINE AVENUE.xlsx) are unscoreable and excluded from the merge. Restore them here if their servicing drawings are added."
   },
   "2026-009 55 ERIC T. SMITH WAY,AURORA": {
     "truth": "55 ERIC T. SMITH.xlsx",

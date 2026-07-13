@@ -94,6 +94,12 @@ Run the eval on stable infra: local works for a small filtered set (streaming ri
 laptop's flaky network), but the full set belongs on the throwaway GCP VM using **Vertex**
 (`USE_VERTEX_AI=true`) — GCP-internal networking has none of the local `UND_ERR_SOCKET` drops.
 
+Eval VM (`webapp/eval-vm/`): stage with `git archive HEAD`→GCS. `GOLDEN_FILTER` values must be
+**space-free** (the VM word-splits `EVAL_ENV`) — use project codes, e.g. `GOLDEN_FILTER=2026-001,2026-050`.
+Results (`golden-results-<results-name>.json`) land after PASS 1; the 3-pass RESUME loop then **hangs
+retrying any failed project**, so pull results + `gcloud compute instances delete` rather than waiting
+for self-halt. Fresh `predictions.tgz` only exports after pass 3 (kill early = no fresh predictions).
+
 Model access: **Gemini** via either Vertex AI (`USE_VERTEX_AI=true`, needs
 `GCP_PROJECT_ID`) or Google AI Studio (`GEMINI_API_KEY`). Current model: `gemini-2.5-flash`.
 When choosing/changing models or providers, check current model IDs and pricing.
@@ -148,6 +154,21 @@ is empirical: validate the facts metric on the dataset and A/B single-pass vs ag
 
 - **Tests exist now** (`vitest`, `npm test`). Add a test with any change to a pure function
   or to costing/eval logic. Pure modules: `geometry.ts`, `costing-rules.ts`, `compare-facts.ts`.
+- **AI Studio ≠ Vertex for gemini-2.5-flash `thinking`.** "Dynamic" thinking runs ~8× larger on
+  Vertex (~31k tok/call) than AI Studio (~4k). Thinking shares the `maxOutputTokens` budget with the
+  JSON response, so uncapped it *starves* the response → truncation → keys emitted last (structures)
+  collapse to 0 on dense projects. The batch call caps both: `thinkingConfig.thinkingBudget`
+  (env `THINKING_BUDGET`, def 8192) + `maxOutputTokens` (env `MAX_OUTPUT_TOKENS`, def 32768).
+  Capping thinking ALSO cut ~39% of token cost (thinking was the dominant cost). `facts.cost.totalTokens`
+  includes thinking, so watch it.
+- **Validate extraction/prompt changes on VERTEX, not local AI Studio — they diverge (see above).**
+  Reproduce VM-only bugs locally: `gcloud auth application-default login` once, then
+  `new GoogleGenAI({ vertexai:true, project:'autoinfra-ai', location:'us-central1' })`.
+- **Local streaming to Gemini is unreliable** (UND_ERR_SOCKET, ~6KB mid-stream cutoffs). OK for one
+  small probe; use the VM for dense extraction or the full eval. Capture `finishReason` +
+  `usageMetadata.thoughtsTokenCount` when a call returns sparse output.
+- **Truncated dense batches are salvaged, not dropped**: `repairTruncatedJson` cuts to the last complete
+  element (incl. mid-array / mid-string) and closes open containers. Don't "simplify" it back to }/]-only.
 - The global `NODE_TLS_REJECT_UNAUTHORIZED='0'` hack has been **removed** — rely on the
   proxy CA bundle; don't reintroduce it.
 - `getCachedOrCallLLM` can return a cache entry derived from `latest_result.json` *instead

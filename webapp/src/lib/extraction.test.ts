@@ -85,6 +85,19 @@ describe('repairTruncatedJson', () => {
   it('leaves already-valid JSON untouched', () => {
     expect(repairTruncatedJson('{"a":1}')).toBe('{"a":1}');
   });
+  it('salvages complete elements when truncated mid-string inside an array', () => {
+    // A dense response truncated mid-string in a big array (the White Oak failure):
+    // keep the complete strings, drop the partial one, and close the containers.
+    const repaired = repairTruncatedJson('{"pipeScan":["aa","bb","cc');
+    expect(JSON.parse(repaired)).toEqual({ pipeScan: ['aa', 'bb'] });
+  });
+  it('salvages complete objects when truncated mid-object in an array', () => {
+    const repaired = repairTruncatedJson('{"sewers":[{"len":5},{"len":6},{"len');
+    expect(JSON.parse(repaired)).toEqual({ sewers: [{ len: 5 }, { len: 6 }] });
+  });
+  it('drops a trailing incomplete key/value pair inside an object', () => {
+    expect(JSON.parse(repairTruncatedJson('{"a":1,"b":2,"c'))).toEqual({ a: 1, b: 2 });
+  });
 });
 
 describe('tryParseJSONWithRepair', () => {

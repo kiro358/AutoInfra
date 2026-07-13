@@ -813,59 +813,42 @@ function validateExtraction(data: TakeoffFacts): string[] {
 }
 
 export function repairTruncatedJson(text: string): string {
-  let lastValidEndIndex = -1;
+  // Salvage a truncated JSON response by cutting back to the last point where the
+  // document can be validly closed, then closing the still-open containers. Cut
+  // points are recorded at every completed container (`}`/`]`) AND at every element
+  // separator (`,`) inside a container — the latter is essential: a dense response
+  // often truncates mid-string inside a big array (e.g. pipeScan / sewers), and the
+  // old `}`/`]`-only logic would find no safe point and drop the ENTIRE batch. Cutting
+  // just before the last comma keeps every complete element and discards the partial one.
   let inString = false;
   let escape = false;
-  const bracketStack: string[] = [];
-  const stackAtValidEnd: string[][] = [];
+  const stack: string[] = [];
+  let cutLen = -1;            // exclusive slice length of the salvageable prefix
+  let cutStack: string[] = [];
+  const record = (len: number) => { cutLen = len; cutStack = [...stack]; };
 
   for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    if (escape) {
-      escape = false;
-      continue;
-    }
-    if (char === '\\') {
-      escape = true;
-      continue;
-    }
-    if (char === '"') {
-      inString = !inString;
-      continue;
-    }
-    if (!inString) {
-      if (char === '{' || char === '[') {
-        bracketStack.push(char);
-      } else if (char === '}') {
-        if (bracketStack[bracketStack.length - 1] === '{') {
-          bracketStack.pop();
-          lastValidEndIndex = i;
-          stackAtValidEnd[i] = [...bracketStack];
-        }
-      } else if (char === ']') {
-        if (bracketStack[bracketStack.length - 1] === '[') {
-          bracketStack.pop();
-          lastValidEndIndex = i;
-          stackAtValidEnd[i] = [...bracketStack];
-        }
-      }
+    const c = text[i];
+    if (escape) { escape = false; continue; }
+    if (c === '\\') { escape = true; continue; }
+    if (inString) { if (c === '"') inString = false; continue; }
+    if (c === '"') { inString = true; continue; }
+    if (c === '{' || c === '[') {
+      stack.push(c);
+    } else if (c === '}') {
+      if (stack[stack.length - 1] === '{') { stack.pop(); record(i + 1); }
+    } else if (c === ']') {
+      if (stack[stack.length - 1] === '[') { stack.pop(); record(i + 1); }
+    } else if (c === ',') {
+      if (stack.length) record(i); // cut BEFORE the comma — drops the incomplete trailing element
     }
   }
 
-  if (lastValidEndIndex === -1) {
-    return text;
-  }
+  if (cutLen === -1) return text;
 
-  let sliced = text.slice(0, lastValidEndIndex + 1);
-  const openBrackets = stackAtValidEnd[lastValidEndIndex] || [];
   let closing = '';
-  for (let j = openBrackets.length - 1; j >= 0; j--) {
-    const b = openBrackets[j];
-    if (b === '{') closing += '}';
-    else if (b === '[') closing += ']';
-  }
-
-  return sliced + closing;
+  for (let j = cutStack.length - 1; j >= 0; j--) closing += cutStack[j] === '{' ? '}' : ']';
+  return text.slice(0, cutLen) + closing;
 }
 
 export function tryParseJSONWithRepair(text: string): any {

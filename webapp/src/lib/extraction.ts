@@ -13,6 +13,7 @@ import { setGlobalDispatcher, Agent, ProxyAgent } from 'undici';
 import crypto from 'crypto';
 import { getSinglePassPrompt, getPageLocatorPrompt } from './modular-prompts';
 import { renderTilesFlat, renderPageThumbnails, IMAGE_MIME } from './rasterize';
+import { normalizeLabel, runSignature } from './compare-facts';
 
 // Globally override Undici's default 30-second headers/body timeout and configure proxy if present
 try {
@@ -706,18 +707,9 @@ export async function extractFromPDF(
         if (Array.isArray(part.warnings)) raw.warnings.push(...part.warnings);
       }
 
-      // Merge catchbasin groups seen across batches by type (sum quantities).
-      const cbByType = new Map<string, any>();
-      for (const g of raw.catchbasins.groups) {
-        const key = String(g.type || 'SINGLE_CB');
-        const ex = cbByType.get(key);
-        if (ex) ex.quantity = (ex.quantity || 0) + (g.quantity || 0);
-        else cbByType.set(key, { ...g });
-      }
-
       const facts = parseFacts({
         manholes: deduplicateManholes(raw.manholes),
-        catchbasins: { groups: Array.from(cbByType.values()) },
+        catchbasins: { groups: mergeCatchbasinGroups(raw.catchbasins.groups) },
         sewers: deduplicateSewers(raw.sewers),
         watermain: deduplicateWatermain(raw.watermain),
         watermainSpecials: deduplicateSpecials(raw.watermainSpecials),
@@ -872,7 +864,10 @@ export function tryParseJSONWithRepair(text: string): any {
 export function deduplicateManholes(manholes: any[]): any[] {
   const seen = new Map<string, any>();
   for (const mh of manholes) {
-    const key = String(mh.description || '').trim().toLowerCase();
+    // Dedup by the SAME normalization the metric uses to MATCH structures, so
+    // "CBMH 15" / "CBMH15" / "CBMH 15/O.P." collapse to one instead of surviving
+    // as 3 predicted structures (over-extraction → precision collapse).
+    const key = normalizeLabel(String(mh.description || ''));
     if (!key) continue;
     const existing = seen.get(key);
     if (!existing) {
@@ -903,7 +898,12 @@ export function deduplicateManholes(manholes: any[]): any[] {
 export function deduplicateSewers(sewers: any[]): any[] {
   const seen = new Map<string, any>();
   for (const sw of sewers) {
-    const key = String(sw.runLabel || '').trim().toLowerCase();
+    // Dedup real runs by ENDPOINT SIGNATURE (order-insensitive, ignores /INS & case) —
+    // the same key the metric matches on — so "MH 5-MH 4" and "MH 4-MH 5" collapse to
+    // one run instead of both counting (over-extraction → precision collapse). Line-items
+    // (VIDEO/LAYOUT/…) have no endpoints, so key them by exact label.
+    const sig = sw.isLineItem ? '' : runSignature(String(sw.runLabel || ''));
+    const key = sig || String(sw.runLabel || '').trim().toLowerCase();
     if (!key) continue;
     const existing = seen.get(key);
     if (!existing) {
@@ -929,6 +929,25 @@ export function deduplicateSewers(sewers: any[]): any[] {
     }
   }
   return Array.from(seen.values());
+}
+
+// Merge catchbasin groups across batches by type, taking the MAX quantity per type
+// (not the sum) because overlapping tile-batches re-report the same CBs — see the call
+// site. Pure + exported so the double-count fix is unit-tested.
+export function mergeCatchbasinGroups(groups: any[]): any[] {
+  const byType = new Map<string, any>();
+  for (const g of groups || []) {
+    const key = String(g.type || 'SINGLE_CB');
+    const ex = byType.get(key);
+    if (ex) {
+      ex.quantity = Math.max(ex.quantity || 0, g.quantity || 0);
+      ex.wallThickness ??= g.wallThickness;
+      ex.depth ??= g.depth;
+    } else {
+      byType.set(key, { ...g });
+    }
+  }
+  return Array.from(byType.values());
 }
 
 export function deduplicateWatermain(watermain: any[]): any[] {

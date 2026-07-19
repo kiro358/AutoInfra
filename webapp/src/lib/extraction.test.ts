@@ -5,6 +5,7 @@ import {
   tryParseJSONWithRepair,
   deduplicateManholes,
   deduplicateSewers,
+  mergeCatchbasinGroups,
   deduplicateWatermain,
   deduplicateSpecials,
   deduplicateValves,
@@ -125,6 +126,12 @@ describe('deduplicateManholes', () => {
   it('drops entries with empty descriptions', () => {
     expect(deduplicateManholes([{ description: '' }])).toHaveLength(0);
   });
+  it('collapses label variants (spacing/case/note-suffix) so structures are not over-counted', () => {
+    const out = deduplicateManholes([
+      { description: 'CBMH 15' }, { description: 'CBMH15' }, { description: 'CBMH 15/O.P.' },
+    ]);
+    expect(out).toHaveLength(1); // all normalize to CBMH15
+  });
 });
 
 describe('deduplicateSewers', () => {
@@ -136,6 +143,38 @@ describe('deduplicateSewers', () => {
     expect(out).toHaveLength(1);
     expect(out[0].length).toBe(50);
     expect(out[0].pipeDiameter).toBe(300);
+  });
+  it('collapses reversed endpoints into one run (order-insensitive signature)', () => {
+    const out = deduplicateSewers([
+      { runLabel: 'MH 5-MH 4', length: 45 },
+      { runLabel: 'MH 4-MH 5', pipeDiameter: 250 },
+      { runLabel: 'MH 5-MH 4/INS.' }, // note-suffix variant → same signature
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].length).toBe(45);
+    expect(out[0].pipeDiameter).toBe(250);
+  });
+  it('keeps genuinely different runs', () => {
+    expect(deduplicateSewers([{ runLabel: 'MH 5-MH 4' }, { runLabel: 'MH 6-MH 7' }])).toHaveLength(2);
+  });
+  it('keys line-items by exact label (no endpoints to signature)', () => {
+    const out = deduplicateSewers([
+      { runLabel: 'VIDEO', isLineItem: true }, { runLabel: 'LAYOUT', isLineItem: true },
+    ]);
+    expect(out).toHaveLength(2);
+  });
+});
+
+describe('mergeCatchbasinGroups', () => {
+  it('takes the MAX quantity per type across overlapping batches, not the sum', () => {
+    const out = mergeCatchbasinGroups([
+      { type: 'SINGLE_CB', quantity: 10 }, // batch 1 (whole page)
+      { type: 'SINGLE_CB', quantity: 9 },  // batch 2 (overlapping tiles) — same CBs
+      { type: 'DOUBLE_CB', quantity: 2 },
+    ]);
+    const byType = Object.fromEntries(out.map((g) => [g.type, g.quantity]));
+    expect(byType['SINGLE_CB']).toBe(10); // max(10,9), NOT 19
+    expect(byType['DOUBLE_CB']).toBe(2);
   });
 });
 

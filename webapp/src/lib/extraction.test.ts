@@ -49,6 +49,20 @@ describe('parseFacts structure/catchbasin categorization', () => {
     expect(f.sewers.map((s) => s.runLabel).sort()).toEqual(['MH 10-INF.TANK', 'MH 5-MH 4']);
   });
 
+  it('drops non-structure callouts (inspection ports, wye connections, infiltration galleries, bare SANITARY) from structures', () => {
+    const f = parseFacts({
+      manholes: [
+        { description: 'MH 101' }, { description: 'STMH 5' },            // real → kept
+        { description: 'INFILTRATION GALLERY #1' },
+        { description: '150mm WYE CONNECTION AND VERTICAL INSPECTION PORT' },
+        { description: 'CAP INSPECTION PORT' },
+        { description: 'SANITARY' },
+      ],
+      catchbasins: { groups: [] },
+    }, 'test');
+    expect(f.structures.map((s) => s.description).sort()).toEqual(['MH 101', 'STMH 5']);
+  });
+
   it('prefers an explicit CB group count over reclassified individuals (no double-count)', () => {
     const f = parseFacts({
       manholes: [{ description: 'CB 1' }, { description: 'CB 2' }],

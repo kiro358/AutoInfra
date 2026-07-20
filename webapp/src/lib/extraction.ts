@@ -214,6 +214,16 @@ function plainCatchbasinType(desc: string): CatchbasinGroupFact['type'] | null {
   return null;
 }
 
+// Detail / sub-drainage pipe callouts the pipe-scan picks up but the estimator's sewer
+// takeoff never lists as mainline runs — they're sub-drainage or detail sheets, not storm/
+// sanitary mains. Dropping them removes a chunk of the sewer over-extraction (precision) with
+// low risk: scoped to unambiguous sub-drainage/detail terms. NOTE: keeps runs TO a tank
+// ("INF.TANK"/"DET.TANK"), which ARE mainline runs the estimator lists — only GALLERY/BED match.
+const NON_MAINLINE_SEWER = /INFILTRATION\s*(?:GALLERY|BED)|\bINF\.?\s*(?:GALLERY|BED)|\bPICP\b|SUB-?DRAIN|PERFORATED|\bDETAIL\b/i;
+export function isNonMainlineSewer(label: string): boolean {
+  return NON_MAINLINE_SEWER.test(String(label || ''));
+}
+
 export function parseFacts(raw: any, projectName: string): TakeoffFacts {
   // Drop non-structure callouts, then split real structures from plain catchbasins the model
   // mis-listed as structures (reclassified into the CB block below).
@@ -252,7 +262,7 @@ export function parseFacts(raw: any, projectName: string): TakeoffFacts {
       depth: m.depth != null ? Number(m.depth) : null,
     })),
     catchbasins: Object.values(groupByType),
-    sewers: (raw.sewers || []).map((s: Record<string, unknown>) => ({
+    sewers: (raw.sewers || []).filter((s: any) => !isNonMainlineSewer(String(s.runLabel || ''))).map((s: Record<string, unknown>) => ({
       runLabel: String(s.runLabel || ''),
       isLineItem: Boolean(s.isLineItem),
       lineItemType: s.lineItemType ? String(s.lineItemType) : undefined,

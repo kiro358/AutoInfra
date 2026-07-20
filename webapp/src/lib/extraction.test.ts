@@ -10,6 +10,7 @@ import {
   deduplicateSpecials,
   deduplicateValves,
   parseFacts,
+  isNonMainlineSewer,
 } from './extraction';
 
 describe('parseFacts structure/catchbasin categorization', () => {
@@ -27,6 +28,25 @@ describe('parseFacts structure/catchbasin categorization', () => {
     const cb = Object.fromEntries(f.catchbasins.map((c) => [c.type, c.quantity]));
     expect(cb['SINGLE_CB']).toBe(2);
     expect(cb['DITCH_INLET_CB']).toBe(1);
+  });
+
+  it('drops sub-drainage / detail callouts from sewer runs but keeps mainline + tank runs', () => {
+    // isNonMainlineSewer flags sub-drainage / detail pipes only.
+    expect(isNonMainlineSewer('Infiltration Gallery #1 - PERFORATED 200mm HDPE PIPE')).toBe(true);
+    expect(isNonMainlineSewer('PICP Detail - 150mm HDPE SUBDRAIN')).toBe(true);
+    expect(isNonMainlineSewer('MH 5-MH 4')).toBe(false);
+    expect(isNonMainlineSewer('MH 10-INF.TANK')).toBe(false); // pipe to a tank IS a mainline run
+    const f = parseFacts({
+      manholes: [],
+      sewers: [
+        { runLabel: 'MH 5-MH 4', isLineItem: false, length: 45, pipeDiameter: 250 },
+        { runLabel: 'PICP Detail - 150mm HDPE SUBDRAIN', isLineItem: false, length: 20, pipeDiameter: 150 },
+        { runLabel: 'Infiltration Gallery #2 - PERFORATED 200mm HDPE PIPE', isLineItem: false, length: 30, pipeDiameter: 200 },
+        { runLabel: 'MH 10-INF.TANK', isLineItem: false, length: 12, pipeDiameter: 300 },
+      ],
+      catchbasins: { groups: [] },
+    }, 'test');
+    expect(f.sewers.map((s) => s.runLabel).sort()).toEqual(['MH 10-INF.TANK', 'MH 5-MH 4']);
   });
 
   it('prefers an explicit CB group count over reclassified individuals (no double-count)', () => {

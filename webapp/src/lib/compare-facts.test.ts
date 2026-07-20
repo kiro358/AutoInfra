@@ -75,6 +75,21 @@ describe('normalizeLabel / runSignature', () => {
     expect(normalizeLabel('MH 8/EXT.DROP')).toBe('MH8');
     expect(normalizeLabel('CBMH 1/RIP RAP')).toBe('CBMH1');
   });
+  it('strips storm/sanitary system prefixes so STMH 1 matches MH 1', () => {
+    expect(normalizeLabel('STMH 1')).toBe('MH1');
+    expect(normalizeLabel('STMH 1')).toBe(normalizeLabel('MH 1'));
+    expect(normalizeLabel('SAN MH 3')).toBe('MH3');
+    expect(normalizeLabel('ST CBMH 2')).toBe('CBMH2');
+    expect(normalizeLabel('STORM DICB 4')).toBe('DICB4');
+  });
+  it('does NOT strip storm/san from run/schedule IDs (no structure code)', () => {
+    expect(normalizeLabel('ST 1')).toBe('ST1');   // storm run label, not a structure
+    expect(normalizeLabel('SA 2')).toBe('SA2');   // sanitary run label
+  });
+  it('matches storm-prefixed run endpoints to bare ones', () => {
+    expect(runSignature('STMH 5-STMH 4')).toBe(runSignature('MH 4-MH 5'));
+    expect(runSignature('ST CBMH 7-STMH 3')).toBe(runSignature('CBMH 7-MH 3'));
+  });
   it('handles /P.INS. and " / INS." run-note variants', () => {
     expect(runSignature('MH 3-MH 4/P.INS.')).toBe(runSignature('MH 3-MH 4'));
     expect(runSignature('MH 9-MH 10 / INS.')).toBe(runSignature('MH 9-MH 10'));

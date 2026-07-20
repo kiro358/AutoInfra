@@ -48,12 +48,24 @@ export interface FactsComparison {
  * (e.g. "MH 1/O.P.", "MH 8/EXT.DROP", "CBMH 1/RIP RAP" -> the bare ID), parens,
  * spaces, and punctuation.
  */
+// Storm/sanitary structures are labelled "STMH 1" / "SAN MH 3" / "ST CBMH 2" on the
+// drawings, but the estimator's takeoff drops the system qualifier (it lives in a separate
+// column) and writes bare "MH 1" / "CBMH 2". Strip a leading storm/san qualifier when it
+// sits directly on a structure code + number, so the two match. The `\d` lookahead keeps
+// run/schedule IDs like "ST 1" / "SA 2" (storm/sanitary run labels) intact.
+const SYS_PREFIX = /^(?:STORM|SANITARY|STM|SAN|ST|SA)(?=(?:DDICB|DCBMH|CBMH|DICB|DCB|CB|MH|HS|OS)\d)/;
+export function stripSystemPrefix(token: string): string {
+  return token.replace(SYS_PREFIX, '');
+}
+
 export function normalizeLabel(label: string): string {
-  return (label || '')
-    .toUpperCase()
-    .replace(/\(.*?\)/g, '')
-    .split('/')[0] // drop note suffix after the first slash
-    .replace(/[^A-Z0-9]/g, '');
+  return stripSystemPrefix(
+    (label || '')
+      .toUpperCase()
+      .replace(/\(.*?\)/g, '')
+      .split('/')[0] // drop note suffix after the first slash
+      .replace(/[^A-Z0-9]/g, '')
+  );
 }
 
 /**
@@ -71,7 +83,7 @@ export function runSignature(label: string): string {
   s = s.replace(/\s+/g, '');
   const tokens = s
     .split('-')
-    .map((t) => t.replace(/[^A-Z0-9]/g, ''))
+    .map((t) => stripSystemPrefix(t.replace(/[^A-Z0-9]/g, '')))
     .filter(Boolean)
     .map((t) => (/^(CONN|PLUG|OUTLET)/.test(t) ? 'CONN' : t));
   return Array.from(new Set(tokens)).sort().join('|');

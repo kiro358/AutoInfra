@@ -43,56 +43,50 @@ async function main() {
       rows.push(`${g.label.padEnd(28)} — missing project dir or manifest entry`);
       continue;
     }
-    const truth = await resolveTruthFacts(projectDir, g.folder, truthManifest);
-    if (!truth) {
-      rows.push(`${g.label.padEnd(28)} — no usable ground truth`);
-      continue;
-    }
-
-    let texty = 0, total = 0;
-    const textyPages: PageText[] = [];
-    for (const pdf of entry.drawingPdfs ?? []) {
-      const p = path.join(projectDir, pdf.name);
-      if (!fs.existsSync(p)) continue;
-      let pages: PageText[];
-      try {
-        pages = await extractPageText(fs.readFileSync(p));
-      } catch (e: any) {
-        console.warn(`   [evaluate-text] ${g.label}: failed to read ${pdf.name}: ${e.message}`);
+    try {
+      const truth = await resolveTruthFacts(projectDir, g.folder, truthManifest);
+      if (!truth) {
+        rows.push(`${g.label.padEnd(28)} — no usable ground truth`);
         continue;
       }
-      total += pages.length;
-      for (const pt of pages) {
-        if (isTextyPage(pt)) { texty++; textyPages.push(pt); }
+
+      let texty = 0, total = 0;
+      const textyPages: PageText[] = [];
+      for (const pdf of entry.drawingPdfs ?? []) {
+        const p = path.join(projectDir, pdf.name);
+        if (!fs.existsSync(p)) continue;
+        const pages = await extractPageText(fs.readFileSync(p));
+        total += pages.length;
+        for (const pt of pages) {
+          if (isTextyPage(pt)) { texty++; textyPages.push(pt); }
+        }
       }
-    }
 
-    let textF1: number | null = null;
-    if (textyPages.length > 0) {
-      const facts = assembleTextTakeoff(textyPages, g.folder);
-      const cmp = compareFacts(facts, truth.facts);
-      textF1 = cmp.detectionF1;
-      if (process.env.VERBOSE === 'true') console.log(`\n${g.label}:\n` + formatFactsComparison(cmp));
-    }
+      let textF1: number | null = null;
+      if (textyPages.length > 0) {
+        const facts = assembleTextTakeoff(textyPages, g.folder);
+        const cmp = compareFacts(facts, truth.facts);
+        textF1 = cmp.detectionF1;
+        if (process.env.VERBOSE === 'true') console.log(`\n${g.label}:\n` + formatFactsComparison(cmp));
+      }
 
-    let llmF1: number | null = null;
-    const pf = path.join(projectDir, 'generated_spreadsheets', 'predicted_facts.json');
-    if (fs.existsSync(pf)) {
-      try {
+      let llmF1: number | null = null;
+      const pf = path.join(projectDir, 'generated_spreadsheets', 'predicted_facts.json');
+      if (fs.existsSync(pf)) {
         const cached = JSON.parse(fs.readFileSync(pf, 'utf8'));
         llmF1 = compareFacts(cached, truth.facts).detectionF1;
-      } catch (e: any) {
-        console.warn(`   [evaluate-text] ${g.label}: failed to score cached prediction: ${e.message}`);
       }
+
+      const truthCounts = `S${truth.facts.structures.length} R${truth.facts.sewers.filter((s) => !s.isLineItem).length} `
+        + `CB${truth.facts.catchbasins.reduce((a, c) => a + (c.quantity || 0), 0)} W${truth.facts.watermain.length}`;
+
+      rows.push(
+        `${g.label.padEnd(28)} texty ${String(texty).padStart(2)}/${String(total).padEnd(3)} `
+        + `textF1 ${pct(textF1)}  llmF1(cached) ${pct(llmF1)}  truth ${truthCounts}`
+      );
+    } catch (e: any) {
+      rows.push(`${g.label}: error (${e.message})`);
     }
-
-    const truthCounts = `S${truth.facts.structures.length} R${truth.facts.sewers.filter((s) => !s.isLineItem).length} `
-      + `CB${truth.facts.catchbasins.reduce((a, c) => a + (c.quantity || 0), 0)} W${truth.facts.watermain.length}`;
-
-    rows.push(
-      `${g.label.padEnd(28)} texty ${String(texty).padStart(2)}/${String(total).padEnd(3)} `
-      + `textF1 ${pct(textF1)}  llmF1(cached) ${pct(llmF1)}  truth ${truthCounts}`
-    );
   }
 
   console.log('\nTEXT-LAYER PATH vs CACHED LLM (both scored with compare-facts vs manifest truth)\n');
@@ -100,4 +94,6 @@ async function main() {
   console.log('');
 }
 
-main();
+main().catch((e) => {
+  console.error(e);
+});

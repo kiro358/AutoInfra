@@ -11,6 +11,7 @@
  * locally and on Cloud Run without GraphicsMagick/Ghostscript.
  */
 import { createCanvas, type SKRSContext2D, type Canvas } from '@napi-rs/canvas';
+import { getPdfjs } from './pdfjs-loader';
 
 // Tiles/thumbnails are encoded as JPEG: for CAD line-art on white it is 3-5x
 // smaller than PNG (faster uploads, smaller model payload) with negligible
@@ -45,22 +46,6 @@ class NodeCanvasFactory {
     cc.canvas.width = 0;
     cc.canvas.height = 0;
   }
-}
-
-let pdfjsPromise: Promise<any> | null = null;
-async function getPdfjs(): Promise<any> {
-  if (!pdfjsPromise) {
-    pdfjsPromise = import('pdfjs-dist/legacy/build/pdf.mjs').then((lib) => {
-      // In Node, pdfjs runs a "fake worker" that imports this file on the main thread.
-      try {
-        lib.GlobalWorkerOptions.workerSrc = require.resolve('pdfjs-dist/legacy/build/pdf.worker.mjs');
-      } catch {
-        lib.GlobalWorkerOptions.workerSrc = 'pdfjs-dist/legacy/build/pdf.worker.mjs';
-      }
-      return lib;
-    });
-  }
-  return pdfjsPromise;
 }
 
 /**

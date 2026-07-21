@@ -9,6 +9,7 @@
  *
  * Coordinates are PDF user space (origin BOTTOM-LEFT, y grows upward).
  */
+import { getPdfjs } from './pdfjs-loader';
 
 export interface PositionedText {
   text: string;
@@ -23,21 +24,6 @@ export interface PageText {
   width: number;
   height: number;
   items: PositionedText[];
-}
-
-let pdfjsPromise: Promise<any> | null = null;
-async function getPdfjs(): Promise<any> {
-  if (!pdfjsPromise) {
-    pdfjsPromise = import('pdfjs-dist/legacy/build/pdf.mjs').then((lib) => {
-      try {
-        lib.GlobalWorkerOptions.workerSrc = require.resolve('pdfjs-dist/legacy/build/pdf.worker.mjs');
-      } catch {
-        lib.GlobalWorkerOptions.workerSrc = 'pdfjs-dist/legacy/build/pdf.worker.mjs';
-      }
-      return lib;
-    });
-  }
-  return pdfjsPromise;
 }
 
 export async function extractPageText(pdfBuffer: Buffer, pages?: number[]): Promise<PageText[]> {

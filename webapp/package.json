@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "evaluate:golden": "tsx src/scripts/evaluate-golden.ts",
+    "evaluate:text": "tsx src/scripts/evaluate-text.ts",
     "dataset:manifest": "tsx src/scripts/build-dataset-manifest.ts",
     "analyze:eval": "tsx src/scripts/analyze-eval.ts"
   },

@@ -229,6 +229,8 @@ export const PIPE_DIAMETERS = [100, 150, 200, 250, 300, 375, 450, 525, 600, 675,
 
 export const MH_DIAMETERS = [900, 1200, 1500, 1800, 2400, 3000, 3600];
 
+// Legacy/older 10-project list — kept for existing consumers. New code should use
+// the canonical 16-project `golden-set.ts::GOLDEN_PROJECTS` instead.
 export const GOLDEN_PROJECTS = [
   "2026-067 201 GEORGIAN DR,BARRIE",
   "2026-068 HOLIDAY INN,TRENTON",

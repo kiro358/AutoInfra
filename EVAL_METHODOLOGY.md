@@ -74,6 +74,21 @@ is dollars + ~20 min; each offline analysis is free + seconds.
 - [ ] **Matching**: are correct entities missing only due to label variance? (attribute-match rescued dimension-labeled runs.)
 - [ ] **Stuck-at-0 projects**: distinct failure mode (didn't emit? wrong labels? not tiled?). Diagnose one, don't tune all.
 
+## Measuring the ceiling (do this before more extraction tuning)
+
+The truth workbooks encode per-estimator conventions (CB-lead grouping, label styles,
+scope choices), so detF1 has an unknown ceiling below 100%. Calibrate it:
+
+1. `npm run score:manual -- --init "<project folder>"` → creates `manual_facts.json`.
+2. A human transcribes the DRAWING PDFs into it (30-60 min; never look at the truth xlsx).
+3. `npm run score:manual -- "<project folder>"` → human detF1 + a MISSED/EXTRA diff.
+
+Interpretation: human ≈ 75%+ → the model gap is real, keep improving extraction.
+Human ≈ 55% → we are near the convention ceiling; invest in truth curation
+(manifest entries, grouping rules) instead of extraction. Do this for one texty
+project (e.g. Matthews) and one raster bottom-cluster project (e.g. Proposed
+Commercial) — the ceilings will differ.
+
 ## Infrastructure (what makes each eval teach us more)
 
 - **`npm run analyze:eval`** — the error-decomposition tool. Reads each golden project's

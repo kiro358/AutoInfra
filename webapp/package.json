@@ -12,7 +12,8 @@
     "evaluate:golden": "tsx src/scripts/evaluate-golden.ts",
     "evaluate:text": "tsx src/scripts/evaluate-text.ts",
     "dataset:manifest": "tsx src/scripts/build-dataset-manifest.ts",
-    "analyze:eval": "tsx src/scripts/analyze-eval.ts"
+    "analyze:eval": "tsx src/scripts/analyze-eval.ts",
+    "score:manual": "tsx src/scripts/score-manual-facts.ts"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.19.0",

@@ -25,10 +25,15 @@ import { compareFacts, formatFactsComparison } from '../lib/compare-facts';
 
 const ROOT = path.resolve(__dirname, '../../..');
 const DATA = path.join(ROOT, 'existing_projects_training_data');
-const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'dataset-manifest.json'), 'utf8')) as Array<{
+let manifest: Array<{
   folder: string;
   drawingPdfs?: { name: string; pages?: number }[];
-}>;
+}> = [];
+try {
+  manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'dataset-manifest.json'), 'utf8'));
+} catch (e: any) {
+  console.error(`Could not read dataset-manifest.json: ${e.message}`);
+}
 const truthManifest = loadTruthManifest(path.join(ROOT, 'truth-manifest.json'));
 
 const pct = (v: number | null) => (v == null ? '   —' : `${(v * 100).toFixed(1)}%`);

@@ -117,3 +117,32 @@ Return ONLY valid JSON:
 }
 `;
 }
+
+/**
+ * Vision-as-TRANSCRIBER prompt (EXTRACTION_MODE=transcribe|hybrid). The model is
+ * never asked to produce a takeoff — only to transcribe callout text verbatim.
+ * All entity assembly happens deterministically in transcript-takeoff.ts, which
+ * makes accuracy iteration offline and free once transcripts are cached.
+ */
+export function getTranscriptionPrompt(tileCount: number, tileOffset: number): string {
+  return `You are transcribing text from ${tileCount} image tiles of a civil-engineering servicing drawing. The tiles are numbered ${tileOffset + 1} to ${tileOffset + tileCount} in the order the images appear.
+
+TRANSCRIBE, DO NOT INTERPRET. For each tile, list every servicing annotation you can read, VERBATIM — exact characters, including "EX", "Ø", units, and ± marks. Do not normalize, translate, dedupe across tiles, sum, or infer anything that is not literally printed.
+
+Transcribe these annotation kinds (skip title blocks, legends, general notes, dimensions of buildings/parking):
+- Pipe callouts: e.g. "83.7m-375mmØ SAN @ 0.02%", "EX SAN 7.2m - 250mmØ DR 35 @ 0.05%"
+- Structure labels: e.g. "STMH 1", "EX CBMH1035 (1200Ø)", "CB 10", "DCBMH 2"
+- Elevations: e.g. "T/G=224.95", "N INV=223.350"
+- Watermain callouts: e.g. "150mmØ PVC WM", "EX. 300 mmØ PVC WATERMAIN"
+- Schedule-table rows (pipe/MH schedules): transcribe each row as one line, cells separated by " | "
+
+GROUPING: a "block" is the small cluster of lines that visually belong to ONE thing on the drawing — a structure label together with its T/G and INV lines, or one pipe callout (including its second line when the text wraps). Keep blocks separate; do not merge neighbouring structures.
+
+If a tile has no servicing annotations, return it with an empty blocks array. If text is too small or cut off to read confidently, transcribe what is legible and append "?" to the uncertain characters — never guess whole values.
+
+${'' /* NO_PRICING_RULE is about takeoffs; transcription has no numbers to price, but keep the guard: */}
+Never output dollar amounts or quantities that are not literally printed on the drawing.
+
+Return ONLY JSON, no prose:
+{"tiles":[{"tile":${tileOffset + 1},"blocks":[["EX SAN MH 02","T/G = 311.85","SW INV = 310.56"],["83.7m-375mmØ SAN @ 0.02%"]]}, ...]}`;
+}

@@ -162,6 +162,17 @@ export interface TakeoffFacts {
   // Cost telemetry for a single extraction (all LLM calls summed): lets the eval
   // report tokens/tiles per project so cost changes (DPI, tile budget) are measurable.
   cost?: { promptTokens: number; outputTokens: number; totalTokens: number; llmCalls: number; tiles: number; dpi: number };
+  // Verbatim per-tile callout transcription (vision-as-transcriber path). Optional —
+  // populated when EXTRACTION_MODE=transcribe|hybrid; persisted via predicted_facts.json.
+  transcript?: TileTranscript[];
+}
+
+/** Verbatim per-tile callout transcription (vision path). A block is a group of
+ *  lines that visually belong together on the drawing (a structure label with its
+ *  T/G + INV lines, or one pipe callout possibly split across lines). */
+export interface TileTranscript {
+  tile: number; // 1-indexed across the whole extraction (not per-batch)
+  blocks: string[][];
 }
 
 // ============ Global Parameters ============

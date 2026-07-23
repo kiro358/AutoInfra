@@ -26,4 +26,16 @@ describe('assembleTranscriptTakeoff', () => {
     expect(facts.sewers).toHaveLength(0);
     expect(facts.warnings.length).toBeGreaterThan(0);
   });
+
+  it('warns (not guesses) on an unconsumed non-elevation line in a structure block', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['STMH 4', 'T/G=224.95', '83.7m-375mmØ SAN @ 0.02%'],
+      ]},
+    ], 'T');
+    expect(facts.structures).toHaveLength(1);
+    expect(facts.structures[0]).toMatchObject({ description: 'STMH 4', topElevation: 224.95 });
+    expect(facts.sewers).toHaveLength(0);
+    expect(facts.warnings.some((w) => w.includes('83.7m-375mmØ SAN @ 0.02%'))).toBe(true);
+  });
 });

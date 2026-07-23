@@ -56,11 +56,14 @@ function joinBlockLines(block: string[]): string[] {
 // Steps 2-3: classify a set of lines that belong together (a joined block, or
 // the cells of a split schedule-table row — see step 4). If any line parses
 // as a structure label, the whole set is a structure block: the remaining
-// lines are tried as elevations and attach to it. Otherwise each line is
+// lines are tried as elevations and attach to it. Any line that is neither
+// the structure label nor a parseable elevation is NOT guessed at (e.g. as a
+// run/watermain callout) — it's warned about, same "never silently drop"
+// policy as the unparseable-schedule-row case below. Otherwise each line is
 // tried independently as a run / watermain callout. Returns whether the
 // grammar made sense of ANY of the lines (used to decide whether an
 // unparseable schedule row deserves a warning).
-function processLines(lines: string[], out: Sink): boolean {
+function processLines(lines: string[], out: Sink, warnings: string[]): boolean {
   const structureLine = lines.find((l) => parseStructureLabel(l));
   if (structureLine) {
     const parsed = parseStructureLabel(structureLine)!;
@@ -71,7 +74,10 @@ function processLines(lines: string[], out: Sink): boolean {
     for (const line of lines) {
       if (line === structureLine) continue;
       const e = parseElevation(line);
-      if (!e) continue;
+      if (!e) {
+        warnings.push(`Unrecognized line in structure block: "${line}"`);
+        continue;
+      }
       if (e.type === 'TG') topElevation = e.value;
       else inverts.push(e.value);
     }
@@ -150,13 +156,13 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
       for (const line of joined) {
         if (line.includes(' | ')) {
           const cells = line.split(' | ').map((c) => c.trim());
-          const matched = processLines(cells, out);
+          const matched = processLines(cells, out, warnings);
           if (!matched) warnings.push(`Unparseable schedule row: "${line}"`);
         } else {
           remaining.push(line);
         }
       }
-      if (remaining.length > 0) processLines(remaining, out);
+      if (remaining.length > 0) processLines(remaining, out, warnings);
     }
   }
 

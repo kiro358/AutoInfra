@@ -73,6 +73,7 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
     ...facts,
     structures,
     sewers: sewers.filter((s) => !kill.has(s)),
+    // 3. catchbasins: merge duplicate label groups by type (see mergeCatchbasinGroups)
     catchbasins: mergeCatchbasinGroups(facts.catchbasins) as TakeoffFacts['catchbasins'],
     watermain,
   };

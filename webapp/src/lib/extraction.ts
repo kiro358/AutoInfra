@@ -5,15 +5,19 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env.local') });
 
 import { GoogleGenAI } from '@google/genai';
 import { Storage } from '@google-cloud/storage';
-import { TakeoffFacts, CatchbasinGroupFact } from './types';
+import { TakeoffFacts, CatchbasinGroupFact, TileTranscript } from './types';
 import { PIPE_DIAMETERS } from './constants';
 import { snapToPipeDiameter, normalizeSlope } from './geometry';
 import { buildFewShotPromptSection } from './few-shot-examples';
 import { setGlobalDispatcher, Agent, ProxyAgent } from 'undici';
 import crypto from 'crypto';
-import { getSinglePassPrompt, getPageLocatorPrompt } from './modular-prompts';
+import { getSinglePassPrompt, getPageLocatorPrompt, getTranscriptionPrompt } from './modular-prompts';
 import { renderTilesFlat, renderPageThumbnails, IMAGE_MIME } from './rasterize';
 import { normalizeLabel, runSignature } from './compare-facts';
+import { assembleTranscriptTakeoff } from './transcript-takeoff';
+import { mergeTakeoffs } from './reconcile';
+import { extractPageText, isTextyPage } from './pdf-text';
+import { assembleTextTakeoff } from './text-takeoff';
 
 // Globally override Undici's default 30-second headers/body timeout and configure proxy if present
 try {
@@ -607,6 +611,93 @@ export async function extractFromPDF(
       return parts;
     };
 
+    // Render + upload tiles for `pages`, batch them, and transcribe each batch
+    // verbatim with getTranscriptionPrompt (no takeoff interpretation — see
+    // modular-prompts.ts). Shared by EXTRACTION_MODE=transcribe (all located
+    // pages) and EXTRACTION_MODE=hybrid (only the non-texty subset), so the
+    // streaming/retry/cache/cost-accounting pattern is written exactly once.
+    const transcribeTiles = async (pages: number[]): Promise<TileTranscript[]> => {
+      if (pages.length === 0) return [];
+
+      let tiles: Buffer[] = [];
+      try {
+        const PER_PAGE = 16;
+        const maxTilesTotal = Math.min(Number(process.env.MAX_TILES_TOTAL) || 192, pages.length * PER_PAGE);
+        tiles = await renderTilesFlat(pdfBuffer, pages, {
+          dpi: TILE_DPI, tilePx: TILE_PX, overlapPx: TILE_OVERLAP, maxTilesPerPage: PER_PAGE, maxTilesTotal,
+        });
+      } catch (e: any) {
+        console.warn(`      [extraction.ts] Transcribe tile rendering failed (${e.message}).`);
+        return [];
+      }
+
+      const tileParts = await uploadTiles(tiles);
+      cost.tiles += tileParts.length;
+      console.log(`      [extraction.ts] Rendered + uploaded ${tileParts.length} tile(s) from ${pages.length} page(s) for transcription.`);
+
+      const BATCH_TILES = Number(process.env.BATCH_TILES) || 16;
+      const BATCH_CONCURRENCY = Number(process.env.BATCH_CONCURRENCY) || 3;
+      const tileBatches: any[][] = [];
+      for (let i = 0; i < tileParts.length; i += BATCH_TILES) tileBatches.push(tileParts.slice(i, i + BATCH_TILES));
+      if (tileBatches.length === 0) return [];
+
+      const batchResults = await mapLimit(tileBatches, BATCH_CONCURRENCY, async (batch, bi) => {
+        const tileOffset = bi * BATCH_TILES;
+        const prompt = getTranscriptionPrompt(batch.length, tileOffset);
+
+        let text = '{}';
+        try {
+          text = await getCachedOrCallLLM(`${sourceHash}_transcribe_b${bi}of${tileBatches.length}`, prompt, 'transcribe', async () => {
+            // Same streaming pattern as the single-pass batch loop below: large
+            // tiled inference takes many seconds, and a non-streaming request
+            // leaves the socket idle long enough to be dropped (UND_ERR_SOCKET).
+            return await callWithRetry(async () => {
+              const stream = await ai.models.generateContentStream({
+                model: EXTRACTION_MODEL,
+                contents: [{ role: 'user', parts: [{ text: prompt }, ...batch] }],
+                config: {
+                  temperature: 0,
+                  responseMimeType: 'application/json',
+                  maxOutputTokens: MAX_OUTPUT_TOKENS,
+                  thinkingConfig: { thinkingBudget: THINKING_BUDGET },
+                },
+              });
+              let acc = '', usage: any = null;
+              for await (const chunk of stream) { acc += chunk.text || ''; if (chunk.usageMetadata) usage = chunk.usageMetadata; }
+              addUsage(cost, usage);
+              return acc || '{}';
+            });
+          }, projectName);
+        } catch (e: any) {
+          console.error(`      [extraction.ts] Transcribe batch ${bi + 1}/${tileBatches.length} failed: ${e.message}`);
+        }
+
+        let parsed: any = {};
+        try {
+          parsed = tryParseJSONWithRepair(text);
+        } catch (e: any) {
+          console.error(`      [extraction.ts] Transcribe batch ${bi + 1} parse failed: ${e.message}`);
+          return [] as TileTranscript[];
+        }
+
+        const out: TileTranscript[] = [];
+        const rawTiles = Array.isArray(parsed.tiles) ? parsed.tiles : [];
+        for (const t of rawTiles) {
+          if (typeof t?.tile !== 'number' || !Array.isArray(t?.blocks)) {
+            console.warn(`      [extraction.ts] Skipping malformed transcript tile in batch ${bi + 1}: ${JSON.stringify(t).slice(0, 200)}`);
+            continue;
+          }
+          const blocks = t.blocks
+            .filter((b: any) => Array.isArray(b))
+            .map((b: any[]) => b.map((line) => String(line)));
+          out.push({ tile: t.tile, blocks });
+        }
+        return out;
+      });
+
+      return batchResults.flat();
+    };
+
     // --- TILED INGESTION ---
     // Combined facts calls over high-DPI image TILES of the located pages.
     // Large-format CAD sheets are illegible once the whole PDF is downsampled by
@@ -620,6 +711,40 @@ export async function extractFromPDF(
             ...locatorIndex.watermainPages,
           ])).sort((a, b) => a - b)
         : [];
+
+      // EXTRACTION_MODE=transcribe: vision transcribes verbatim, code (Task 8's
+      // assembleTranscriptTakeoff) does ALL the interpretation. Additive branch —
+      // any other/unset EXTRACTION_MODE falls through to the unchanged default path.
+      if (process.env.EXTRACTION_MODE === 'transcribe') {
+        const transcript = await transcribeTiles(unionPages);
+        const facts = assembleTranscriptTakeoff(transcript, projectName);
+        facts.transcript = transcript;
+        facts.locatorIndex = locatorIndex;
+        facts.cost = cost;
+        console.log(`      [extraction.ts] cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);
+        return facts;
+      }
+
+      // EXTRACTION_MODE=hybrid: text-layer pages are read exactly (zero LLM cost,
+      // zero tiles rendered for them); only the non-texty (raster/SHX/scanned)
+      // pages go through the transcribe path. Text layer wins on conflicts (primary).
+      if (process.env.EXTRACTION_MODE === 'hybrid') {
+        const pageTexts = await extractPageText(pdfBuffer, unionPages);
+        const textyPages = pageTexts.filter(isTextyPage);
+        const textyPageNums = new Set(textyPages.map((p) => p.page));
+        const rasterPageNums = unionPages.filter((p) => !textyPageNums.has(p));
+
+        const textFacts = assembleTextTakeoff(textyPages, projectName);
+        const transcript = await transcribeTiles(rasterPageNums);
+        const transcriptFacts = assembleTranscriptTakeoff(transcript, projectName);
+
+        const facts = mergeTakeoffs(textFacts, transcriptFacts);
+        if (transcript.length > 0) facts.transcript = transcript;
+        facts.locatorIndex = locatorIndex;
+        facts.cost = cost;
+        console.log(`      [extraction.ts] hybrid: ${textyPageNums.size} texty / ${rasterPageNums.length} raster of ${unionPages.length} located page(s). cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);
+        return facts;
+      }
 
       // Rasterize located pages to legible tiles; fall back to the raw PDF if rendering fails.
       let tileParts: any[] = [];

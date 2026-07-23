@@ -33,6 +33,29 @@ PDF ──▶ extractFromPDF()  ──▶ TakeoffFacts   facts only, NO dollars 
 - **Costing** is deterministic: every dollar/labor/fee comes from one explicit, versioned,
   unit-tested rule table (`DEFAULT_COSTING` in `costing-rules.ts`).
 
+`extractFromPDF()` (`extraction.ts`) has three interpretation paths, chosen by the
+`EXTRACTION_MODE` env var. **Unset/any other value = the original default path** (vision
+both reads AND interprets tiles into TakeoffFacts JSON directly via
+`getSinglePassPrompt`) — unchanged, still what runs in production today.
+
+- `EXTRACTION_MODE=transcribe`: vision ONLY transcribes verbatim callouts off each tile
+  (`getTranscriptionPrompt` → `TileTranscript[]`, no interpretation); a deterministic
+  pure-code grammar (`callout-parser.ts` + `transcript-takeoff.ts::assembleTranscriptTakeoff`
+  + `reconcile.ts::reconcileTakeoff`) turns that into TakeoffFacts. Splits "can the model
+  read the drawing" from "can the model reason about a takeoff," and — because the parser/
+  assembler/reconciler are pure — makes iterating on the interpretation step free after one
+  LLM run (see `assemble-from-transcripts.ts` below).
+- `EXTRACTION_MODE=hybrid`: ~1/3 of the drawing corpus carries servicing callouts as real PDF
+  text objects (not SHX/scanned) — those pages are read EXACTLY via the PDF text layer
+  (`pdf-text.ts::extractPageText` + `isTextyPage` + `text-takeoff.ts::assembleTextTakeoff`),
+  zero LLM calls and zero tiles rendered for them. Only the remaining non-texty pages go
+  through the `transcribe` path above; `reconcile.ts::mergeTakeoffs` combines the two with the
+  text-layer result as `primary` (exact, wins conflicts). When every located page is texty,
+  extraction cost drops to just the page-locator call.
+- Both new modes are implemented and unit-tested but **not yet validated on the golden set**
+  (that requires a real Vertex run — see EVAL_METHODOLOGY.md's decision gate) and are
+  therefore not the recommended default; flip this note once that run happens.
+
 ## Layout
 
 ```
@@ -49,11 +72,17 @@ webapp/                       Next.js app (everything lives here)
     quote-generator.ts        renders the quote PDF
     constants.ts              DEFAULT_PARAMS, INPUT_CELLS (template cell map), PIPE/MH sizes
     types.ts                  TakeoffFacts (facts) + ExtractionResult (priced) schemas
-    modular-prompts.ts        per-agent + single-pass prompts (facts only, no pricing)
+    modular-prompts.ts        per-agent + single-pass + transcription prompts (facts only, no pricing)
     few-shot-examples.ts      builds few-shot block from few_shot_examples.json
     dynamic-rules.json        "flywheel"-appended English rules (machine-written; frozen)
+    pdf-text.ts               extractPageText/isTextyPage — PDF text-layer read ($0, EXTRACTION_MODE=hybrid)
+    callout-parser.ts         pure grammar: run/structure/elevation/watermain callout parsing
+    text-takeoff.ts           assembleTextTakeoff(pages) — text-layer PageText[] -> TakeoffFacts
+    transcript-takeoff.ts     assembleTranscriptTakeoff(transcripts) — vision TileTranscript[] -> TakeoffFacts
+    reconcile.ts              reconcileTakeoff/mergeTakeoffs — one entity per physical thing, any path
+    golden-set.ts             ⭐ GOLDEN_PROJECTS/FOCUS_SET — canonical 16-project golden set
     *.test.ts                 vitest unit tests (geometry, costing, facts metric, spreadsheet)
-  src/scripts/                eval + "flywheel" CLIs (see below)
+  src/scripts/                eval CLIs (see below)
   empty_templates/            the real .xlsx templates (SHORT / LONG)
 empty_templates/              (also at repo root) template source
 existing_projects_*_data/     ground-truth PDFs+XLSX — GITIGNORED, not in the repo
@@ -88,6 +117,17 @@ GOLDEN_REPEATS=3 npm run evaluate:golden
 # so a focus run won't clobber the full baseline. The scoreboard prints mean + [lo–hi] band.
 # Metric/matching/costing changes can be re-scored OFFLINE from the persisted
 # generated_spreadsheets/predicted_facts.json — no LLM calls.
+
+# EXTRACTION_MODE=transcribe|hybrid selects the alternate extraction paths (see Pipeline
+# above); default (unset) is the original single-pass path. Example:
+EXTRACTION_MODE=hybrid GOLDEN_FILTER="matthews" npm run evaluate:golden
+
+# $0 validation loops — no LLM calls, run these before spending an eval run:
+npm run evaluate:text          # text-layer path (Phase A) scored directly against real PDFs
+npm run assemble:transcripts   # re-runs assembleTranscriptTakeoff+reconcileTakeoff on any
+                                # transcript already cached in predicted_facts.json (from a
+                                # prior EXTRACTION_MODE=transcribe|hybrid run) — validates
+                                # parser/assembler/reconciler changes for free
 ```
 
 Run the eval on stable infra: local works for a small filtered set (streaming rides the
@@ -128,10 +168,10 @@ is empirical: validate the facts metric on the dataset and A/B single-pass vs ag
   Do NOT put pricing back into the extraction path.
 - **Template cells**: `constants.ts::INPUT_CELLS` is the intended source of truth;
   `spreadsheet.ts` still re-hardcodes them — keep in sync (or unify).
-- **Eval**: `compare-facts.ts` (canonical, facts-level) + `compare-sheets.ts` (legacy cell)
-  + `compare-jsons.ts` (legacy semantic). Golden set is defined in **two** disjoint places
-  (`evaluate-golden.ts` and `constants.ts::GOLDEN_PROJECTS`) — reconcile against the real
-  dataset before trusting it.
+- **Eval**: `compare-facts.ts` (canonical, facts-level) + `compare-sheets.ts` (legacy cell).
+  The golden set is canonically `golden-set.ts::GOLDEN_PROJECTS` — `evaluate-golden.ts` and
+  `evaluate-text.ts` both import it, so they can't drift. `constants.ts::GOLDEN_PROJECTS`
+  is an older, unused 10-project list kept only for reference — don't add new consumers of it.
 - **Truth selection**: a project folder holds copies, non-matching alternate designs, empty
   appendix/removals decoys, and genuine per-block/street SPLITS. `truth-facts.ts::resolveTruthFacts`
   picks canonically: `truth-manifest.json` (repo root) overrides win (merge splits / pin the
@@ -140,15 +180,31 @@ is empirical: validate the facts metric on the dataset and A/B single-pass vs ag
   projects against empty truth. When adding projects to the golden set, audit their workbooks
   (offline count) and add a manifest entry if the auto-pick is wrong.
 
-## Scripts (`src/scripts/`) — live vs legacy
+## Scripts (`src/scripts/`)
 
-- **Live**: `evaluate-golden.ts` (`npm run evaluate:golden`), `compare-sheets.ts`,
-  `batch-evaluate.ts` + `flywheel-gate.ts` (`npm run flywheel:local`).
-- **Flywheel (frozen)**: `batch-evaluate-cloud.ts`, `analyze-failures{,-cloud}.ts`,
-  `flywheel-gate.ts`, `flywheel-rollback.ts`, `compile-scoreboard.ts`, `compare-jsons.ts`.
-  CI `flywheel.yml` schedule is disabled. Do NOT re-enable auto-commit of prompt rules until
-  the facts metric is the gate (see REDESIGN §3.5).
-- `Dockerfile.flywheel` still points at a non-existent `src/scripts/flywheel.ts` (broken).
+All scripts below currently exist in the repo and are live (the self-optimization
+"flywheel" — `batch-evaluate*.ts`, `flywheel-gate.ts`, `flywheel-rollback.ts`,
+`analyze-failures*.ts`, `compile-scoreboard.ts`, `compare-jsons.ts`, `Dockerfile.flywheel`,
+`.github/workflows/flywheel.yml` — was fully removed, not merely disabled; `dynamic-rules.json`
+is the one artifact left over from when it ran. Do NOT re-introduce prompt-rule auto-commit
+without the facts metric as the gate — see REDESIGN §3.5).
+
+- `evaluate-golden.ts` (`npm run evaluate:golden`) — the LLM golden-set eval (see "Run it").
+- `evaluate-text.ts` (`npm run evaluate:text`) — $0 validation of the text-layer path: runs
+  `extractPageText` + `assembleTextTakeoff` directly against each golden project's real PDFs
+  (no LLM calls) and prints textF1 next to the cached LLM run's F1 for direct comparison.
+- `assemble-from-transcripts.ts` (`npm run assemble:transcripts`) — $0 re-assembly loop for
+  the vision-transcript path: re-runs `assembleTranscriptTakeoff` + `reconcileTakeoff` on
+  whatever `transcript` array is already cached in `predicted_facts.json` (written by an
+  `EXTRACTION_MODE=transcribe|hybrid` eval run) and prints old-vs-recomputed detF1 per
+  project — validates parser/assembler/reconciler changes without another LLM call.
+- `score-manual-facts.ts` (`npm run score:manual`) — scores a hand-transcribed
+  `manual_facts.json` against truth (Phase B: measuring the ceiling above what the model
+  itself can transcribe).
+- `analyze-eval.ts` (`npm run analyze:eval`) — offline error decomposition, see
+  EVAL_METHODOLOGY.md.
+- `build-dataset-manifest.ts` (`npm run dataset:manifest`) — regenerates `dataset-manifest.json`.
+- `compare-sheets.ts` — legacy cell-level compare, still used by `evaluate-golden.ts`.
 
 ## Conventions & gotchas
 
@@ -182,7 +238,7 @@ is empirical: validate the facts metric on the dataset and A/B single-pass vs ag
 ## Deploy / CI
 
 - `.github/workflows/deploy.yml` — pushes to `master`/`main` deploy to Cloud Run.
-- `.github/workflows/flywheel.yml` — scheduled optimization loop (**schedule disabled**).
+- The scheduled flywheel optimization workflow has been removed (see "Scripts" above).
 
 ## Working agreement for changes here
 

@@ -33,6 +33,11 @@ Never spend an expensive eval on step 3/4 before steps 1/2 are clean.
               │     npm run analyze:eval        ← error decomposition │
               │     + targeted probes on predicted_facts.json         │
               │     Find ruler bugs, coverage gaps, over/under-extract │
+              │     If predictions carry a `transcript` array         │
+              │     (EXTRACTION_MODE=transcribe|hybrid), npm run       │
+              │     assemble:transcripts re-runs the WHOLE assembly+   │
+              │     reconcile stack offline on it — parser/assembler   │
+              │     changes never need an LLM run to validate.         │
               └───────────────────────┬──────────────────────────────┘
                                       │  batch several fixes
               ┌───────────────────────▼──────────────────────────────┐

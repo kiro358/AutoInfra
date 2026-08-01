@@ -11,6 +11,7 @@ import {
   deduplicateValves,
   parseFacts,
   isNonMainlineSewer,
+  isNonStructure,
 } from './extraction';
 
 describe('parseFacts structure/catchbasin categorization', () => {
@@ -237,5 +238,46 @@ describe('deduplicateSpecials / deduplicateValves', () => {
         { valveSize: '200mm gv', quantity: 1 },
       ])
     ).toEqual([{ valveSize: '200mm GV', quantity: 2 }]);
+  });
+});
+
+describe('isNonStructure — demolition/sitework callouts listed as structures', () => {
+  // On a removals sheet the model lists demolition scope as structures. It is real
+  // scope, but the estimator's takeoff never carries it as a structure row.
+  it.each([
+    'TREE REMOVAL (TYP.)',
+    'TOPSOIL & SOD REMOVAL (TYP.)',
+    'ASPHALT SURFACE REMOVAL',
+    'CONCRETE SIDEWALK REMOVAL',
+    'GRAVEL PATH REMOVAL',
+    'INTERLOCKING REMOVAL',
+    'MONUMENT RELOCATION',
+    'UTILITY RELOCATION COORDINATION',
+    'WATER SERVICE ABANDONMENT',
+    'RELOCATED WILKINSON CISTERN',
+  ])('drops %s', (desc) => {
+    expect(isNonStructure(desc)).toBe(true);
+  });
+
+  // The structure-code guard is what keeps this safe: a real structure is never
+  // dropped just because its note happens to mention removal or relocation.
+  it.each([
+    'MH 1',
+    'CBMH 14',
+    'DCBMH 5',
+    'MH 8/EXT.DROP',
+    'MH 2A',
+    'MH 3 (TO BE RELOCATED)',
+    'CBMH 7 - ASPHALT PATCH',
+    'DCVC-200',
+    'OGS CHAMBER 1',
+  ])('keeps %s', (desc) => {
+    expect(isNonStructure(desc)).toBe(false);
+  });
+
+  it('still drops the callouts the original filter targeted', () => {
+    expect(isNonStructure('PROP. BIKE RACKS')).toBe(true);
+    expect(isNonStructure('SEWER CROSSING (STM)')).toBe(true);
+    expect(isNonStructure('SANITARY')).toBe(true);
   });
 });

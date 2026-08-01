@@ -200,9 +200,13 @@ async function getCachedOrCallLLM(
 // A predicted "structure" is really a non-structure plan callout if it names one of
 // these features and carries no structure code (MH/CB/CBMH/chamber/…). Used to drop the
 // bike-racks / transformers / crossings / valves the model over-lists as structures.
-const STRUCT_JUNK = /\b(crossing|bike|transformer|water meter|backflow|retaining|snow|mud mat|railing|duct bank|bollard|landscape|powerdrain|depressed|sign|infiltration|gallery|wye|inspection\s*port)\b|\b(meter|valve|wall|fence|curb|entrance|rack|pole)\b|^\s*(sanitary|storm)\s*$/i;
+// The third alternation is DEMOLITION and sitework: on a removals sheet the model lists
+// "TREE REMOVAL (TYP.)", "MONUMENT RELOCATION", "WATER SERVICE ABANDONMENT" and friends as
+// structures. They are scope, but they are not structures and the estimator's takeoff never
+// carries them as one. (Measured over the golden set: drops 10 predictions, 0 of them real.)
+const STRUCT_JUNK = /\b(crossing|bike|transformer|water meter|backflow|retaining|snow|mud mat|railing|duct bank|bollard|landscape|powerdrain|depressed|sign|infiltration|gallery|wye|inspection\s*port)\b|\b(meter|valve|wall|fence|curb|entrance|rack|pole)\b|\b(removals?|removed?|relocat(?:e|ed|ion)|abandon(?:ment|ed)?|coordination|topsoil|sod|asphalt|interlocking|gravel\s*path|monument|cistern|tree)\b|^\s*(sanitary|storm)\s*$/i;
 const STRUCT_CODE = /\b(D?CBMH|DI?CB|MH|CB|HS|OS|OGS|CHAMBER|TANK|STMH|SANMH)\b/i;
-function isNonStructure(desc: string): boolean {
+export function isNonStructure(desc: string): boolean {
   return STRUCT_JUNK.test(desc) && !STRUCT_CODE.test(desc);
 }
 

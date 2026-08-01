@@ -90,9 +90,24 @@ those callouts is one sewer run; scan every pipe line and list them all.
 Non-pipe line items that still belong on the sewer sheet (SWALE, DEWATERING, ...): isLineItem=true
 with null pipe fields.
 
-## WATERMAIN ("watermain", "watermainSpecials", "watermainValves")
-Runs: sizeAndType, length, pipeDiameter, ocSc, avgCover. Specials/valves: name/size + quantity only.
-If no watermain work is shown, return empty arrays.
+## WATERMAIN ("watermain", "watermainSpecials", "watermainValves") — DO NOT SKIP
+Most servicing plans that have sewers ALSO have a proposed watermain. Returning an empty
+watermain array on a plan that shows water service is a common and costly MISS — scan for the
+water line before you conclude there is none.
+- Watermain is drawn as its own line, usually annotated like "150mmØ PVC WM", "200mmØ DR-18
+  WATERMAIN", "100mmØ DOMESTIC", "150mmØ FIRELINE". A service to the building counts.
+- EMIT ONE ROW PER PIPE SIZE, not one row per segment or per service name. Add up every
+  proposed run of that size and report the TOTAL metres as "length". A plan with 195m of
+  200mmØ and 104m of 150mmØ is exactly two rows.
+- "length" is REQUIRED and must be the real total in metres — never 0 and never null. If no
+  length is printed, add up the dimension callouts along the line, or scale it; a size with an
+  unknown length is still worth far more as an estimate than as a zero.
+- sizeAndType is just the size, e.g. "200mm". Put the material/purpose in the row only if the
+  drawing distinguishes two DIFFERENT pipes of the same size (e.g. a separate domestic and
+  fire line both at 150mmØ) — otherwise combine them into one row.
+- pipeDiameter (mm) must match the size. ocSc and avgCover: read them if shown, else null.
+Specials/valves: name/size + quantity only.
+If the plan genuinely shows no watermain work, return empty arrays.
 
 ${NO_PRICING_RULE}
 

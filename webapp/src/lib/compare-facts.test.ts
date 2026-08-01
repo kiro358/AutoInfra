@@ -54,10 +54,62 @@ describe('sewer run matching (endpoint label + physical-attribute fallback)', ()
 });
 
 describe('watermain matching (blank truth labels → attribute match)', () => {
+  const wm = (sizeAndType: string, length: number, pipeDiameter: number) =>
+    ({ sizeAndType, length, pipeDiameter, ocSc: 1.1, avgCover: 1.8 });
+  const wmEntity = (pred: ReturnType<typeof facts>, truth: ReturnType<typeof facts>) =>
+    compareFacts(pred, truth).entities.find((e) => e.kind === 'watermainRuns')!;
+  const wmField = (pred: ReturnType<typeof facts>, truth: ReturnType<typeof facts>, field: string) =>
+    compareFacts(pred, truth).fields.find((f) => f.field === field)!;
+
   it('matches watermain by diameter + close length when the truth size/type label is blank', () => {
-    const pred = facts({ watermain: [{ sizeAndType: '200mm FIRE PROTECTION WATERMAIN', length: 90, pipeDiameter: 200, ocSc: 1.1, avgCover: 1.8 }] });
-    const truth = facts({ watermain: [{ sizeAndType: '200mm', length: 92, pipeDiameter: 200, ocSc: 1.1, avgCover: 1.8 }] });
-    expect(compareFacts(pred, truth).entities.find((e) => e.kind === 'watermainRuns')!.matched).toBe(1);
+    const pred = facts({ watermain: [wm('200mm FIRE PROTECTION WATERMAIN', 90, 200)] });
+    const truth = facts({ watermain: [wm('200mm', 92, 200)] });
+    expect(wmEntity(pred, truth).matched).toBe(1);
+  });
+
+  // A pipe read off the drawing but not measured is a FOUND pipe with a bad length.
+  // Requiring length agreement to detect it scored it as missing and then dropped it
+  // from field accuracy too, hiding the defect in both numbers.
+  it('detects a run whose diameter is right but whose length is missing', () => {
+    const pred = facts({ watermain: [wm('200mm WATER SERVICE', 0, 200)] });
+    const truth = facts({ watermain: [wm('200mm', 61, 200)] });
+    expect(wmEntity(pred, truth).matched).toBe(1);
+  });
+
+  it('still scores the missing length as a failed field, not a free pass', () => {
+    const pred = facts({ watermain: [wm('200mm WATER SERVICE', 0, 200)] });
+    const truth = facts({ watermain: [wm('200mm', 61, 200)] });
+    const f = wmField(pred, truth, 'watermain.length');
+    expect(f.total).toBe(1);
+    expect(f.matched).toBe(0);
+  });
+
+  it('does not match across different diameters', () => {
+    const pred = facts({ watermain: [wm('150mm', 61, 150)] });
+    const truth = facts({ watermain: [wm('200mm', 61, 200)] });
+    expect(wmEntity(pred, truth).matched).toBe(0);
+  });
+
+  it('pairs each truth row at most once when predictions share a diameter', () => {
+    const pred = facts({ watermain: [wm('200mm A', 0, 200), wm('200mm B', 0, 200), wm('200mm C', 0, 200)] });
+    const truth = facts({ watermain: [wm('200mm', 61, 200)] });
+    const e = wmEntity(pred, truth);
+    expect(e.matched).toBe(1);
+    expect(e.precision).toBeCloseTo(1 / 3); // the two extra rows are over-extraction
+  });
+
+  // Phase ordering matters: the correctly-measured row must be the one that gets
+  // paired, or field accuracy would be scored against an arbitrary sibling.
+  it('prefers the correctly-measured row when several share a diameter', () => {
+    const pred = facts({ watermain: [wm('200mm BAD', 0, 200), wm('200mm GOOD', 61, 200)] });
+    const truth = facts({ watermain: [wm('200mm', 61, 200)] });
+    expect(wmField(pred, truth, 'watermain.length').matched).toBe(1);
+  });
+
+  it('handles duplicate diameters in truth by pairing them one-for-one', () => {
+    const pred = facts({ watermain: [wm('250mm', 110, 250), wm('250mm', 0, 250)] });
+    const truth = facts({ watermain: [wm('250mm', 110, 250), wm('250mm', 88, 250)] });
+    expect(wmEntity(pred, truth).matched).toBe(2);
   });
 });
 

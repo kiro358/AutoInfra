@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { reconcileTakeoff, mergeTakeoffs } from './reconcile';
-import { TakeoffFacts, SewerFact, StructureFact } from './types';
+import { TakeoffFacts, SewerFact, StructureFact, WatermainFact } from './types';
 
 const emptyFacts = (over: Partial<TakeoffFacts> = {}): TakeoffFacts => ({
   projectName: 'T', jobNumber: '', date: '',
@@ -62,5 +62,64 @@ describe('mergeTakeoffs', () => {
     expect(m.structures).toHaveLength(2);
     expect(m.structures.find((s) => s.description === 'MH 1')!.topElevation).toBe(100);
     expect(m.sewers).toHaveLength(1);
+  });
+});
+
+describe('watermain aggregation by diameter', () => {
+  const wm = (pipeDiameter: number | null, length: number, over: Partial<WatermainFact> = {}): WatermainFact => ({
+    sizeAndType: pipeDiameter ? `${pipeDiameter}mm` : '', length,
+    pipeDiameter: pipeDiameter as number, ocSc: 1.1, avgCover: 1.8, ...over,
+  });
+
+  // Truth carries one row per SIZE with the total metres of that size, so separate
+  // segments of the same pipe have to be summed or a correct read scores as noise.
+  it('sums separate segments of the same size into one row', () => {
+    const out = reconcileTakeoff(emptyFacts({ watermain: [wm(150, 20), wm(150, 30), wm(150, 40)] }));
+    expect(out.watermain).toHaveLength(1);
+    expect(out.watermain[0].pipeDiameter).toBe(150);
+    expect(out.watermain[0].length).toBe(90);
+  });
+
+  it('keeps different sizes as separate rows, largest first', () => {
+    const out = reconcileTakeoff(emptyFacts({ watermain: [wm(150, 104), wm(200, 195)] }));
+    expect(out.watermain.map((w) => [w.pipeDiameter, w.length])).toEqual([[200, 195], [150, 104]]);
+  });
+
+  it('normalizes sizeAndType to the bare size', () => {
+    const out = reconcileTakeoff(emptyFacts({
+      watermain: [wm(200, 60, { sizeAndType: '200mmØ PVC DR-18 FIRELINE' })],
+    }));
+    expect(out.watermain[0].sizeAndType).toBe('200mm');
+  });
+
+  // The exact-duplicate dedupe must run BEFORE the sum, or one callout read from two
+  // overlapping tiles doubles the metres instead of being dropped.
+  it('drops an exact duplicate rather than adding it twice', () => {
+    const out = reconcileTakeoff(emptyFacts({ watermain: [wm(200, 61), wm(200, 61)] }));
+    expect(out.watermain).toHaveLength(1);
+    expect(out.watermain[0].length).toBe(61);
+  });
+
+  it('still sums distinct lengths at the same size after that dedupe', () => {
+    const out = reconcileTakeoff(emptyFacts({ watermain: [wm(200, 61), wm(200, 61), wm(200, 12)] }));
+    expect(out.watermain[0].length).toBe(73);
+  });
+
+  it('passes rows without a diameter through instead of merging or dropping them', () => {
+    const out = reconcileTakeoff(emptyFacts({ watermain: [wm(200, 61), wm(null, 15)] }));
+    expect(out.watermain).toHaveLength(2);
+    expect(out.watermain.find((w) => w.pipeDiameter == null)?.length).toBe(15);
+  });
+
+  it('carries ocSc/avgCover forward from the first row that states one', () => {
+    const out = reconcileTakeoff(emptyFacts({
+      watermain: [wm(200, 61, { ocSc: null as never, avgCover: null as never }), wm(200, 12)],
+    }));
+    expect(out.watermain[0].ocSc).toBe(1.1);
+    expect(out.watermain[0].avgCover).toBe(1.8);
+  });
+
+  it('leaves an empty watermain list empty', () => {
+    expect(reconcileTakeoff(emptyFacts({ watermain: [] })).watermain).toEqual([]);
   });
 });

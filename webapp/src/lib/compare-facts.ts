@@ -179,17 +179,46 @@ export function matchSewerRuns(pred: SewerFact[], truth: SewerFact[]) {
   return { matched: pairs.length, pairs };
 }
 
-// Watermain: prefer a real size/type label match, else match on diameter + close length
-// (truth watermain rows carry length+diameter but usually a blank size/type label).
+/**
+ * Watermain matching, three phases from strongest to weakest evidence — the same
+ * shape as matchSewerRuns.
+ *
+ * A watermain row's IDENTITY is its pipe size: the estimator's workbook carries one
+ * row per diameter with the total length of that size, not one row per segment.
+ * Length is therefore a FIELD of the row, not part of its identity.
+ *
+ * Phase 3 (diameter alone) exists because requiring length agreement to *detect* a
+ * pipe conflated two different failures: a 200mm main that was found but mismeasured
+ * scored as "not found", AND — because field accuracy only scores matched pairs — its
+ * wrong length then vanished from watermain.length entirely. The defect was real but
+ * invisible in both numbers. Detection now counts the pipe; the bad length shows up in
+ * watermain.length where it belongs.
+ *
+ * Phases run strongest-first so that when several pred rows share a diameter, the one
+ * with the right length is the pair that gets scored for fields.
+ */
 function matchWatermain(pred: WatermainFact[], truth: WatermainFact[]) {
   const first = matchByKey<WatermainFact>(pred, truth, (w) => normalizeLabel(w.sizeAndType));
   const usedPred = new Set(first.pairs.map((x) => x.p));
   const usedTruth = new Set(first.pairs.map((x) => x.t));
   const pairs = [...first.pairs];
+
+  const sameDiameter = (q: WatermainFact, t: WatermainFact) =>
+    q.pipeDiameter != null && t.pipeDiameter != null && q.pipeDiameter === t.pipeDiameter;
+
+  // Phase 2: same diameter AND a close length — the confident pairing.
   for (const t of truth) {
     if (usedTruth.has(t)) continue;
-    const p = pred.find((q) => !usedPred.has(q) && q.pipeDiameter != null && t.pipeDiameter != null
-      && q.pipeDiameter === t.pipeDiameter && Math.abs(q.length - t.length) <= Math.max(2, 0.1 * t.length));
+    const p = pred.find((q) => !usedPred.has(q) && sameDiameter(q, t)
+      && Math.abs(q.length - t.length) <= Math.max(2, 0.1 * t.length));
+    if (p) { usedPred.add(p); usedTruth.add(t); pairs.push({ p, t }); }
+  }
+
+  // Phase 3: same diameter, any length. Detection only — the length still gets
+  // scored (and fails) as a field.
+  for (const t of truth) {
+    if (usedTruth.has(t)) continue;
+    const p = pred.find((q) => !usedPred.has(q) && sameDiameter(q, t));
     if (p) { usedPred.add(p); usedTruth.add(t); pairs.push({ p, t }); }
   }
   return { matched: pairs.length, pairs };

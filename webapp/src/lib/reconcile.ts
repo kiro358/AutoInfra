@@ -4,7 +4,7 @@
  * Pure — the offline re-assembly loop (assemble-from-transcripts.ts) depends on
  * being able to re-run this for free against cached inputs.
  */
-import { TakeoffFacts, StructureFact, SewerFact } from './types';
+import { TakeoffFacts, StructureFact, SewerFact, WatermainFact } from './types';
 import { normalizeLabel, runSignature } from './compare-facts';
 import { mergeCatchbasinGroups } from './extraction';
 
@@ -27,6 +27,36 @@ function samePipe(a: SewerFact, b: SewerFact): boolean {
 }
 
 const isEndpointPair = (s: SewerFact) => runSignature(s.runLabel).includes('|');
+
+/**
+ * Collapse watermain rows to one per pipe diameter, summing their lengths — the
+ * shape the estimating workbook (and therefore the truth set) uses.
+ *
+ * Rows with no diameter can't be aggregated onto a size, so they pass through
+ * untouched rather than being silently merged into an arbitrary bucket or dropped.
+ * ocSc/avgCover are taken from the first row that states one; they describe the
+ * installation, not the segment, so summing them would be meaningless.
+ */
+export function aggregateWatermainByDiameter(rows: WatermainFact[]): WatermainFact[] {
+  const byDia = new Map<number, WatermainFact>();
+  const passthrough: WatermainFact[] = [];
+
+  for (const w of rows) {
+    if (w.pipeDiameter == null) { passthrough.push(w); continue; }
+    const prev = byDia.get(w.pipeDiameter);
+    if (!prev) {
+      byDia.set(w.pipeDiameter, { ...w, sizeAndType: `${w.pipeDiameter}mm`, length: w.length ?? 0 });
+      continue;
+    }
+    prev.length += w.length ?? 0;
+    if (prev.ocSc == null && w.ocSc != null) prev.ocSc = w.ocSc;
+    if (prev.avgCover == null && w.avgCover != null) prev.avgCover = w.avgCover;
+  }
+
+  // Largest size first — how a watermain schedule is normally written.
+  const aggregated = [...byDia.values()].sort((a, b) => b.pipeDiameter - a.pipeDiameter);
+  return [...aggregated, ...passthrough];
+}
 
 export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
   // 1. structures: merge by normalized label
@@ -60,14 +90,27 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
     }
   }
 
-  // 4. watermain exact dedupe
+  // 4. watermain: exact dedupe, then AGGREGATE BY DIAMETER.
+  //
+  // The estimator's workbook carries one watermain row per pipe SIZE holding the
+  // total metres of that size — you buy 195m of 200mmØ, not nine separate segments.
+  // Every extraction path emits one row per callout, so they have to be summed here
+  // or a correct read still scores as a pile of unmatched rows.
+  //
+  // Order matters: the exact (diameter, length) dedupe runs FIRST, because the same
+  // physical callout read from two overlapping tiles must be dropped, not added
+  // twice. Two genuinely distinct segments that share a diameter AND an identical
+  // length collapse to one — the same trade-off this dedupe already made, and tile
+  // overlap is by far the likelier cause of an exact duplicate.
   const wmSeen = new Set<string>();
-  const watermain = facts.watermain.filter((w) => {
-    const k = `${w.pipeDiameter}|${w.length}`;
-    if (wmSeen.has(k)) return false;
-    wmSeen.add(k);
-    return true;
-  });
+  const watermain = aggregateWatermainByDiameter(
+    facts.watermain.filter((w) => {
+      const k = `${w.pipeDiameter}|${w.length}`;
+      if (wmSeen.has(k)) return false;
+      wmSeen.add(k);
+      return true;
+    })
+  );
 
   return {
     ...facts,

@@ -24,8 +24,10 @@ webapp/vendor_pricing_sheet/page_*_transcription.md
 eval_logs/
 .eval-cache/
 
-# Golden eval progress cache (resumable runs)
+# Golden eval progress cache (resumable runs) + the offline rescore derived from it.
+# Both list private project names; both are regenerable (npm run score:offline).
 golden-results.json
+golden-results-offline.json
 
 # Dataset manifest (regenerable; lists private project/PDF names)
 dataset-manifest.json

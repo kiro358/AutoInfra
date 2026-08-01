@@ -18,14 +18,14 @@ export default function RootLayout({
         <nav className="navbar">
           <div className="navbar-inner">
             <a href="/" className="navbar-brand">
-              <div className="navbar-logo">AI</div>
+              <div className="navbar-logo" aria-hidden="true">N</div>
               <div>
                 <div className="navbar-title">AutoInfra</div>
-                <div className="navbar-subtitle">Civil Engineering Estimation AI</div>
+                <div className="navbar-subtitle">Site servicing takeoff</div>
               </div>
             </a>
             <div className="navbar-actions">
-              <a href="/settings" className="btn btn-secondary btn-sm">⚙ Settings</a>
+              <a href="/settings" className="btn btn-secondary btn-sm">Rates &amp; settings</a>
             </div>
           </div>
         </nav>

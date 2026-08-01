@@ -61,8 +61,12 @@ both reads AND interprets tiles into TakeoffFacts JSON directly via
 ```
 webapp/                       Next.js app (everything lives here)
   src/app/api/process/        main endpoint: PDF -> facts -> priced -> xlsx + quote
-  src/app/page.tsx            upload UI + accuracy scoreboard (+ legacy flywheel buttons)
+  src/app/api/performance/    ⭐ serves the FACTS-metric benchmark to the UI (see below)
+  src/app/api/scoreboard/     LEGACY cell-accuracy CSVs from GCS — not the accuracy metric
+  src/app/page.tsx            upload UI + facts-metric benchmark panel
+  src/app/globals.css         design system (drafting-sheet tokens; `.cov-*` = coverage strip)
   src/lib/
+    perf-summary.ts           pure: golden results -> dashboard model (entity coverage, scale split)
     extraction.ts             ⭐ LLM extraction -> TakeoffFacts (locator + 3 agents, or single-pass)
     costing-rules.ts          ⭐ DEFAULT_COSTING table + pure priceTakeoff(facts) -> ExtractionResult
     geometry.ts               pure helpers: snapToPipeDiameter, snapToMHSize, normalizeSlope
@@ -123,12 +127,22 @@ GOLDEN_REPEATS=3 npm run evaluate:golden
 EXTRACTION_MODE=hybrid GOLDEN_FILTER="matthews" npm run evaluate:golden
 
 # $0 validation loops — no LLM calls, run these before spending an eval run:
+npm run score:offline          # re-score the whole golden set from cached predicted_facts.json
+                                # -> golden-results-offline.json (what the UI benchmark reads)
+npm run analyze:eval           # error decomposition over the same cached predictions
 npm run evaluate:text          # text-layer path (Phase A) scored directly against real PDFs
 npm run assemble:transcripts   # re-runs assembleTranscriptTakeoff+reconcileTakeoff on any
                                 # transcript already cached in predicted_facts.json (from a
                                 # prior EXTRACTION_MODE=transcribe|hybrid run) — validates
                                 # parser/assembler/reconciler changes for free
 ```
+
+**Reading the accuracy number.** `score:offline` reports two means and they are not
+interchangeable: **detF1 over runs that returned a takeoff** (the model's accuracy) and
+**detF1 counting failed runs as zero** (what a user actually gets). A run that returns *no*
+entities at all is a transport/harness failure, not a 0%-accurate read — `perf-summary.ts`
+classifies those separately so they can never be averaged in silently. As of 2026-07-28 the
+cached predictions have 4/16 such failures.
 
 Run the eval on stable infra: local works for a small filtered set (streaming rides the
 laptop's flaky network), but the full set belongs on the throwaway GCP VM using **Vertex**
@@ -169,9 +183,16 @@ is empirical: validate the facts metric on the dataset and A/B single-pass vs ag
 - **Template cells**: `constants.ts::INPUT_CELLS` is the intended source of truth;
   `spreadsheet.ts` still re-hardcodes them — keep in sync (or unify).
 - **Eval**: `compare-facts.ts` (canonical, facts-level) + `compare-sheets.ts` (legacy cell).
-  The golden set is canonically `golden-set.ts::GOLDEN_PROJECTS` — `evaluate-golden.ts` and
-  `evaluate-text.ts` both import it, so they can't drift. `constants.ts::GOLDEN_PROJECTS`
-  is an older, unused 10-project list kept only for reference — don't add new consumers of it.
+  The golden set is canonically `golden-set.ts::GOLDEN_PROJECTS` — `evaluate-golden.ts`,
+  `evaluate-text.ts`, `score-offline.ts` and `analyze-eval.ts` all import it, so they can't
+  drift. `constants.ts::GOLDEN_PROJECTS` is an older, unused 10-project list kept only for
+  reference — don't add new consumers of it.
+- **UI / benchmark panel**: `page.tsx` renders the **facts metric** from `/api/performance`
+  (which reads `golden-results-offline.json`, else `golden-results.json`, newest wins). The
+  old `/api/scoreboard` + `webapp/scoreboards/*.csv` path is **legacy cell accuracy** and was
+  still what the homepage displayed until 2026-07-28 — stale since May and the wrong metric.
+  Don't wire new UI to it. `perf-summary.ts` is pure and unit-tested; put dashboard logic
+  there, not in the component.
 - **Truth selection**: a project folder holds copies, non-matching alternate designs, empty
   appendix/removals decoys, and genuine per-block/street SPLITS. `truth-facts.ts::resolveTruthFacts`
   picks canonically: `truth-manifest.json` (repo root) overrides win (merge splits / pin the
@@ -201,8 +222,16 @@ without the facts metric as the gate — see REDESIGN §3.5).
 - `score-manual-facts.ts` (`npm run score:manual`) — scores a hand-transcribed
   `manual_facts.json` against truth (Phase B: measuring the ceiling above what the model
   itself can transcribe).
+- `score-offline.ts` (`npm run score:offline`) — $0 re-score of the whole golden set from
+  cached `predicted_facts.json`, writing `golden-results-offline.json` (the artifact the UI
+  benchmark reads). Use it to validate metric/matching changes and to refresh the dashboard
+  without an LLM run. It deliberately does NOT write `golden-results.json` — that file is
+  `evaluate-golden.ts`'s own resume cache and must not be clobbered by a derived artifact.
 - `analyze-eval.ts` (`npm run analyze:eval`) — offline error decomposition, see
-  EVAL_METHODOLOGY.md.
+  EVAL_METHODOLOGY.md. It imports `golden-set.ts` directly; it previously scraped
+  `evaluate-golden.ts` for `folder: '...'` literals and silently analyzed **0 projects**
+  once that list moved (fixed 2026-07-28). If either offline tool reports 0 projects, suspect
+  the folder list before concluding the predictions are missing.
 - `build-dataset-manifest.ts` (`npm run dataset:manifest`) — regenerates `dataset-manifest.json`.
 - `compare-sheets.ts` — legacy cell-level compare, still used by `evaluate-golden.ts`.
 

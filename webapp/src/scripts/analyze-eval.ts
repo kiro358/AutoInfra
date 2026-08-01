@@ -19,6 +19,7 @@ import fs from 'fs';
 import path from 'path';
 import { compareFacts, normalizeLabel } from '../lib/compare-facts';
 import { resolveTruthFacts, loadTruthManifest } from '../lib/truth-facts';
+import { GOLDEN_PROJECTS } from '../lib/golden-set';
 import { TakeoffFacts } from '../lib/types';
 
 // Truth xlsx always come from the canonical training dir; predictions can come from a
@@ -28,9 +29,11 @@ const TRUTH_DIR = path.resolve(__dirname, '../../..', 'existing_projects_trainin
 const TRUTH_MANIFEST = loadTruthManifest(path.resolve(__dirname, '../../..', 'truth-manifest.json'));
 const PRED_DIR = process.env.PREDICTIONS_DIR || TRUTH_DIR;
 
+// Import the golden set rather than scraping evaluate-golden.ts for `folder: '...'`
+// literals — that regex silently returned [] (→ "0 projects analyzed") once the list
+// moved into golden-set.ts. golden-set.ts is the canonical definition; use it.
 function goldenFolders(): string[] {
-  const src = fs.readFileSync(path.resolve(__dirname, 'evaluate-golden.ts'), 'utf8');
-  return [...src.matchAll(/folder: '([^']+)'/g)].map((m) => m[1]);
+  return GOLDEN_PROJECTS.map((p) => p.folder);
 }
 
 async function main() {

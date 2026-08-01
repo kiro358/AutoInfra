@@ -14,6 +14,7 @@
     "dataset:manifest": "tsx src/scripts/build-dataset-manifest.ts",
     "analyze:eval": "tsx src/scripts/analyze-eval.ts",
     "score:manual": "tsx src/scripts/score-manual-facts.ts",
+    "score:offline": "tsx src/scripts/score-offline.ts",
     "assemble:transcripts": "tsx src/scripts/assemble-from-transcripts.ts"
   },
   "dependencies": {

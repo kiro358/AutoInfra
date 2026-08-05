@@ -178,6 +178,19 @@ is empirical: validate the facts metric on the dataset and A/B single-pass vs ag
   output order so truncated dense responses keep the pipe runs. Few-shot:
   `few_shot_examples.json` (still contains legacy pricing in examples — harmless, parseFacts
   ignores it; strip when convenient).
+- **Structure fabrication**: the single-pass path continues label sequences it never read
+  ("DCBMH 1..29" where the drawing has one), with complete *arithmetically generated*
+  elevations (invert −0.2/row, depth +0.2/row), so no data-completeness heuristic catches
+  them. Three output-side filters were measured and **rejected**: long-contiguous-run (45%
+  of REAL structures are in one too — `MH 100..109` is real), missing-data, and
+  sewer-endpoint corroboration (kills 115 bogus but loses 26 real, +1.3pp). Don't retry
+  them. `provenance.ts` is the approach that works — verify the label against evidence —
+  but see its header: it must be fed **only the located pages**. Fed the whole document it
+  REGRESSES (F1 40.5%→38.7%, 13 real structures deleted on Ultimate Drive), because
+  detail/spec sheets are often the only texty ones and their labels aren't this site's.
+  Structure labels are in the text layer for just **1 of 12** golden projects (Bradford),
+  so this only ever fires there; the general fix is `EXTRACTION_MODE=transcribe`, where the
+  grammar can only emit labels that appear in a transcript.
 - **Pricing**: `costing-rules.ts::DEFAULT_COSTING`. This is the ONLY place dollars live.
   Do NOT put pricing back into the extraction path.
 - **Template cells**: `constants.ts::INPUT_CELLS` is the intended source of truth;

@@ -17,6 +17,7 @@ import { normalizeLabel, runSignature } from './compare-facts';
 import { assembleTranscriptTakeoff } from './transcript-takeoff';
 import { mergeTakeoffs } from './reconcile';
 import { extractPageText, isTextyPage } from './pdf-text';
+import { verifyStructureProvenance } from './provenance';
 import { assembleTextTakeoff } from './text-takeoff';
 
 // Globally override Undici's default 30-second headers/body timeout and configure proxy if present
@@ -856,6 +857,28 @@ export async function extractFromPDF(
         confidence: 0.9,
         warnings: raw.warnings,
       }, projectName);
+      // Fabrication check. Asked for a JSON list of structures the model continues label
+      // sequences it never read — "DCBMH 1..DCBMH 29" where the drawing has one — with
+      // complete arithmetic elevations attached, so nothing about the row itself gives it
+      // away. Where the located pages carry a real text layer we can settle it against
+      // evidence: a coded label printed nowhere was not read off the drawing. Costs no LLM
+      // call, and fails open on every drawing whose labels are SHX/vector (most of them).
+      try {
+        const locatedPages = [...new Set([...(locatorIndex?.manholePages ?? []), ...(locatorIndex?.sewerPages ?? [])])];
+        if (locatedPages.length > 0) {
+          const prov = verifyStructureProvenance(facts.structures, await extractPageText(pdfBuffer, locatedPages));
+          if (prov.dropped.length > 0) {
+            facts.structures = prov.structures;
+            facts.warnings.push(
+              `Dropped ${prov.dropped.length} structure(s) whose label is not printed on the located drawing pages: ${prov.dropped.slice(0, 12).join(', ')}${prov.dropped.length > 12 ? ', …' : ''}`
+            );
+            console.log(`      [extraction.ts] provenance: dropped ${prov.dropped.length} unprinted structure label(s).`);
+          }
+        }
+      } catch (e: any) {
+        console.warn(`      [extraction.ts] Provenance check skipped: ${e.message}`);
+      }
+
       facts.warnings = [...facts.warnings, ...validateExtraction(facts)];
       facts.locatorIndex = locatorIndex;
       facts.cost = cost;

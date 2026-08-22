@@ -80,7 +80,7 @@ none of it is misread text:
 | Segment → run aggregation | Matthews: drawing `17.5m + 32m` at 300mm; truth `MH 1-MH 2 = 50m` | needs topology |
 | Estimator rounding | Oakville: drawing `10.5m`/`18.6m`, truth `12m`/`20m` — consistent centre-to-centre offset | convention |
 | Duplicate emission | Bradford: 10 extra runs — same pipes already matched via schedule, re-emitted from callouts | dedup |
-| Watermain | 0 predicted on Oakville (2 truth), Bradford (2), Ultimate (3) | unimplemented |
+| Watermain | 0 predicted on Oakville (2 truth), Bradford (2), Ultimate (3) | pure code — `text-takeoff.ts:99` drops every watermain callout with no stated length (`wm.lengthM != null`), and most read `200mmØ PVC WATERMAIN` with the length implied by the drawn line. Aggregation (`aggregateWatermainByDiameter`) already exists and is fine. |
 
 **Conclusion: this is a CAD-parsing and convention-reconciliation problem that has been
 built as a computer-vision problem.** That is why it is simultaneously expensive and
@@ -105,6 +105,28 @@ A folder-wide scan of the golden set shows this is currently isolated to this pr
 but it is total where it occurs, and it means **Stage 0 (sheet selection) is a first-class
 correctness surface**, not plumbing. A takeoff can only be as good as the sheet it was
 given.
+
+**Root cause (confirmed 2026-08-22): the selection logic is already correct; the artifact
+is stale.** `chooseDrawingPdfs()` today picks `55EricTSmithWay-A01SS-SPA-Nov15-24.pdf`
+correctly — `PDF_HARD_EXCLUDE` has contained `'bid leveling'` since commit `7994e8d`
+(2026-07-04), whose message is literally *"fix(dataset): word-boundary civil hints +
+path-level junk excludes (Eric Smith)"*. But `dataset-manifest.json` was generated
+**2026-07-03 11:18**, one day earlier, and has never been regenerated. It therefore
+predates six subsequent fixes:
+
+| commit | date | what the stale manifest predates |
+|---|---|---|
+| `7994e8d` | Jul 4 | word-boundary civil hints + junk path excludes (Eric Smith) |
+| `f48f7bb` | Jul 7 | stop reading the `V/‖` factor column as sewer slope |
+| `0f0320e` | Jul 9 | **read watermain runs (were being dropped entirely)** |
+| `021e4ce` | Jul 11 | manifest-driven truth selection (never score against empty decoys) |
+| `3d7790b` | Jul 13 | White Oak truth aligned to drawn scope |
+
+This also explains §1.1's `watermain: 0` for every usable project: those counts were
+computed by a `readTruthFacts` that dropped watermain rows. **It is one stale derived
+artifact, not two independent bugs** — and `dataset-manifest.json` has no staleness guard
+despite being consumed by `evaluate-text.ts`, `analyze-eval.ts` and `evaluate-golden.ts`.
+Regenerating it is the single highest-leverage action in Phase 0 and costs one command.
 
 ### 1.5 Supervised material available
 
@@ -216,10 +238,11 @@ Sequenced so the free, offline, measurable work lands first and de-risks the res
 
 Every item below is a measured residual from §1.3, not a guess.
 
-0. **Ruler integrity first.** `dataset-manifest.json` reports `watermain: 0` for *every*
-   usable project while golden truth clearly carries watermain rows on several. Resolve
-   this before trusting any watermain number. Per EVAL_METHODOLOGY, a ruler bug outranks
-   every other fix.
+0. **Regenerate `dataset-manifest.json` and guard it against staleness.** It predates six
+   truth/selection fixes (§1.4), which is the single cause of both the Eric Smith
+   wrong-file failure and the `watermain: 0` counts. Per EVAL_METHODOLOGY, a ruler bug
+   outranks every other fix — and this one is `npm run dataset:manifest`. Add a staleness
+   check so a manifest older than the modules that produce it is loud, not silent.
 1. **Numeric label identity.** Normalize labels to `(kind, number, suffix)` — `MH01` →
    `(MH, 1)` — *not* by stripping characters, which would collapse `MH 1` and `MH 10`.
    Handle qualifier prefixes (`DIV.`, `CTRL`). Applies to both `callout-parser.ts` and
@@ -235,13 +258,16 @@ Every item below is a measured residual from §1.3, not a guess.
 5. **Coverage budget.** Replace the flat `MAX_TILES_TOTAL` cap with a per-project budget
    scaled by located page count. The cap truncates precisely the two largest documents
    (Panattoni 13 pages / 15%, Proposed Commercial 6 pages / 26%).
-6. **Watermain** — implement it. 10% recall corpus-wide and 0/7 on the three projects
-   probed is an unimplemented feature, not a weak one.
-7. **Sheet selection (§1.4).** Score candidate PDFs deterministically — sheet-code tokens
-   (`SS`, `SG`, `EC`, `D1`), page dimensions, vector path density, callout-keyword density
-   — and reject non-drawings outright. Eric Smith Way is currently scored against a
-   bid-levelling sheet. Add a regression test asserting the servicing drawing is chosen
-   over the quote/levelling PDFs in that folder.
+6. **Watermain** — stop discarding length-less callouts (`text-takeoff.ts:99`). Emit the
+   pipe with `length: null` so it is *detected*, and let the length arrive from the
+   schedule, or from the drawn polyline in Phase 1. Detection and measurement are separate
+   failures and `matchWatermain` phase 3 already scores them separately by design.
+7. **Sheet selection (§1.4).** The selection *logic* is already correct — task 0 fixes the
+   artifact. What is missing is a **regression test** pinning `selectDrawingPdfs` on the
+   Eric Smith filename set (a pure-function test needing no dataset), plus a preference
+   for servicing sheet-codes (`SS`) over grading/erosion/detail codes (`SG`, `EC`, `D1`,
+   `D2`, `T`) when several civil sheets qualify, so the servicing plan is decoded first
+   under a page budget.
 8. **Triage the remaining empty runs** as transport failures, separately from accuracy.
 
 **Acceptance:** items 0–4, 6 and 7 are validated by `npm run score:offline` +

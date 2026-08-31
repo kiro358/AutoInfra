@@ -35,3 +35,35 @@ describe('selectDrawingPdfs', () => {
     expect(out).toEqual(['Drawings/Civil/C101 Servicing Plan.pdf']);
   });
 });
+
+// Verbatim basenames from 2026-009 55 ERIC T. SMITH WAY,AURORA.
+const ERIC_SMITH = [
+  '55ETS-A01D1-Imperv-Liner-Jan30-25 (1).pdf',
+  '55EricTSmithWay-A01D2-SPA-Nov15-24 - Copy.pdf',
+  '55EricTSmithWay-A01EC-SPA-Nov15-24 - Copy.pdf',
+  '55EricTSmithWay-A01SG-SPA-Nov15-24.pdf',
+  '55EricTSmithWay-A01SS-SPA-Nov15-24.pdf',
+  '55EricTSmithWay-A01T-SPA-Nov15-24 - Copy.pdf',
+  'January 27\'26 2026-009 55 Eric T. Smith Way QUOTE.pdf',
+  'QUOTE_2026-009-Excavation_Backfill_55_EricT.SmithWay_Aurora_Rev01_2026-01-28.pdf',
+  'Rice - quote.pdf',
+  'Topsite bid leveling 2026-04-15 completed.pdf',
+  'Topsite bid leveling 2026-04-15.pdf',
+];
+
+describe('selectDrawingPdfs with sheet-code ranking', () => {
+  it('keeps the site-servicing drawing and drops quotes and bid-levelling sheets', () => {
+    const picked = selectDrawingPdfs(ERIC_SMITH);
+    expect(picked).toContain('55EricTSmithWay-A01SS-SPA-Nov15-24.pdf');
+    expect(picked.some((p) => /bid leveling/i.test(p))).toBe(false);
+    expect(picked.some((p) => /quote/i.test(p))).toBe(false);
+  });
+
+  it('ranks the servicing sheet ahead of grading/erosion/detail sheets', () => {
+    const picked = selectDrawingPdfs(ERIC_SMITH);
+    const idx = (frag: string) => picked.findIndex((p) => p.includes(frag));
+    expect(idx('A01SS')).toBeGreaterThanOrEqual(0);
+    expect(idx('A01SS')).toBeLessThan(idx('A01EC'));
+    expect(idx('A01SS')).toBeLessThan(idx('A01D1'));
+  });
+});

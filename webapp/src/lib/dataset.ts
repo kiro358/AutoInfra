@@ -57,7 +57,29 @@ export function selectDrawingPdfs(relPaths: string[]): string[] {
     PDF_STRONG_CIVIL.some((c) => hasWord(lc(f), c)) || !PDF_SOFT_EXCLUDE.some((b) => base(f).includes(b))
   );
   const civil = keep.filter((f) => PDF_CIVIL_HINTS.some((c) => hasWord(lc(f), c)));
-  return civil.length > 0 ? civil : keep;
+  const chosen = civil.length > 0 ? civil : keep;
+  return rankBySheetCode(chosen);
+}
+
+// Servicing sheets carry the takeoff; grading/erosion/detail sheets rarely do.
+// Ranking (not filtering) means nothing is lost — the servicing plan is simply
+// decoded first when a page/tile budget applies.
+// Sheet codes are digit-adjacent (e.g., A01SS), so the leading boundary is [^a-z]
+// (not a letter) rather than [^a-z0-9] (not a letter or digit).
+const SHEET_CODE_RANK: [RegExp, number][] = [
+  [/(?:^|[^a-z])(?:ss|site\s*servicing|servicing)(?:[^a-z0-9]|$)/i, 0],
+  [/(?:^|[^a-z])(?:sg|grading)(?:[^a-z0-9]|$)/i, 1],
+  [/(?:^|[^a-z])(?:ec|erosion)(?:[^a-z0-9]|$)/i, 2],
+  [/(?:^|[^a-z])(?:d\d|det|detail)(?:[^a-z0-9]|$)/i, 3],
+];
+
+export function rankBySheetCode(paths: string[]): string[] {
+  const rank = (p: string) => {
+    const base = path.basename(p);
+    for (const [re, r] of SHEET_CODE_RANK) if (re.test(base)) return r;
+    return 2.5; // unknown code: ahead of details, behind servicing/grading/erosion
+  };
+  return [...paths].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 }
 
 /** Recursively list all PDF paths (relative to projectDir), deduped by basename. */

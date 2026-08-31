@@ -58,14 +58,27 @@ export function stripSystemPrefix(token: string): string {
   return token.replace(SYS_PREFIX, '');
 }
 
+// Estimator note prefixes that qualify a structure without changing its identity:
+// "DIV.MH 2" is MH 2 on a diversion, "CTRL MH 5" is MH 5 used as a control. The
+// digit lookahead keeps them anchored to a real structure id.
+const QUALIFIER_PREFIX = /^(?:DIV|CTRL|CONTROL)(?=(?:DDICB|DCBMH|CBMH|DICB|DCB|CB|MH|HS|OS)\d)/;
+
+// A structure id is (letters)(number)(optional letter suffix). Comparing the number
+// NUMERICALLY is what makes "MH01" and "MH 1" the same structure while keeping
+// "MH10" distinct — stripping zeros textually would merge them.
+const LABEL_PARTS = /^([A-Z]+)0*(\d+)([A-Z]*)$/;
+
 export function normalizeLabel(label: string): string {
-  return stripSystemPrefix(
+  const flat = stripSystemPrefix(
     (label || '')
       .toUpperCase()
       .replace(/\(.*?\)/g, '')
       .split('/')[0] // drop note suffix after the first slash
       .replace(/[^A-Z0-9]/g, '')
+      .replace(QUALIFIER_PREFIX, '')
   );
+  const m = LABEL_PARTS.exec(flat);
+  return m ? `${m[1]}${Number(m[2])}${m[3]}` : flat;
 }
 
 /**

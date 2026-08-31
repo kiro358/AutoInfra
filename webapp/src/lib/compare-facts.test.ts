@@ -152,6 +152,37 @@ describe('normalizeLabel / runSignature', () => {
     expect(runSignature('MH 8-CONN.')).toBe(runSignature('MH8-CONN'));
     expect(runSignature('DICB 1-CONN.')).toBe(runSignature('DICB 1-PLUG'));
   });
+
+  describe('normalizeLabel — numeric identity', () => {
+    it('treats zero-padded ids as the same structure', () => {
+      expect(normalizeLabel('MH01')).toBe(normalizeLabel('MH 1'));
+      expect(normalizeLabel('MH 02')).toBe(normalizeLabel('MH2'));
+    });
+
+    it('does NOT collapse different numbers', () => {
+      expect(normalizeLabel('MH01')).not.toBe(normalizeLabel('MH 10'));
+      expect(normalizeLabel('MH 1')).not.toBe(normalizeLabel('MH11'));
+    });
+
+    it('keeps alphabetic id suffixes distinct', () => {
+      expect(normalizeLabel('MH 6A')).not.toBe(normalizeLabel('MH 6'));
+      expect(normalizeLabel('MH06A')).toBe(normalizeLabel('MH 6A'));
+    });
+
+    it('strips estimator qualifier prefixes', () => {
+      expect(normalizeLabel('DIV.MH 2')).toBe(normalizeLabel('MH2'));
+      expect(normalizeLabel('CTRL MH 5')).toBe(normalizeLabel('MH 5'));
+    });
+
+    it('still strips the storm/sanitary system qualifier', () => {
+      expect(normalizeLabel('STMH 1')).toBe(normalizeLabel('MH 1'));
+    });
+
+    it('leaves labels with no numeric part alone', () => {
+      expect(normalizeLabel('VC')).toBe('VC');
+      expect(normalizeLabel('CTRL MH')).toBe('CTRLMH');
+    });
+  });
 });
 
 describe('compareFacts — entity detection', () => {

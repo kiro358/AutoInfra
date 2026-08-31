@@ -7,7 +7,7 @@
 import { PageText, PositionedText } from './pdf-text';
 import {
   parseRunCallout, parseStructureLabel, parseElevation, parseWatermainCallout,
-  isDanglingRunHead, isRunContinuation, ParsedStructure,
+  isDanglingRunHead, isRunContinuation, parseSubdrainCallout, ParsedStructure,
 } from './callout-parser';
 import { reconcileTakeoff } from './reconcile';
 import { normalizeLabel } from './compare-facts';
@@ -78,6 +78,21 @@ export function assembleTextTakeoff(pages: PageText[], projectName: string): Tak
             pipeDiameter: run.diameterMm,
             typeClass: run.typeClass,
             slope: run.slopePct,
+            depth: null,
+          });
+        }
+        continue;
+      }
+      const subdrain = parseSubdrainCallout(line.text);
+      if (subdrain) {
+        if (!subdrain.existing) {
+          sewers.push({
+            runLabel: 'SUBDRAIN',
+            isLineItem: false,
+            length: subdrain.length,
+            pipeDiameter: subdrain.diameterMm,
+            typeClass: null,
+            slope: null,
             depth: null,
           });
         }

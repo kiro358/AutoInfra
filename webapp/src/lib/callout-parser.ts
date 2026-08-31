@@ -23,7 +23,7 @@ export interface ParsedRun {
 }
 export interface ParsedStructure {
   label: string;
-  kind: 'MH' | 'CBMH' | 'DCBMH' | 'CB' | 'DCB' | 'DICB' | 'DDICB' | 'HS' | 'OS';
+  kind: 'MH' | 'CBMH' | 'DCBMH' | 'CB' | 'DCB' | 'DICB' | 'DDICB' | 'HS' | 'OS' | 'JF' | 'EF' | 'CHAMBER';
   diameterMm: number | null;
   existing: boolean;
 }
@@ -36,9 +36,11 @@ const LEN_DIA_RE = /(\d+(?:\.\d+)?)\s*m\b\s*(?:-|–|of)?\s*(\d{2,4})\s*mm/i;
 const SLOPE_RE = /@\s*(\d+(?:\.\d+)?)\s*(%|‰)?/;
 const MATERIAL_RE = /\b(PVC|HDPE|CONC|CSP|(?:S?DR)\s*(\d{1,3}))\b/i;
 const WM_RE = /\b(WATERMAIN|WM)\b/i;
+const SUBDRAIN_RE = /\bSUB[\s-]?DRAIN\b/i;
 
 export function parseRunCallout(line: string): ParsedRun | null {
   if (WM_RE.test(line)) return null; // watermain callouts share the mm form
+  if (SUBDRAIN_RE.test(line)) return null; // subdrains share the mm form but are handled separately
   const core = LEN_DIA_RE.exec(line);
   if (!core) return null;
   const slope = SLOPE_RE.exec(line);
@@ -78,26 +80,56 @@ export function isRunContinuation(line: string): boolean {
 //   2 = structure kind code as written ("STMH", "CBMH", "MH", ...)
 //   3 = separator between kind and id as written (may be "", " ", "-", " - ") -> whether
 //       the reconstructed label keeps a space (e.g. "STMH 1") or not (e.g. "CBMH1035")
-//   4 = id number (may carry a trailing letter, e.g. "104A")
+//   4 = id number (may carry a trailing letter, e.g. "104A"; now also hyphenated like "6-3-1")
 //   5 = parenthesized diameter in mm, if present ("(1200Ø)")
-const STRUCT_RE = /(?:^|\s)(EX\.?\s+)?(?:(?:SAN(?:ITARY)?|STM|STORM)\s+)?(DDICB|DCBMH|DICB|CBMH|DCB|STMH|SANMH|CB|MH|HS|OS)(\s?-?\s?)(\d+[A-Z]?)\s*(?:\((\d{3,4})\s*[ØO]?\))?/i;
+// Two additions: JF/EF joined the kind alternation (junction and end-of-flow structures)
+// and the id now accepts hyphenated parts (e.g. "JF 6-3-1"). Leading delimiter now
+// includes '(' to catch parenthesized structure ids in embedded contexts like
+// "HATCH JF2000 (JF6-3-1)" — the genuine hyphenated id can be seen after the model code.
+// (Note: the widened (?:^|[\s(]) delimiter applies to every kind, not just JF.)
+const STRUCT_RE = /(?:^|[\s(])(EX\.?\s+)?(?:(?:SAN(?:ITARY)?|STM|STORM)\s+)?(DDICB|DCBMH|DICB|CBMH|DCB|STMH|SANMH|CB|MH|HS|OS|JF|EF)(\s?-?\s?)(\d+(?:-\d+)*[A-Z]?)\s*(?:\((\d{3,4})\s*[ØO]?\))?/i;
+// Global copy for matchAll iteration. matchAll clones the regex internally, so no shared
+// lastIndex state leaks between calls (do NOT add 'g' to STRUCT_RE itself and call exec in a loop).
+const STRUCT_RE_G = new RegExp(STRUCT_RE.source, 'gi');
+
+// Chambers are written id-first ("C100 CHAMBER", "OGS100 CHAMBER"), so they need
+// their own pattern rather than another alternation branch.
+const CHAMBER_RE = /(?:^|\s)(EX\.?\s+)?([A-Z]{1,4}\d+[A-Z]?)\s+CHAMBER\b/i;
 
 export function parseStructureLabel(line: string): ParsedStructure | null {
-  const m = STRUCT_RE.exec(line);
-  if (!m) return null;
-  const rawKind = m[2].toUpperCase();
-  const kind = (rawKind === 'STMH' || rawKind === 'SANMH' ? 'MH' : rawKind) as ParsedStructure['kind'];
-  // Preserve the drawing's own kind-code text in the label (normalizeLabel handles
-  // matching later); whether a space separates code from id follows what was on the
-  // drawing, captured verbatim in group 3.
-  const hadSpace = /\s/.test(m[3]);
-  const label = `${m[2].toUpperCase()}${hadSpace ? ' ' : ''}${m[4].toUpperCase()}`;
-  return {
-    label,
-    kind,
-    diameterMm: m[5] ? parseInt(m[5], 10) : null,
-    existing: Boolean(m[1]),
-  };
+  const chamber = CHAMBER_RE.exec(line);
+  if (chamber) {
+    return { label: chamber[2].toUpperCase(), kind: 'CHAMBER', diameterMm: null, existing: Boolean(chamber[1]) };
+  }
+
+  // Iterate through all candidate structure matches and return the first one that passes validation.
+  // This allows scanning past rejected candidates (e.g., JF model codes) to find genuine structures
+  // in the same line (e.g., hyphenated JF ids in parentheses after the model code).
+  for (const m of line.matchAll(STRUCT_RE_G)) {
+    const rawKind = m[2].toUpperCase();
+    const kind = (rawKind === 'STMH' || rawKind === 'SANMH' ? 'MH' : rawKind) as ParsedStructure['kind'];
+
+    // JF ids must be hyphenated to distinguish real structures (JF 6-3-1) from Jellyfish
+    // product model numbers (JF1000, JF2000). EF ids are not hyphenated in the corpus.
+    if (kind === 'JF' && !m[4].includes('-')) {
+      continue; // Try the next candidate match, not this one
+    }
+
+    // Preserve the drawing's own kind-code text in the label (normalizeLabel handles
+    // matching later); whether a space separates code from id follows what was on the
+    // drawing, captured verbatim in group 3.
+    const hadSpace = /\s/.test(m[3]);
+    const label = `${m[2].toUpperCase()}${hadSpace ? ' ' : ''}${m[4].toUpperCase()}`;
+    return {
+      label,
+      kind,
+      diameterMm: m[5] ? parseInt(m[5], 10) : null,
+      existing: Boolean(m[1]),
+    };
+  }
+
+  // No candidate matched all validation rules
+  return null;
 }
 
 const ELEV_RE = /^\s*(?:([NSEW]{1,2})\s+)?(T\/G|INV(?:ERT)?\.?)\s*=?\s*(\d{2,3}(?:\.\d{1,3})?)\s*±?\s*$/i;
@@ -124,4 +156,16 @@ export function parseWatermainCallout(line: string): ParsedWatermain | null {
     material: mat ? mat[1].toUpperCase() : null,
     existing: EX_RE.test(line),
   };
+}
+
+/**
+ * Subdrains are perforated pipe under the road base. They carry a length and a
+ * diameter but no system tag and no slope, so parseRunCallout ignores them —
+ * yet the estimator prices them as a sewer line item (Oakville: "SUBDRAIN 67m").
+ */
+export function parseSubdrainCallout(line: string): { length: number; diameterMm: number; existing: boolean } | null {
+  if (!SUBDRAIN_RE.test(line)) return null;
+  const core = LEN_DIA_RE.exec(line);
+  if (!core) return null;
+  return { length: parseFloat(core[1]), diameterMm: snapToPipeDiameter(parseInt(core[2], 10)), existing: EX_RE.test(line) };
 }

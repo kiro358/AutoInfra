@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseRunCallout, parseStructureLabel, parseElevation, parseWatermainCallout,
-  isDanglingRunHead, isRunContinuation,
+  isDanglingRunHead, isRunContinuation, parseSubdrainCallout,
 } from './callout-parser';
 
 describe('parseRunCallout', () => {
@@ -93,5 +93,61 @@ describe('parseWatermainCallout', () => {
   });
   it('rejects sewer callouts', () => {
     expect(parseWatermainCallout('83.7m-375mmØ SAN @ 0.02%')).toBeNull();
+  });
+});
+
+describe('grammar coverage (Phase 0)', () => {
+  it('parses multi-part junction ids', () => {
+    const jf = parseStructureLabel('JF 6-3-1')!;
+    expect(jf.kind).toBe('JF');
+    expect(jf.label).toBe('JF 6-3-1');
+  });
+
+  it('parses EF structures with zero-padded ids', () => {
+    const ef = parseStructureLabel('EF 04')!;
+    expect(ef.kind).toBe('EF');
+    expect(ef.label).toBe('EF 04');
+  });
+
+  it('parses a chamber written id-first', () => {
+    const ch = parseStructureLabel('C100 CHAMBER')!;
+    expect(ch.kind).toBe('CHAMBER');
+    expect(ch.label).toBe('C100');
+  });
+
+  it('does not mistake EF/JF prefixes inside other words', () => {
+    expect(parseStructureLabel('OFFSET 12')).toBeNull();
+  });
+
+  it('parses subdrain runs', () => {
+    expect(parseSubdrainCallout('67.0m - 150mmØ SUBDRAIN')).toEqual({ length: 67, diameterMm: 150, existing: false });
+    expect(parseSubdrainCallout('EX. 83.7m - 200mmØ SUBDRAIN')).toEqual({ length: 83.7, diameterMm: 200, existing: true });
+    expect(parseSubdrainCallout('83.7m-375mmØ SAN @ 0.02%')).toBeNull();
+  });
+
+  it('keeps EX detection working on the new kinds', () => {
+    expect(parseStructureLabel('EX JF 4-1-1')!.existing).toBe(true);
+  });
+
+  describe('Bradford regression pins (Jellyfish product codes)', () => {
+    it('rejects JF model codes (non-hyphenated)', () => {
+      // JF1000, JF2000 are product model numbers, not structure ids
+      expect(parseStructureLabel('JF1000')).toBeNull();
+      expect(parseStructureLabel('JF2000')).toBeNull();
+    });
+
+    it('extracts real hyphenated JF ids from structured text', () => {
+      // Real structure ids must be hyphenated (e.g., JF 6-3-1)
+      const result1 = parseStructureLabel('PROPOSED JELLYFISH JF4-1-1 UNIT c/w OFFLINE');
+      expect(result1?.kind).toBe('JF');
+      expect(result1?.label).toBe('JF4-1-1');
+    });
+
+    it('extracts hyphenated JF ids from parenthesized contexts', () => {
+      // When model code and genuine id appear on the same line, match the hyphenated one
+      const result = parseStructureLabel('HATCH JF2000 (JF6-3-1)');
+      expect(result?.kind).toBe('JF');
+      expect(result?.label).toBe('JF6-3-1');
+    });
   });
 });

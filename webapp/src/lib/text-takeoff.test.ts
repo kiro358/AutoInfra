@@ -60,4 +60,32 @@ describe('assembleTextTakeoff', () => {
     expect(facts.watermain).toHaveLength(1);
     expect(facts.watermain[0]).toMatchObject({ length: 124, pipeDiameter: 150 });
   });
+
+  it('assembles subdrains as sewer line items with runLabel SUBDRAIN, excluding existing', () => {
+    const facts = assembleTextTakeoff([page([
+      { text: '67.0m - 150mmØ SUBDRAIN', x: 100, y: 500 },
+      { text: 'EX. 83.7m - 200mmØ SUBDRAIN', x: 300, y: 400 }, // existing — excluded
+    ])], 'Oakville');
+    expect(facts.sewers).toHaveLength(1);
+    const subdrain = facts.sewers[0];
+    expect(subdrain.runLabel).toBe('SUBDRAIN');
+    expect(subdrain.isLineItem).toBe(false);
+    expect(subdrain.length).toBe(67);
+    expect(subdrain.pipeDiameter).toBe(150);
+  });
+
+  it('treats chamber structures as their own kind, not shadows of MH', () => {
+    const facts = assembleTextTakeoff([page([
+      { text: 'C100 CHAMBER', x: 100, y: 500 },
+      { text: 'MH2 CHAMBER', x: 300, y: 400 }, // CHAMBER check runs first
+      { text: 'MH 1', x: 500, y: 300 },
+    ])], 'T');
+    expect(facts.structures).toHaveLength(3);
+    const c100 = facts.structures.find((s) => s.description === 'C100');
+    const mh2 = facts.structures.find((s) => s.description === 'MH2');
+    const mh1 = facts.structures.find((s) => s.description === 'MH 1');
+    expect(c100).toBeDefined();
+    expect(mh2).toBeDefined();
+    expect(mh1).toBeDefined();
+  });
 });

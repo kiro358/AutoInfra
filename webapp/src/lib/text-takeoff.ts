@@ -111,10 +111,15 @@ export function assembleTextTakeoff(pages: PageText[], projectName: string): Tak
         continue;
       }
       const wm = parseWatermainCallout(line.text);
-      if (wm && !wm.existing && wm.lengthM != null) {
+      if (wm && !wm.existing) {
+        // Emit even with no stated length. Most drawings label the main
+        // ("200mmØ PVC WATERMAIN") and leave the length implied by the drawn
+        // line, so requiring a length dropped the pipe entirely — scoring a
+        // correct read as a miss. Detection and measurement are separate
+        // failures; matchWatermain phase 3 pairs on diameter alone.
         watermain.push({
           sizeAndType: `${wm.diameterMm}mm${wm.material ? ` ${wm.material}` : ''}`,
-          length: wm.lengthM,
+          length: wm.lengthM ?? 0,
           pipeDiameter: wm.diameterMm,
           ocSc: 1.1,
           avgCover: 1.8,

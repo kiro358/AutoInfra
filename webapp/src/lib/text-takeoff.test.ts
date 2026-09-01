@@ -52,10 +52,10 @@ describe('assembleTextTakeoff', () => {
     ]));
   });
 
-  it('keeps watermain only when a length is present', () => {
+  it('excludes existing watermain but keeps the stated length on the live one', () => {
     const facts = assembleTextTakeoff([page([
       { text: '124.0m - 150mmØ PVC WM', x: 100, y: 500 },
-      { text: 'EX WM - 250 mm', x: 300, y: 500 },
+      { text: 'EX WM - 250 mm', x: 300, y: 500 }, // existing — excluded regardless of length
     ])], 'T');
     expect(facts.watermain).toHaveLength(1);
     expect(facts.watermain[0]).toMatchObject({ length: 124, pipeDiameter: 150 });
@@ -72,6 +72,50 @@ describe('assembleTextTakeoff', () => {
     expect(subdrain.isLineItem).toBe(false);
     expect(subdrain.length).toBe(67);
     expect(subdrain.pipeDiameter).toBe(150);
+  });
+
+  describe('subdrain callouts with a diameter but no stated length (Oakville Fire Hall verbatim lines)', () => {
+    it('detects a diameter-only subdrain and collapses repeated identical mentions', () => {
+      const facts = assembleTextTakeoff([page([
+        { text: '150mm SUBDRAIN', x: 100, y: 600 },
+        { text: '150mm SUBDRAIN', x: 300, y: 500 },
+        { text: '150mm SUBDRAIN', x: 500, y: 400 },
+        { text: '150mm SUBDRAIN', x: 700, y: 300 },
+      ])], 'Oakville');
+      const subdrains = facts.sewers.filter((s) => s.runLabel === 'SUBDRAIN');
+      expect(subdrains).toHaveLength(1);
+      expect(subdrains[0].pipeDiameter).toBe(150);
+      expect(subdrains[0].length).toBe(0);
+    });
+
+    it('emits nothing for a subdrain callout with no diameter on the line', () => {
+      const facts = assembleTextTakeoff([page([
+        { text: 'SUBDRAIN WITH 0.5m CLEARANCE', x: 100, y: 600 },
+        { text: 'SUBDRAIN. REFER TO DRAWING', x: 300, y: 500 },
+      ])], 'Oakville');
+      expect(facts.sewers.filter((s) => s.runLabel === 'SUBDRAIN')).toHaveLength(0);
+    });
+  });
+
+  describe('watermain detection without a stated length', () => {
+    it('emits a proposed main whose callout carries no length', () => {
+      const facts = assembleTextTakeoff([page([
+        { text: '200mmØ PVC WATERMAIN', x: 100, y: 600 },
+        { text: 'EX. 300 mmØ PVC WATERMAIN', x: 100, y: 500 }, // existing — excluded
+      ])], 'T');
+      expect(facts.watermain).toHaveLength(1);
+      expect(facts.watermain[0].pipeDiameter).toBe(200);
+      expect(facts.watermain[0].length).toBe(0);
+    });
+
+    it('prefers a stated length over an unmeasured duplicate of the same size', () => {
+      const facts = assembleTextTakeoff([page([
+        { text: '150mmØ PVC WATERMAIN', x: 100, y: 600 },
+        { text: '124.0m - 150mmØ PVC WM', x: 100, y: 400 },
+      ])], 'T');
+      expect(facts.watermain).toHaveLength(1);
+      expect(facts.watermain[0].length).toBe(124);
+    });
   });
 
   it('treats chamber structures as their own kind, not shadows of MH', () => {

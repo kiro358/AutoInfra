@@ -125,6 +125,26 @@ describe('grammar coverage (Phase 0)', () => {
     expect(parseSubdrainCallout('83.7m-375mmØ SAN @ 0.02%')).toBeNull();
   });
 
+  describe('subdrain callouts with a diameter but no stated length (Oakville Fire Hall)', () => {
+    it('emits the pipe by diameter alone when no length is tightly coupled to it', () => {
+      expect(parseSubdrainCallout('150mm SUBDRAIN')).toEqual({ length: 0, diameterMm: 150, existing: false });
+      expect(parseSubdrainCallout('200mm SUBDRAIN')).toEqual({ length: 0, diameterMm: 200, existing: false });
+      expect(parseSubdrainCallout('SWALE WITH 150mm SUBDRAIN')).toEqual({ length: 0, diameterMm: 150, existing: false });
+    });
+
+    it('does not mistake an unrelated width for the pipe length (bioswale trap)', () => {
+      // "1.8m" is the bioswale width, not the subdrain's length — it is not tightly
+      // coupled to the diameter the way "67.0m - 150mmØ" is, so it must be ignored
+      // rather than misread as the pipe's length.
+      expect(parseSubdrainCallout('1.8m BIOSWALE WITH 200mm SUBDRAIN')).toEqual({ length: 0, diameterMm: 200, existing: false });
+    });
+
+    it('emits nothing when the line carries no diameter at all', () => {
+      expect(parseSubdrainCallout('SUBDRAIN WITH 0.5m CLEARANCE')).toBeNull();
+      expect(parseSubdrainCallout('SUBDRAIN. REFER TO DRAWING')).toBeNull();
+    });
+  });
+
   it('keeps EX detection working on the new kinds', () => {
     expect(parseStructureLabel('EX JF 4-1-1')!.existing).toBe(true);
   });

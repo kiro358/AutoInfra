@@ -158,14 +158,30 @@ export function parseWatermainCallout(line: string): ParsedWatermain | null {
   };
 }
 
+// A bare diameter with no length attached ("150mm SUBDRAIN", "200mm SUBDRAIN").
+const SUBDRAIN_DIA_ONLY_RE = /(\d{2,4})\s*mm/i;
+
 /**
- * Subdrains are perforated pipe under the road base. They carry a length and a
- * diameter but no system tag and no slope, so parseRunCallout ignores them —
- * yet the estimator prices them as a sewer line item (Oakville: "SUBDRAIN 67m").
+ * Subdrains are perforated pipe under the road base. They carry a diameter but
+ * no system tag and no slope, so parseRunCallout ignores them — yet the
+ * estimator prices them as a sewer line item (Oakville: "SUBDRAIN 67m").
+ *
+ * Most subdrain callouts on real drawings state only a diameter ("150mm
+ * SUBDRAIN") — the canonical run-callout form ("67.0m - 150mmØ SUBDRAIN") is
+ * rare. When that tightly-coupled length+diameter core is present, trust it;
+ * otherwise fall back to the diameter alone with length 0 rather than
+ * dropping the pipe. Deliberately do NOT search the line for an unrelated
+ * number to use as a length — "1.8m BIOSWALE WITH 200mm SUBDRAIN" carries the
+ * bioswale's width, not the pipe's length, and LEN_DIA_RE's tight adjacency
+ * already keeps that number from being mistaken for one.
  */
 export function parseSubdrainCallout(line: string): { length: number; diameterMm: number; existing: boolean } | null {
   if (!SUBDRAIN_RE.test(line)) return null;
   const core = LEN_DIA_RE.exec(line);
-  if (!core) return null;
-  return { length: parseFloat(core[1]), diameterMm: snapToPipeDiameter(parseInt(core[2], 10)), existing: EX_RE.test(line) };
+  if (core) {
+    return { length: parseFloat(core[1]), diameterMm: snapToPipeDiameter(parseInt(core[2], 10)), existing: EX_RE.test(line) };
+  }
+  const dia = SUBDRAIN_DIA_ONLY_RE.exec(line);
+  if (!dia) return null; // no diameter on the line — nothing to describe
+  return { length: 0, diameterMm: snapToPipeDiameter(parseInt(dia[1], 10)), existing: EX_RE.test(line) };
 }

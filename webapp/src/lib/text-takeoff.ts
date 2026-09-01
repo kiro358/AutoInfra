@@ -11,6 +11,7 @@ import {
 } from './callout-parser';
 import { reconcileTakeoff } from './reconcile';
 import { normalizeLabel } from './compare-facts';
+import { detectTables, tableToSewers } from './schedule-table';
 import { TakeoffFacts, StructureFact, SewerFact, WatermainFact, CatchbasinGroupFact } from './types';
 
 interface Line { text: string; x: number; y: number; }
@@ -61,6 +62,10 @@ export function assembleTextTakeoff(pages: PageText[], projectName: string): Tak
   const watermain: WatermainFact[] = [];
 
   for (const page of pages) {
+    // Schedule tables first: an endpoint-labelled schedule row is strictly better
+    // evidence than the same pipe's dimension callout, and reconcile.ts prefers it.
+    for (const table of detectTables(page)) sewers.push(...tableToSewers(table));
+
     const lines = mergeLines(page.items);
 
     // Step 2: classify each merged line. Step 4 (filter existing) is applied inline.

@@ -132,6 +132,16 @@ describe('grammar coverage (Phase 0)', () => {
       expect(parseSubdrainCallout('SWALE WITH 150mm SUBDRAIN')).toEqual({ length: 0, diameterMm: 150, existing: false });
     });
 
+    it('chooses the diameter nearest the SUBDRAIN keyword when multiple figures present', () => {
+      // Regression pin: when a line carries both another pipe's diameter (300mm STM)
+      // and the subdrain's diameter (150mm), pick the one nearest to the keyword
+      expect(parseSubdrainCallout('300mm STM C/W 150mm SUBDRAIN')).toEqual({ length: 0, diameterMm: 150, existing: false });
+    });
+
+    it('emits existing: true on the diameter-only branch when EX is present', () => {
+      expect(parseSubdrainCallout('EX. 150mm SUBDRAIN')).toEqual({ length: 0, diameterMm: 150, existing: true });
+    });
+
     it('does not mistake an unrelated width for the pipe length (bioswale trap)', () => {
       // "1.8m" is the bioswale width, not the subdrain's length — it is not tightly
       // coupled to the diameter the way "67.0m - 150mmØ" is, so it must be ignored
@@ -142,6 +152,12 @@ describe('grammar coverage (Phase 0)', () => {
     it('emits nothing when the line carries no diameter at all', () => {
       expect(parseSubdrainCallout('SUBDRAIN WITH 0.5m CLEARANCE')).toBeNull();
       expect(parseSubdrainCallout('SUBDRAIN. REFER TO DRAWING')).toBeNull();
+      expect(parseSubdrainCallout('SUBDRAIN PIPES TO BE SET ON AT LEAST 1.0% GRADE DRAINING TO A POSITIVE FROST-FREE OUTLET.')).toBeNull();
+    });
+
+    it('handles diameter notations with the diameter symbol', () => {
+      // Real corpus line with Ø symbol
+      expect(parseSubdrainCallout('PR 150mmØ SUBDRAIN c/w')).toEqual({ length: 0, diameterMm: 150, existing: false });
     });
   });
 

@@ -37,6 +37,8 @@ const SLOPE_RE = /@\s*(\d+(?:\.\d+)?)\s*(%|‰)?/;
 const MATERIAL_RE = /\b(PVC|HDPE|CONC|CSP|(?:S?DR)\s*(\d{1,3}))\b/i;
 const WM_RE = /\b(WATERMAIN|WM)\b/i;
 const SUBDRAIN_RE = /\bSUB[\s-]?DRAIN\b/i;
+// Shared pattern: diameter in millimetres (used by both watermain and subdrain parsers)
+const DIA_MM_RE = /(\d{2,4})\s*mm/i;
 
 export function parseRunCallout(line: string): ParsedRun | null {
   if (WM_RE.test(line)) return null; // watermain callouts share the mm form
@@ -146,7 +148,7 @@ export function parseElevation(line: string): ParsedElevation | null {
 
 export function parseWatermainCallout(line: string): ParsedWatermain | null {
   if (!WM_RE.test(line)) return null;
-  const dia = /(\d{2,4})\s*mm/i.exec(line);
+  const dia = DIA_MM_RE.exec(line);
   if (!dia) return null;
   const len = /(\d+(?:\.\d+)?)\s*m\b(?!m)/i.exec(line);
   const mat = /\b(PVC|HDPE|CONC|DI|CPP)\b/i.exec(line);
@@ -157,9 +159,6 @@ export function parseWatermainCallout(line: string): ParsedWatermain | null {
     existing: EX_RE.test(line),
   };
 }
-
-// A bare diameter with no length attached ("150mm SUBDRAIN", "200mm SUBDRAIN").
-const SUBDRAIN_DIA_ONLY_RE = /(\d{2,4})\s*mm/i;
 
 /**
  * Subdrains are perforated pipe under the road base. They carry a diameter but
@@ -174,6 +173,9 @@ const SUBDRAIN_DIA_ONLY_RE = /(\d{2,4})\s*mm/i;
  * number to use as a length — "1.8m BIOSWALE WITH 200mm SUBDRAIN" carries the
  * bioswale's width, not the pipe's length, and LEN_DIA_RE's tight adjacency
  * already keeps that number from being mistaken for one.
+ *
+ * When a line carries multiple millimetre figures (e.g., "300mm STM C/W 150mm SUBDRAIN"),
+ * we pick the one nearest to the SUBDRAIN keyword to avoid capturing an unrelated pipe's diameter.
  */
 export function parseSubdrainCallout(line: string): { length: number; diameterMm: number; existing: boolean } | null {
   if (!SUBDRAIN_RE.test(line)) return null;
@@ -181,7 +183,25 @@ export function parseSubdrainCallout(line: string): { length: number; diameterMm
   if (core) {
     return { length: parseFloat(core[1]), diameterMm: snapToPipeDiameter(parseInt(core[2], 10)), existing: EX_RE.test(line) };
   }
-  const dia = SUBDRAIN_DIA_ONLY_RE.exec(line);
-  if (!dia) return null; // no diameter on the line — nothing to describe
-  return { length: 0, diameterMm: snapToPipeDiameter(parseInt(dia[1], 10)), existing: EX_RE.test(line) };
+  // No canonical length+diameter pair; look for a diameter figure nearest to the SUBDRAIN keyword
+  const subdrainMatch = SUBDRAIN_RE.exec(line);
+  if (!subdrainMatch) return null; // Already checked above, but safety first
+  const subdrainIndex = subdrainMatch.index;
+
+  // Find all diameter figures in the line with their indices
+  const diaMatches = Array.from(line.matchAll(new RegExp(DIA_MM_RE.source, 'gi')));
+  if (diaMatches.length === 0) return null; // no diameter on the line — nothing to describe
+
+  // Pick the diameter figure with the smallest distance to the SUBDRAIN keyword
+  let nearest = diaMatches[0];
+  let minDistance = Math.abs(nearest.index - subdrainIndex);
+  for (let i = 1; i < diaMatches.length; i++) {
+    const distance = Math.abs(diaMatches[i].index - subdrainIndex);
+    if (distance < minDistance) {
+      minDistance = distance;
+      nearest = diaMatches[i];
+    }
+  }
+
+  return { length: 0, diameterMm: snapToPipeDiameter(parseInt(nearest[1], 10)), existing: EX_RE.test(line) };
 }

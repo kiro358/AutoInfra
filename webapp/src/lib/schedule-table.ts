@@ -1,10 +1,19 @@
 /**
  * Reconstructs schedule TABLES from positioned PDF text.
  *
- * Ultimate Drive has 7 texty pages and 29 truth runs, and the callout-only text
- * path emits ZERO of them — its runs live in a storm/sanitary sewer schedule
- * table ("ST 1 … ST 25"), not in plan callouts. A table is just text on a grid,
- * so it is recoverable deterministically from coordinates. Pure, no I/O.
+ * A table is just text on a grid, so it is recoverable deterministically from
+ * coordinates. Pure, no I/O.
+ *
+ * DORMANT as of 2026-08-31: no golden-corpus PDF text layer contains a
+ * header-row schedule table, so this module fires on ZERO golden projects and
+ * its behaviour is proven only by its unit tests. In particular it does NOT
+ * fire on Ultimate Drive — the plan that motivated this module claimed that
+ * project's 29 runs "live in a schedule table (ST 1 … ST 25)", but those ids
+ * are plan annotations scattered along the drawn pipes (ST1's text-layer
+ * neighbours are "U/G", "GAS", "CONC. SIDEWALK", "MH 101"), and the one page
+ * dense with FROM/TO/GRADE tokens is a general-notes sheet where those words
+ * appear inside prose. Recovering Ultimate Drive needs geometric association
+ * of an id with a nearby length callout, which is not this module.
  */
 import { PageText, PositionedText } from './pdf-text';
 import { snapToPipeDiameter, normalizeSlope } from './geometry';

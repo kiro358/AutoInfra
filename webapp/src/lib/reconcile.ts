@@ -26,15 +26,26 @@ function samePipe(a: SewerFact, b: SewerFact): boolean {
   return Math.abs(a.length - b.length) <= Math.max(1, 0.02 * Math.max(a.length, b.length));
 }
 
-// A run is "endpoint-labelled" when its label names two STRUCTURES, not when it
+// A run is "endpoint-labelled" when its label names two ENDPOINTS, not when it
 // merely contains a hyphen — "83.7m-375mm SAN" is a dimension callout whose
 // hyphen would otherwise make runSignature look like an endpoint pair, so the
 // schedule row and its plan callout both survived as separate pipes.
-const STRUCTURE_TOKEN = /^(?:DDICB|DCBMH|CBMH|DICB|DCB|CB|MH|HS|OS|JF|EF|ST|SA)\d/;
+//
+// An endpoint is a structure ("MH 8", "EX CBMH 3") or a connection sentinel:
+// runSignature collapses CONN/PLUG/OUTLET to one `CONN` token precisely so
+// "MH 8-CONN." keeps its second endpoint, so `CONN` must count as one here or
+// that real run is both blunted and newly killable. ST/SA stay in the list:
+// they are run/schedule ids rather than structures, but excluding them would
+// only narrow the predicate, and narrowing costs recall.
+const ENDPOINT_TOKEN = /^(?:EX)?(?:DDICB|DCBMH|CBMH|DICB|DCB|CB|MH|HS|OS|JF|EF|ST|SA)\d|^CONN$/;
+const STRUCTURE_TOKEN = /^(?:EX)?(?:DDICB|DCBMH|CBMH|DICB|DCB|CB|MH|HS|OS|JF|EF|ST|SA)\d/;
 
 const isEndpointPair = (s: SewerFact) => {
-  const tokens = runSignature(s.runLabel).split('|').filter(Boolean);
-  return tokens.length >= 2 && tokens.filter((t) => STRUCTURE_TOKEN.test(t)).length >= 2;
+  const tokens = runSignature(s.runLabel).split('|');
+  const endpoints = tokens.filter((t) => ENDPOINT_TOKEN.test(t));
+  // Two endpoints, at least one of them a real structure — so a label made only
+  // of connection sentinels can never masquerade as a pipe run.
+  return endpoints.length >= 2 && endpoints.some((t) => STRUCTURE_TOKEN.test(t));
 };
 
 /**

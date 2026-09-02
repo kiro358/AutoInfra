@@ -148,4 +148,29 @@ describe('cross-source dedup (schedule row vs plan callout)', () => {
     });
     expect(reconcileTakeoff(facts).sewers).toHaveLength(2);
   });
+
+  it('treats a CONN/OUTLET endpoint as an endpoint pair and kills its dimension duplicate', () => {
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: 'MH 8-CONN.', length: 52.0, pipeDiameter: 250, slope: 0.01 }),
+        run({ runLabel: '52.0m-250mm STM', length: 52.0, pipeDiameter: 250, slope: 0.01 }),
+      ],
+    });
+    const r = reconcileTakeoff(facts);
+    expect(r.sewers).toHaveLength(1);
+    expect(r.sewers[0].runLabel).toBe('MH 8-CONN.');
+  });
+
+  it('never dedups two dimension labels against each other at equal size and length', () => {
+    // Neither is endpoint-labelled, so the kill loop must not fire. This is the
+    // case that catches a LOOSENED predicate: if a dimension callout were
+    // promoted to "endpoint pair" it would start killing its neighbours.
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: '47.5m-300mm STM', length: 47.5, pipeDiameter: 300 }),
+        run({ runLabel: '47.5m-300mm SAN', length: 47.5, pipeDiameter: 300 }),
+      ],
+    });
+    expect(reconcileTakeoff(facts).sewers).toHaveLength(2);
+  });
 });

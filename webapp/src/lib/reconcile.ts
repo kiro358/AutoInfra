@@ -26,7 +26,16 @@ function samePipe(a: SewerFact, b: SewerFact): boolean {
   return Math.abs(a.length - b.length) <= Math.max(1, 0.02 * Math.max(a.length, b.length));
 }
 
-const isEndpointPair = (s: SewerFact) => runSignature(s.runLabel).includes('|');
+// A run is "endpoint-labelled" when its label names two STRUCTURES, not when it
+// merely contains a hyphen — "83.7m-375mm SAN" is a dimension callout whose
+// hyphen would otherwise make runSignature look like an endpoint pair, so the
+// schedule row and its plan callout both survived as separate pipes.
+const STRUCTURE_TOKEN = /^(?:DDICB|DCBMH|CBMH|DICB|DCB|CB|MH|HS|OS|JF|EF|ST|SA)\d/;
+
+const isEndpointPair = (s: SewerFact) => {
+  const tokens = runSignature(s.runLabel).split('|').filter(Boolean);
+  return tokens.length >= 2 && tokens.filter((t) => STRUCTURE_TOKEN.test(t)).length >= 2;
+};
 
 /**
  * Collapse watermain rows to one per pipe diameter, summing their lengths — the

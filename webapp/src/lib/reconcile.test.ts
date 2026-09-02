@@ -123,3 +123,29 @@ describe('watermain aggregation by diameter', () => {
     expect(reconcileTakeoff(emptyFacts({ watermain: [] })).watermain).toEqual([]);
   });
 });
+
+describe('cross-source dedup (schedule row vs plan callout)', () => {
+  it('drops the dimension-labelled duplicate of an endpoint-labelled run', () => {
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: 'MH 1-MH 2', length: 83.7, pipeDiameter: 375, slope: 0.02 }),
+        run({ runLabel: '83.7m-375mm SAN', length: 83.7, pipeDiameter: 375, slope: 0.02 }),
+        run({ runLabel: '44.8m-375mm SAN', length: 44.8, pipeDiameter: 375, slope: 0.16 }),
+      ],
+    });
+    const r = reconcileTakeoff(facts);
+    expect(r.sewers).toHaveLength(2);
+    expect(r.sewers.map((s) => s.runLabel)).toContain('MH 1-MH 2');
+    expect(r.sewers.map((s) => s.runLabel)).toContain('44.8m-375mm SAN');
+  });
+
+  it('keeps two same-size pipes of genuinely different lengths', () => {
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: 'MH 1-MH 2', length: 30.0, pipeDiameter: 300 }),
+        run({ runLabel: '47.5m-300mm STM', length: 47.5, pipeDiameter: 300 }),
+      ],
+    });
+    expect(reconcileTakeoff(facts).sewers).toHaveLength(2);
+  });
+});

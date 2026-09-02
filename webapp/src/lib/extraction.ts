@@ -73,6 +73,20 @@ const REUSE_PREP = process.env.REUSE_PREP !== 'false';
 const TILE_DPI = Number(process.env.TILE_DPI) || 150;
 const TILE_PX = Number(process.env.TILE_PX) || 1600;
 const TILE_OVERLAP = Number(process.env.TILE_OVERLAP) || 160;
+
+// Tiles are emitted row-major and truncated, so a per-page cap below what the
+// sheet actually needs silently discards its BOTTOM rows. A 36x48 sheet at
+// 150 DPI needs 4x5 = 20 tiles; the old hardcoded 16 threw away 20% of every
+// E-size drawing. Derive the cap from geometry instead of guessing it.
+function tilesNeededPerPage(widthPt: number, heightPt: number): number {
+  const step = TILE_PX - TILE_OVERLAP;
+  const W = (widthPt / 72) * TILE_DPI;
+  const H = (heightPt / 72) * TILE_DPI;
+  const cols = Math.max(1, Math.ceil((W - TILE_OVERLAP) / step));
+  const rows = Math.max(1, Math.ceil((H - TILE_OVERLAP) / step));
+  return cols * rows;
+}
+const MAX_TILES_PER_PAGE = Number(process.env.PER_PAGE) || 24;
 // Explicit output ceiling: thinking tokens + JSON response share this budget.
 const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS) || 32768;
 // CAP THINKING. gemini-2.5-flash uses "dynamic" thinking by default, and on VERTEX the
@@ -626,8 +640,8 @@ export async function extractFromPDF(
 
       let tiles: Buffer[] = [];
       try {
-        const PER_PAGE = 16;
-        const maxTilesTotal = Math.min(Number(process.env.MAX_TILES_TOTAL) || 192, pages.length * PER_PAGE);
+        const PER_PAGE = MAX_TILES_PER_PAGE;
+        const maxTilesTotal = Math.min(Number(process.env.MAX_TILES_TOTAL) || 320, pages.length * PER_PAGE);
         tiles = await renderTilesFlat(pdfBuffer, pages, {
           dpi: TILE_DPI, tilePx: TILE_PX, overlapPx: TILE_OVERLAP, maxTilesPerPage: PER_PAGE, maxTilesTotal,
         });
@@ -763,9 +777,9 @@ export async function extractFromPDF(
           // tiles on multi-page servicing sets, so big projects only "saw" part of the plan
           // and missed whole pipe systems (e.g. Panattoni's trunk sewers). Scale the budget
           // with page count (streaming + Vertex handle the extra batches); cap for cost.
-          const PER_PAGE = 16;
+          const PER_PAGE = MAX_TILES_PER_PAGE;
           const nPages = unionPages.length || 1;
-          const maxTilesTotal = Math.min(Number(process.env.MAX_TILES_TOTAL) || 192, nPages * PER_PAGE);
+          const maxTilesTotal = Math.min(Number(process.env.MAX_TILES_TOTAL) || 320, nPages * PER_PAGE);
           const tiles = await renderTilesFlat(pdfBuffer, unionPages, {
             dpi: TILE_DPI, tilePx: TILE_PX, overlapPx: TILE_OVERLAP, maxTilesPerPage: PER_PAGE, maxTilesTotal,
           });

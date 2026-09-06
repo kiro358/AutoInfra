@@ -85,8 +85,8 @@ const TILE_OVERLAP = Number(process.env.TILE_OVERLAP) || 160;
 // a tile). Exported so extraction.test.ts can pin the arithmetic.
 export function tilesNeededPerPage(widthPt: number, heightPt: number): number {
   const step = Math.max(1, TILE_PX - TILE_OVERLAP);
-  const W = Math.ceil((widthPt / 72) * TILE_DPI);
-  const H = Math.ceil((heightPt / 72) * TILE_DPI);
+  const W = Math.ceil(widthPt * (TILE_DPI / 72));
+  const H = Math.ceil(heightPt * (TILE_DPI / 72));
   const cols = Math.max(1, Math.ceil((W - TILE_OVERLAP) / step));
   const rows = Math.max(1, Math.ceil((H - TILE_OVERLAP) / step));
   return cols * rows;

@@ -36,8 +36,9 @@ Never spend an expensive eval on step 3/4 before steps 1/2 are clean.
               │     If predictions carry a `transcript` array         │
               │     (EXTRACTION_MODE=transcribe|hybrid), npm run       │
               │     assemble:transcripts re-runs the WHOLE assembly+   │
-              │     reconcile stack offline on it — parser/assembler   │
-              │     changes never need an LLM run to validate.         │
+              │     reconcile stack offline on it. As of 2026-09-06 NO │
+              │     cached prediction carries one (0 of 18), so this    │
+              │     loop currently validates NOTHING — see below.       │
               └───────────────────────┬──────────────────────────────┘
                                       │  batch several fixes
               ┌───────────────────────▼──────────────────────────────┐
@@ -78,6 +79,63 @@ is dollars + ~20 min; each offline analysis is free + seconds.
 - [ ] **Under-extraction**: pred/truth ratio ≪ 1 → coverage (tiles/locator) or the model gives up.
 - [ ] **Matching**: are correct entities missing only due to label variance? (attribute-match rescued dimension-labeled runs.)
 - [ ] **Stuck-at-0 projects**: distinct failure mode (didn't emit? wrong labels? not tiled?). Diagnose one, don't tune all.
+- [ ] **Stale derived artifacts**: is `dataset-manifest.json` older than `dataset.ts` /
+      `truth-facts.ts` / `build-dataset-manifest.ts`? It silently encoded 2026-07-03 code
+      for seven weeks — costing one golden project its entire score and hiding every
+      watermain row. Run `npm run manifest:check`.
+
+## What each $0 loop can and cannot prove
+
+The four free loops are **not interchangeable**, and treating them as such has already
+produced one wrong acceptance ruling. Only two of them execute `reconcileTakeoff`:
+
+| loop | what it runs | reaches `reconcileTakeoff`? |
+|---|---|---|
+| `npm run score:offline` | `compareFacts` on cached `predicted_facts.json` | **no** |
+| `npm run analyze:eval` | same cached predictions, error decomposition | **no** |
+| `npm run evaluate:text` | `extractPageText` → `assembleTextTakeoff` → reconcile, on the real PDFs | **yes** |
+| `npm run assemble:transcripts` | `assembleTranscriptTakeoff` → reconcile, on cached transcripts | **yes, but** |
+
+- **The cached predictions are already-reconciled OUTPUT.** `score:offline` and `analyze:eval`
+  re-score them, so they can only ever move for changes that execute at SCORING time (the
+  metric, matching, truth resolution). A parser, assembler, reconcile, tiling or prompt change
+  is **structurally invisible** to them — a flat offline number is not evidence that such a
+  change did nothing. Never attribute an extraction-side gain to an offline delta.
+- **`evaluate:text` is the right free loop for reconcile/parser changes**, but it covers a
+  narrow slice: only **6 of 16** golden projects have texty pages, and only **3** of those
+  produce any sewer runs at all (Matthews Hangar, Oakville Fire Hall, Bradford Civic). A
+  "no change" result here is weak evidence of safety, not proof.
+- **`evaluate:text` needs `VERBOSE=true` to be decision-grade.** The default row prints only
+  `textF1`, which conflates precision and recall and cannot decide a recall veto. `VERBOSE=true`
+  emits `formatFactsComparison` with the per-entity `P= R= F1= (matched/truth, pred)` line. Use
+  `VERBOSE=true npm run evaluate:text` for any acceptance decision.
+- **`assemble:transcripts` currently validates nothing.** It only replays transcripts cached by
+  a prior `EXTRACTION_MODE=transcribe|hybrid` run, and as of 2026-09-06 there are zero of those
+  in the corpus (0 of 18 `predicted_facts.json` files carry a `transcript` array). It becomes
+  useful the moment one such run lands; until then a green result from it means "no input".
+
+### Text-layer ceiling (2026-09-06, `VERBOSE=true npm run evaluate:text`)
+
+Oakville Fire Hall **85.7%** · Matthews Hangar **80.9%** · Bradford Civic **67.4%** · Ultimate
+Drive **45.0%** · Eric Smith Way 7.0% · Holiday Inn 0.0%. (2026-08-21: 68.3 / 60.1 / 60.7 /
+44.1, with Eric Smith not scoring at all.) On the three strong projects the residual is now
+dominated by **field** accuracy, not detection — `sewer.typeClass` 0%, `sewer.depth` 0%,
+`sewer.length` 50–68%. Ultimate Drive emits 0 of 29 sewer runs while scoring 80% structure F1
+and 100% catchbasins, so its gap is a run-assembly gap, not a reading gap.
+
+### What only a LIVE run can confirm
+
+- **Tile-budget / coverage changes** (`PER_PAGE` 16→24, `MAX_TILES_TOTAL` 192→320). Expected
+  effect: `facts.cost.tiles` rises 16 → 20 per E-size page. No offline loop can see this.
+- **Whether the 4 empty runs clear.** Eric Smith Way is a confirmed wrong-drawing failure that
+  `chooseDrawingPdfs` now fixes; for Georgian Dr, White Oak Woodbine and Milton #13 the cache
+  has no `cost` telemetry, so "never tiled" (coverage/transport) cannot be separated from
+  "returned nothing" (accuracy) without re-extracting.
+- **`isEndpointPair` on real drawings** — provably a no-op on the text-layer corpus (no
+  CONN/OUTLET/PLUG terminator and no `EX` prefix among those labels), so its benefit is
+  unmeasured outside unit tests.
+- **`schedule-table.ts`** — DORMANT: it fires on zero golden projects, so its behaviour is
+  proven only by unit tests.
 
 ## Measuring the ceiling (do this before more extraction tuning)
 

@@ -141,8 +141,26 @@ npm run assemble:transcripts   # re-runs assembleTranscriptTakeoff+reconcileTake
 interchangeable: **detF1 over runs that returned a takeoff** (the model's accuracy) and
 **detF1 counting failed runs as zero** (what a user actually gets). A run that returns *no*
 entities at all is a transport/harness failure, not a 0%-accurate read — `perf-summary.ts`
-classifies those separately so they can never be averaged in silently. As of 2026-07-28 the
-cached predictions have 4/16 such failures.
+classifies those separately so they can never be averaged in silently. As of **2026-09-06**
+(`npm run score:offline`, HEAD of the Phase 0 branch) the cached predictions score **48.1% mean
+detF1 over the 12 runs that returned a takeoff** and **36.0% counting the 4 empty runs as zero**;
+mean field accuracy 48.5%. Per entity, over those 12 scored runs: sewerRuns R43.8/P61.6/F1 51.2 ·
+structures R44.1/P38.0/F1 40.9 · catchbasins R57.6/P71.7/F1 63.9 · watermain R13.8/P100/F1 24.2.
+
+Careful when comparing to older tables: `score:offline` aggregates entities over **scored rows
+only** (the 4 empty rows are excluded — `perf-summary.ts:166`), while the 2026-08-21 design spec
+aggregated all 16 rows. Same data, different denominator (e.g. structures F1 40.9% scored-only vs
+36.5% all-16). State which framing a number uses or it will be compared to the wrong baseline.
+
+The 4 empty runs are Georgian Dr, Eric Smith Way, White Oak Woodbine and Milton #13 — same count
+as 2026-07-28 because the cached predictions predate the Phase 0 fixes. Eric Smith Way is a
+confirmed *wrong-drawing* failure (its cached warning says only cost-estimate tables were
+supplied); `dataset.ts::chooseDrawingPdfs` now picks the right sheet, but only a live run can
+clear it. For the other three the cache carries no `cost` telemetry, so "never tiled" cannot be
+told apart from "returned nothing" offline. Because the cache predates the extraction changes,
+the offline number can only move for changes that execute at SCORING time — tiling/coverage and
+parser fixes are structurally invisible to it (see EVAL_METHODOLOGY.md, "What each $0 loop can
+and cannot prove").
 
 Run the eval on stable infra: local works for a small filtered set (streaming rides the
 laptop's flaky network), but the full set belongs on the throwaway GCP VM using **Vertex**
@@ -169,8 +187,15 @@ is empirical: validate the facts metric on the dataset and A/B single-pass vs ag
 ## Where the levers are
 
 - **Cost**: image-token cost scales with rasterized pixel area (≈DPI²). Knobs (env):
-  `TILE_DPI` (def 150), `TILE_PX` (1600), `TILE_OVERLAP` (160), `PER_PAGE`/`MAX_TILES_TOTAL`,
-  `BATCH_TILES`/`BATCH_CONCURRENCY`. Every extraction records `facts.cost` (tokens/tiles/llmCalls/dpi;
+  `TILE_DPI` (def 150), `TILE_PX` (1600), `TILE_OVERLAP` (160), `PER_PAGE` (24),
+  `MAX_TILES_TOTAL` (320), `BATCH_TILES`/`BATCH_CONCURRENCY`. The effective budget is
+  `min(MAX_TILES_TOTAL, nPages * PER_PAGE)`; tiles are emitted **row-major and truncated**, so a
+  per-page cap below what the sheet needs silently discards its BOTTOM rows — a 36x48 or 30x42
+  sheet at 150 DPI needs 4x5 = 20 tiles, and the old hardcoded 16 threw away 20% of every E-size
+  drawing (`PER_PAGE` only became a real env knob in Phase 0; before that it was a literal 16).
+  Trap: `rasterize.ts:60` still defaults `maxTilesPerPage = 16` independently — both extraction
+  call sites pass it explicitly so behaviour is unaffected today, but a new caller that omits the
+  option silently gets the old truncating cap. Every extraction records `facts.cost` (tokens/tiles/llmCalls/dpi;
   `totalTokens` includes gemini-2.5-flash thinking tokens) and the golden scoreboard prints a run-level
   COST line — so DPI/budget A/Bs are measurable. Don't cut DPI blind: validate legibility (pipe callouts).
 - **Prompts**: `modular-prompts.ts` (agent prompts + `getSinglePassPrompt`). `getSinglePassPrompt` does a

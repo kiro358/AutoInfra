@@ -1,0 +1,131 @@
+{
+  "project": "AutoInfra",
+  "source": "Vector-Native Takeoff Design Spec (docs/superpowers/specs/2026-08-21-vector-native-takeoff-design.md) & REDESIGN.md",
+  "defaults": {
+    "model": "claude-sonnet-4-5",
+    "timeoutMinutes": 60,
+    "verify": "cd webapp && npx tsc --noEmit && npm test"
+  },
+  "tasks": [
+    {
+      "id": "VN-01",
+      "priority": 1,
+      "title": "Synthetic CAD PDF fixture generator for CI & unit testing (Spec §6.1)",
+      "prompt": "Goal: Create a pure synthetic vector CAD servicing drawing generator in webapp/src/lib/test-fixtures/synthetic-cad-pdf.ts so the entire CAD vector geometry and topology extraction pipeline (Phases 1-4) can be unit-tested in CI from a clean clone without requiring the gitignored dataset.\n\nRequirements:\n1. Use pdf-lib (already in package.json) to generate valid PDF byte buffers with known vector drawing elements:\n   - Vector paths representing structures: circles (MH), squares (CB), concentric circles (CBMH/DCBMH), and symbols (hydrant, valve) with exact coordinate centroids.\n   - Vector polylines representing pipe runs with specific stroke colors, line widths, and dash patterns (e.g. solid blue for watermain, solid green for sanitary, dashed green for storm).\n   - Text callouts (e.g., \"MH 1\", \"CB 2\", \"45.2m - 300mmØ PVC STORM @ 0.50%\", \"150mmØ PVC WATERMAIN\") positioned near structures or along pipe polylines with leader lines.\n   - A legend box defining the symbol-to-kind mappings.\n   - A standard civil schedule table with header row (Structure, Station, Rim, Invert, Pipe In, Pipe Out) and data rows.\n   - AutoCAD OCG layer names metadata if supported by pdf-lib or raw content streams.\n2. Export helper createSyntheticCadPdf(options?: SyntheticCadPdfOptions): Promise<Uint8Array>.\n3. Write unit tests in webapp/src/lib/test-fixtures/synthetic-cad-pdf.test.ts verifying that pdfjs-dist (via extractPageText or getOperatorList) can read back the text, lines, and structures accurately.\n\nConstraints:\n- Must not touch or depend on existing_projects_training_data/.\n- All tests in npm test and npx tsc --noEmit must pass.",
+      "requires": [],
+      "timeoutMinutes": 30,
+      "verify": "cd webapp && npx tsc --noEmit && npm test"
+    },
+    {
+      "id": "VN-02",
+      "priority": 2,
+      "title": "CAD Vector Path & Operator Extraction (cad-geometry.ts) (Phase 1A)",
+      "prompt": "Goal: Implement webapp/src/lib/cad-geometry.ts to extract low-level vector drawing operations (paths, polylines, arcs, stroke colors, line widths, dash arrays, bounding boxes, and OCG layer names) from PDF pages via pdfjs-dist getOperatorList().\n\nContext:\nIn vector CAD PDFs (which comprise >80% of civil drawing sets), linework and SHX text are rendered as vector path operators (constructPath, stroke, fill, etc.) rather than raster pixels. Probing showed 100k-900k paths per sheet.\n\nRequirements:\n1. Implement extractCadGeometry(pdfBuffer: Uint8Array | ArrayBuffer, pageIndex: number): Promise<CadGeometryPage> in webapp/src/lib/cad-geometry.ts:\n   - Parse getOperatorList() from pdfjs-dist.\n   - Extract every vector path: sub-paths, line segments, curves, polylines, bounding box [minX, minY, maxX, maxY], length, stroke color (RGB/hex), line width, dash pattern, fill color.\n   - Extract AutoCAD OCG (Optional Content Group) layer names when present in the PDF resources.\n   - Classify paths into:\n     - glyphCandidate: small, stroke-font sized paths (< 25pt extent, ~5-15 strokes per glyph).\n     - lineworkCandidate: extended polylines/segments (> 20pt length).\n     - symbolCandidate: closed loop / clustered circular or square paths.\n2. Export clean TypeScript interfaces (CadPath, CadGeometryPage, CadPolyline, etc.) in webapp/src/lib/types.ts or cad-geometry.ts.\n3. Unit test in webapp/src/lib/cad-geometry.test.ts using the synthetic CAD PDF fixture generator from VN-01.\n\nConstraints:\n- Pure TypeScript, deterministic, zero LLM calls.\n- Must handle transform matrices (CTM) correctly so coordinates match PDF user space / pt units.\n- npm test and npx tsc --noEmit must be green.",
+      "requires": [
+        "VN-01"
+      ],
+      "timeoutMinutes": 45,
+      "verify": "cd webapp && npx tsc --noEmit && npm test"
+    },
+    {
+      "id": "VN-03",
+      "priority": 3,
+      "title": "Legend & Symbol Dictionary Node Extraction (cad-symbols.ts) (Phase 1B)",
+      "prompt": "Goal: Implement webapp/src/lib/cad-symbols.ts to identify structure symbol centroids and classifications (MH, CBMH, DCBMH, CB, DICB, Hydrant, Valve) from CAD vector geometry.\n\nContext:\nCivil servicing sheets use standard symbols (circles for MHs, rectangles/squares for CBs, double concentric shapes for CBMHs/DCBMHs) and frequently include a drawing Legend defining each symbol.\n\nRequirements:\n1. Implement extractStructureSymbols(geometry: CadGeometryPage, pageText?: PageText): StructureSymbolCandidate[]:\n   - Bootstrap from Legend: Detect a Legend bounding box on the page (by looking for \"LEGEND\" in text or title block) and match symbol geometry pairs adjacent to label descriptions (e.g. \"PROPOSED STORM MANHOLE\", \"PROPOSED CATCHBASIN\").\n   - Geometric Shape Classifier (Fallback): For sheets without a clean legend, detect symbol centroids by clustering closed stroke paths into primitives:\n     - Single circle -> MH / Sanitary MH / Storm MH\n     - Concentric circles -> CBMH / DCBMH / Drop MH\n     - Rectangle / square -> CB / DICB\n     - Cross / valve / tee symbols -> Watermain valves / fittings / hydrants\n   - Associate each detected symbol with its centroid coordinate (x, y), bounding box, diameter/size in pt, and detected symbol type.\n2. Unit test in webapp/src/lib/cad-symbols.test.ts on synthetic fixtures with known structures and legends.\n\nConstraints:\n- Pure TypeScript, deterministic, $0 cost.\n- Robust against noise (e.g. tree/foliage symbols, arrows, north arrows, text zeros/Os).\n- npm test and npx tsc --noEmit must pass.",
+      "requires": [
+        "VN-02"
+      ],
+      "timeoutMinutes": 45,
+      "verify": "cd webapp && npx tsc --noEmit && npm test"
+    },
+    {
+      "id": "VN-04",
+      "priority": 4,
+      "title": "Pipe Linework Polylines & Network Graph (site-network.ts) (Phase 1C)",
+      "prompt": "Goal: Implement webapp/src/lib/site-network.ts to trace continuous pipe polylines between structure centroids and build the topological SiteNetwork graph (nodes and edges).\n\nContext:\nIn CAD drawings, pipe runs are drawn as polylines connecting two structures. The geometric distance between structure centroids gives the exact drawn length (scaled by the drawing scale, e.g. 1:250 or 1:500).\n\nRequirements:\n1. Define the SiteNetwork data structure:\n   - nodes: Map of structure IDs to SiteNode { id, centroid: [x, y], symbolType, kind, label?, bbox, incomingEdges, outgoingEdges }\n   - edges: Array of SiteEdge { id, fromNodeId, toNodeId, polyline: [x,y][], drawnLengthMeters, system: \"STORM\"|\"SAN\"|\"WATERMAIN\"|\"UNKNOWN\", strokeStyle }\n   - drawingScale: Detected or provided scale ratio (e.g. 1m = X pt).\n2. Implement buildSiteNetwork(geometry: CadGeometryPage, symbols: StructureSymbolCandidate[], scale?: number): SiteNetwork:\n   - Polyline tracing: Chain collinear and contiguous line segments of matching stroke style (color, width, dash pattern).\n   - Node snapping: Snap polyline start and end vertices to the nearest structure symbol centroid within a snapping radius.\n   - Multi-segment pipe handling: If a pipe turns at bends or is split across multiple vertices, combine into a single edge between the two terminal structure nodes.\n3. Unit test in webapp/src/lib/site-network.test.ts with synthetic network graphs.\n\nConstraints:\n- Pure TypeScript, zero LLM calls.\n- Must handle collinear segment merging and endpoint tolerance cleanly.\n- npm test and npx tsc --noEmit must pass.",
+      "requires": [
+        "VN-03"
+      ],
+      "timeoutMinutes": 45,
+      "verify": "cd webapp && npx tsc --noEmit && npm test"
+    },
+    {
+      "id": "VN-05",
+      "priority": 5,
+      "title": "Leader Line & Spatial Annotation Binding (cad-annotations.ts) (Phase 1D)",
+      "prompt": "Goal: Implement webapp/src/lib/cad-annotations.ts to bind callout text annotations (from text-layer or decoded SHX) to their owning structure node or pipe edge in the SiteNetwork.\n\nContext:\nOn civil drawings, callouts are placed adjacent to pipes/structures, often connected with a leader line (polyline ending in a tick/arrow) or placed parallel and close to the pipe segment.\n\nRequirements:\n1. Implement bindAnnotationsToNetwork(network: SiteNetwork, annotations: CadAnnotation[], geometry: CadGeometryPage): BoundSiteNetwork:\n   - Leader Line Binding: Identify leader lines (short polylines terminating near an annotation text box at one end and a pipe/structure at the other).\n   - Proximity & Orientation Binding: For callouts without leader lines, compute distance and alignment (e.g. angle of pipe matches text rotation angle; distance < threshold).\n   - Parse bound callout text using callout-parser.ts to attach structured attributes:\n     - To SiteNode: structure label (e.g. \"STMH 12\", \"CB 4\"), rim elevation, invert, structure diameter.\n     - To SiteEdge: run label, diameter (e.g. 300mm), material/class (e.g. PVC DR35), slope (e.g. 0.50%), callout stated length.\n2. Unit test in webapp/src/lib/cad-annotations.test.ts covering leader lines, parallel text callouts, and multi-line stacked annotations.\n\nConstraints:\n- Pure TypeScript, deterministic.\n- Never guess binding if ambiguity is high; flag confidence.\n- npm test and npx tsc --noEmit must pass.",
+      "requires": [
+        "VN-04"
+      ],
+      "timeoutMinutes": 45,
+      "verify": "cd webapp && npx tsc --noEmit && npm test"
+    },
+    {
+      "id": "VN-06",
+      "priority": 6,
+      "title": "Physical Network Invariants & Confidence Scoring (cad-invariants.ts) (Phase 1E)",
+      "prompt": "Goal: Implement webapp/src/lib/cad-invariants.ts to evaluate topological, geometric, and hydraulic invariants across the SiteNetwork and output invariant violations as confidence signals.\n\nContext:\nPhysical civil engineering drawings must adhere to strict natural invariants. Invariant violations provide a mathematically grounded, $0 confidence metric and pinpoint exact anomalies for Phase 4 verifier.\n\nRequirements:\n1. Implement invariant checks in evaluateNetworkInvariants(network: BoundSiteNetwork): NetworkValidationResult:\n   - Invariant 1 (Endpoint completeness): Every edge has exactly 2 valid terminal nodes (or a labeled boundary sentinel like EX / WYE / OUTLET).\n   - Invariant 2 (Hydraulic drop): Invert elevations monotonically fall downstream along gravity sewer runs (invert_from > invert_to, slope > 0).\n   - Invariant 3 (Length conservation): Sum of CAD polyline segment lengths matches callout stated length within ±5% tolerance.\n   - Invariant 4 (Pipe capacity continuity): Downstream pipe diameter is greater than or equal to upstream pipe diameter for the same system.\n   - Invariant 5 (Depth validity): Structure rim elevation > invert elevation (rim - invert > 0, typical depth 1.5m - 8.0m).\n2. Return { score: number, violations: InvariantViolation[], validEntities: TakeoffFacts }.\n3. Unit test in webapp/src/lib/cad-invariants.test.ts with valid and deliberately invalid network fixtures.\n\nConstraints:\n- Pure TypeScript, deterministic, $0 cost.\n- npm test and npx tsc --noEmit must pass.",
+      "requires": [
+        "VN-05"
+      ],
+      "timeoutMinutes": 45,
+      "verify": "cd webapp && npx tsc --noEmit && npm test"
+    },
+    {
+      "id": "VN-07",
+      "priority": 7,
+      "title": "SHX Stroke Clustering along Principal Orientation Axis (shx-cluster.ts) (Phase 2A)",
+      "prompt": "Goal: Implement webapp/src/lib/shx-cluster.ts to cluster glyph-sized CAD vector strokes into oriented word and line bounding boxes.\n\nContext:\nAutoCAD SHX fonts (like simplex.shx, romans.shx, txt.shx) are rendered as raw vector strokes, not font glyphs. Because servicing callouts follow pipe angles, callout text rotates to any arbitrary angle (0° to 360°). Axis-aligned bounding boxes fail for rotated text; strokes must be clustered along their principal orientation axis.\n\nRequirements:\n1. Implement clusterShxStrokes(geometry: CadGeometryPage): ShxTextCluster[]:\n   - Filter glyphCandidate strokes from CadGeometryPage (strokes with extent < 25pt).\n   - Spatial adjacency graph: Connect nearby stroke centroids using k-d tree or spatial hash grid (threshold ~5-10pt).\n   - Orientation estimation: Compute principal orientation angle (via PCA or line regression of stroke centroids) for each cluster.\n   - Word & line grouping: Group strokes along the estimated baseline into distinct character blocks and word lines.\n   - Compute oriented bounding box (OBB) [centerX, centerY, width, height, rotationAngleDeg].\n2. Unit test in webapp/src/lib/shx-cluster.test.ts testing horizontal, vertical, and arbitrary angled (e.g. 33°, 45°, 120°) synthetic text strings.\n\nConstraints:\n- Pure TypeScript, high performance (a sheet has ~60k strokes).\n- npm test and npx tsc --noEmit must pass.",
+      "requires": [
+        "VN-02"
+      ],
+      "timeoutMinutes": 45,
+      "verify": "cd webapp && npx tsc --noEmit && npm test"
+    },
+    {
+      "id": "VN-08",
+      "priority": 8,
+      "title": "SHX Stroke Codebook & Glyph Decoder with Grammar Repair (shx-decode.ts) (Phase 2B & 2C)",
+      "prompt": "Goal: Implement webapp/src/lib/shx-decode.ts to decode oriented stroke clusters into ASCII text strings using a geometric stroke codebook and grammar-constrained parsing.\n\nContext:\nSHX stroke fonts have a fixed set of stroke vectors for each alphanumeric character (A-Z, 0-9, Ø, %, ., -, @, etc.). Because civil callouts follow rigid formulas (<length>m - <diameter>mmØ <system> @ <slope>%), character ambiguities can be deterministically resolved by the grammar.\n\nRequirements:\n1. Build reference stroke codebook for standard AutoCAD SHX fonts (simplex/romans/txt). Each glyph is defined by a normalized list of stroke segments.\n2. Implement geometric stroke matching: Compare normalized, de-rotated input stroke cluster against codebook glyphs (using Hausdorff distance, stroke count, and endpoint matching) to generate top-k character candidates with confidence scores.\n3. Grammar-constrained Viterbi/Beam search decoding: Parse candidate lattice with callout-parser.ts rules to select the highest-probability valid callout string.\n4. Export decodeShxClusters(clusters: ShxTextCluster[]): CadAnnotation[].\n5. Unit test in webapp/src/lib/shx-decode.test.ts.\n\nConstraints:\n- Pure TypeScript, fast offline execution.\n- If a cluster cannot be decoded with high confidence, mark with confidence < 0.8 for targeted Phase 4 verifier.\n- npm test and npx tsc --noEmit must pass.",
+      "requires": [
+        "VN-07"
+      ],
+      "timeoutMinutes": 60,
+      "verify": "cd webapp && npx tsc --noEmit && npm test"
+    },
+    {
+      "id": "VN-09",
+      "priority": 9,
+      "title": "Estimator Convention Calibration & Held-out Split Engine (convention-rules.ts) (Phase 3)",
+      "prompt": "Goal: Implement webapp/src/lib/convention-rules.ts and the calibration script webapp/src/scripts/calibrate-conventions.ts to measure, fit, and evaluate estimator workbook conventions across a 25-project fit / 12-project held-out split.\n\nContext:\nSpec §1.3 and §2 showed that a 100% accurate read of drawing facts still differs from an estimator workbook due to human conventions:\n1. Segment -> Run aggregation (drawing shows 17.5m + 32m, workbook lists MH 1-MH 2 = 50m).\n2. Center-to-center structure offset & length rounding (drawing shows 10.5m pipe, estimator rounds to 12m structure center).\n3. Catchbasin-lead grouping (drawing shows 40 individual CB leads, estimator groups into summary row CBs-WYEs).\n4. Label style preferences (e.g. MH01 vs MH 1).\n\nRequirements:\n1. Implement convention-rules.ts:\n   - Store explicit, declarative, versioned convention parameter tables (modeled after costing-rules.ts::DEFAULT_COSTING), NOT auto-generated English rules.\n   - Provide applyEstimatorConventions(asDrawnFacts: TakeoffFacts, conventions?: EstimatorConventions): TakeoffFacts.\n2. Implement calibration CLI webapp/src/scripts/calibrate-conventions.ts:\n   - Align asDrawn CAD facts against ground-truth workbooks using permissive matcher across the 25 training split projects.\n   - Fit parameters (e.g. aggregation thresholds, rounding offsets, grouping triggers).\n   - Evaluate conventionF1 strictly on the 12 held-out projects (Spec §6.2) to prove conventions generalize and do not overfit.\n3. Unit test in webapp/src/lib/convention-rules.test.ts.\n\nConstraints:\n- Never commit machine-generated English prompt rules.\n- Pure functions, deterministic.\n- npm test and npx tsc --noEmit must pass.",
+      "requires": [
+        "VN-06",
+        "VN-08"
+      ],
+      "timeoutMinutes": 45,
+      "verify": "cd webapp && npx tsc --noEmit && npm test"
+    },
+    {
+      "id": "VN-10",
+      "priority": 10,
+      "title": "Targeted LLM Invariant Verifier & Vector Pipeline Integration (Phase 4)",
+      "prompt": "Goal: Implement webapp/src/lib/vector-verifier.ts and integrate the entire vector-native takeoff pipeline into extraction.ts under EXTRACTION_MODE=vector.\n\nContext:\nIn Phase 4, the LLM is demoted from reading full sheets to answering small, targeted verification queries on invariant violations or low-confidence SHX decodings (e.g. cropped image of a single ambiguous label). Most projects should complete with 0 LLM calls.\n\nRequirements:\n1. Implement vector-verifier.ts:\n   - Take BoundSiteNetwork and NetworkValidationResult from Phase 1.\n   - If violations exist or confidence < threshold, extract small visual image crops around the coordinates of the violation (e.g. disconnected pipe junction, ambiguous label).\n   - Prompt Gemini with a focused, single-question prompt (e.g. \"Is this structure label MH 3 or MH 8 at [bbox]?\").\n   - Update SiteNetwork with verifier response and re-evaluate invariants.\n2. Wire vector-native path into webapp/src/lib/extraction.ts:\n   - Support EXTRACTION_MODE=vector (alongside transcribe, hybrid, single, agents).\n   - Flow: extractCadGeometry -> buildSiteNetwork -> bindAnnotations -> evaluateInvariants -> verifyWithLLMIfNeeded -> applyEstimatorConventions -> reconcileTakeoff -> TakeoffFacts.\n3. Unit test in webapp/src/lib/vector-takeoff.test.ts using synthetic CAD fixtures.\n\nConstraints:\n- Strict cost containment: Zero LLM calls when confidence is high and invariants pass.\n- npm test and npx tsc --noEmit must pass.",
+      "requires": [
+        "VN-09"
+      ],
+      "timeoutMinutes": 60,
+      "verify": "cd webapp && npx tsc --noEmit && npm test"
+    },
+    {
+      "id": "VN-11",
+      "priority": 11,
+      "title": "Golden-Set Multi-Mode Regression & A/B Validation Harness",
+      "prompt": "Goal: Update webapp/src/scripts/evaluate-golden.ts and evaluation harness to support EXTRACTION_MODE=vector, reporting asDrawnF1, conventionF1, detF1, token cost, and latency comparisons across all modes.\n\nRequirements:\n1. Update evaluate-golden.ts and perf-summary.ts to support the metric breakdown from Spec §4:\n   - asDrawnF1: Accuracy against drawing content.\n   - conventionF1: Accuracy of convention reconciliation against estimator workbooks.\n   - detF1: Aggregate canonical detection F1 for backwards compatibility.\n2. Provide CLI options to run mode comparisons (e.g. EXTRACTION_MODE=vector npm run evaluate:golden).\n3. Add script webapp/src/scripts/evaluate-vector.ts for $0 offline evaluation of vector-native parsing directly against dataset PDFs where vector data is present.\n4. Verify all unit tests pass with npm test and npx tsc --noEmit.\n\nConstraints:\n- score-offline.ts must still write golden-results-offline.json only (never clobber golden-results.json).\n- npm test and npx tsc --noEmit must pass.",
+      "requires": [
+        "VN-10"
+      ],
+      "timeoutMinutes": 45,
+      "verify": "cd webapp && npx tsc --noEmit && npm test"
+    }
+  ]
+}

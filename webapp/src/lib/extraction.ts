@@ -78,15 +78,21 @@ const TILE_OVERLAP = Number(process.env.TILE_OVERLAP) || 160;
 // sheet actually needs silently discards its BOTTOM rows. A 36x48 sheet at
 // 150 DPI needs 4x5 = 20 tiles; the old hardcoded 16 threw away 20% of every
 // E-size drawing. Derive the cap from geometry instead of guessing it.
-function tilesNeededPerPage(widthPt: number, heightPt: number): number {
-  const step = TILE_PX - TILE_OVERLAP;
-  const W = (widthPt / 72) * TILE_DPI;
-  const H = (heightPt / 72) * TILE_DPI;
+//
+// This MIRRORS the real tiling geometry in rasterize.ts::renderPdfPagesToTiles
+// (the Math.ceil on the rasterized viewport and the Math.max(1, ...) floor on
+// step are deliberate — keep them identical or the two can silently disagree by
+// a tile). Exported so extraction.test.ts can pin the arithmetic.
+export function tilesNeededPerPage(widthPt: number, heightPt: number): number {
+  const step = Math.max(1, TILE_PX - TILE_OVERLAP);
+  const W = Math.ceil((widthPt / 72) * TILE_DPI);
+  const H = Math.ceil((heightPt / 72) * TILE_DPI);
   const cols = Math.max(1, Math.ceil((W - TILE_OVERLAP) / step));
   const rows = Math.max(1, Math.ceil((H - TILE_OVERLAP) / step));
   return cols * rows;
 }
 const MAX_TILES_PER_PAGE = Number(process.env.PER_PAGE) || 24;
+
 // Explicit output ceiling: thinking tokens + JSON response share this budget.
 const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS) || 32768;
 // CAP THINKING. gemini-2.5-flash uses "dynamic" thinking by default, and on VERTEX the

@@ -12,6 +12,7 @@ import {
   parseFacts,
   isNonMainlineSewer,
   isNonStructure,
+  tilesNeededPerPage,
 } from './extraction';
 
 describe('parseFacts structure/catchbasin categorization', () => {
@@ -279,5 +280,44 @@ describe('isNonStructure — demolition/sitework callouts listed as structures',
     expect(isNonStructure('PROP. BIKE RACKS')).toBe(true);
     expect(isNonStructure('SEWER CROSSING (STM)')).toBe(true);
     expect(isNonStructure('SANITARY')).toBe(true);
+  });
+});
+
+describe('tilesNeededPerPage — per-page tile budget from sheet geometry', () => {
+  // Pure arithmetic: no PDF, no dataset, no rasterizing. This pins the helper to the
+  // real geometry in rasterize.ts::renderPdfPagesToTiles, which the helper mirrors.
+  // At the defaults (TILE_DPI=150, TILE_PX=1600, TILE_OVERLAP=160 → step=1440).
+  const IN = 72; // PDF points per inch
+
+  it('needs 20 tiles for a 36x48in E-size sheet (the old cap of 16 dropped the bottom row)', () => {
+    // W = ceil(36*150) = 5400 → cols = ceil((5400-160)/1440) = 4
+    // H = ceil(48*150) = 7200 → rows = ceil((7200-160)/1440) = 5
+    expect(tilesNeededPerPage(36 * IN, 48 * IN)).toBe(20);
+  });
+
+  it('needs only 12 tiles for a 36x24in sheet — the sizes the old cap never truncated', () => {
+    // rows = ceil((3600-160)/1440) = 3, cols = 4
+    expect(tilesNeededPerPage(36 * IN, 24 * IN)).toBe(12);
+  });
+
+  it('returns at least 1 tile for a degenerate/tiny page, never 0', () => {
+    // (W - overlap) goes negative here; the Math.max(1, ...) floors match rasterize.ts.
+    expect(tilesNeededPerPage(1, 1)).toBe(1);
+    expect(tilesNeededPerPage(0, 0)).toBe(1);
+  });
+
+  it('matches rasterize on a letter-size sheet: 1 col, but 2 (overlapping) rows', () => {
+    // H = ceil(11*150) = 1650 > tilePx 1600, so rasterize does emit a second row
+    // (sy clamped to H - tilePx = 50). The helper must agree, not round down to 1.
+    expect(tilesNeededPerPage(8.5 * IN, 11 * IN)).toBe(2);
+  });
+
+  it('stays at or under the 24 per-page cap for every sheet size in this corpus', () => {
+    const sheets: [number, number][] = [
+      [36, 48], [30, 42], [36, 24], [24, 36], [34, 22], [42, 30], [48, 36],
+    ];
+    for (const [w, h] of sheets) {
+      expect(tilesNeededPerPage(w * IN, h * IN)).toBeLessThanOrEqual(24);
+    }
   });
 });

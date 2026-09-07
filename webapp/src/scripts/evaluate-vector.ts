@@ -14,21 +14,14 @@ import fs from 'fs';
 import path from 'path';
 import { GOLDEN_PROJECTS } from '../lib/golden-set';
 import { extractVectorTakeoff } from '../lib/vector-takeoff';
+import { mergeTakeoffs } from '../lib/reconcile';
 import { resolveTruthFacts, loadTruthManifest } from '../lib/truth-facts';
 import { compareFacts, formatFactsComparison } from '../lib/compare-facts';
+import { chooseDrawingPdfs } from '../lib/dataset';
 
 const ROOT = path.resolve(__dirname, '../../..');
 const DATA = path.join(ROOT, 'existing_projects_training_data');
-let manifest: Array<{
-  folder: string;
-  drawingPdfs?: { name: string; pages?: number }[];
-}> = [];
-try {
-  manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'dataset-manifest.json'), 'utf8'));
-} catch (e: any) {
-  console.error(`Could not read dataset-manifest.json: ${e.message}`);
-}
-const truthManifest = loadTruthManifest(path.join(ROOT, 'truth-manifest.json'));
+const TRUTH_MANIFEST = loadTruthManifest(path.join(ROOT, 'truth-manifest.json'));
 
 const pct = (v: number | null) => (v == null ? '   —' : `${(v * 100).toFixed(1)}%`);
 
@@ -36,32 +29,41 @@ async function main() {
   const rows: string[] = [];
 
   for (const g of GOLDEN_PROJECTS) {
-    const entry = manifest.find((m) => m.folder === g.folder);
     const projectDir = path.join(DATA, g.folder);
-    if (!entry || !fs.existsSync(projectDir)) {
-      rows.push(`${g.label.padEnd(28)} — missing project dir or manifest entry`);
+    if (!fs.existsSync(projectDir)) {
+      rows.push(`${g.label.padEnd(28)} — missing project dir`);
       continue;
     }
     try {
-      const truth = await resolveTruthFacts(projectDir, g.folder, truthManifest);
+      const truth = await resolveTruthFacts(projectDir, g.folder, TRUTH_MANIFEST);
       if (!truth) {
         rows.push(`${g.label.padEnd(28)} — no usable ground truth`);
         continue;
       }
 
-      let vectorF1: number | null = null;
-      for (const pdf of entry.drawingPdfs ?? []) {
-        const p = path.join(projectDir, pdf.name);
+      const pdfFiles = chooseDrawingPdfs(projectDir);
+      let projectFacts = null;
+
+      for (const pdfFile of pdfFiles) {
+        const p = path.join(projectDir, pdfFile);
         if (!fs.existsSync(p)) continue;
         const pdfBuf = fs.readFileSync(p);
-        const facts = await extractVectorTakeoff(pdfBuf, undefined, g.folder);
-        const cmp = compareFacts(facts, truth.facts);
+        const fileFacts = await extractVectorTakeoff(pdfBuf, undefined, g.folder);
+        if (!projectFacts) {
+          projectFacts = fileFacts;
+        } else {
+          projectFacts = mergeTakeoffs(projectFacts, fileFacts);
+        }
+      }
+
+      let vectorF1: number | null = null;
+      if (projectFacts) {
+        const cmp = compareFacts(projectFacts, truth.facts);
         vectorF1 = cmp.detectionF1;
 
         if (process.env.VERBOSE === 'true') {
           console.log(`\n${g.label} (Vector-Native Takeoff):\n` + formatFactsComparison(cmp));
         }
-        break;
       }
 
       let llmF1: number | null = null;

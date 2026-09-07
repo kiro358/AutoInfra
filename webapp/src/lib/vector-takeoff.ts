@@ -4,18 +4,19 @@
  * Full CAD vector geometry and topology extraction pipeline (Phases 1-4).
  * Combines low-level vector path parsing, symbol dictionary detection,
  * topological network graphing, leader-line annotation binding, physical
- * invariant checking, and estimator convention reconciliation ($0 LLM cost).
+ * invariant checking, schedule table extraction, and estimator convention reconciliation ($0 LLM cost).
  */
 import { CadAnnotation, bindAnnotationsToNetwork } from './cad-annotations';
 import { extractCadGeometry } from './cad-geometry';
 import { evaluateNetworkInvariants } from './cad-invariants';
 import { extractStructureSymbols } from './cad-symbols';
 import { applyEstimatorConventions } from './convention-rules';
-import { extractPageText } from './pdf-text';
+import { extractPageText, isTextyPage, PageText } from './pdf-text';
 import { mergeTakeoffs, reconcileTakeoff } from './reconcile';
 import { clusterShxStrokes } from './shx-cluster';
 import { decodeShxClusters } from './shx-decode';
 import { buildSiteNetwork } from './site-network';
+import { assembleTextTakeoff } from './text-takeoff';
 import { TakeoffFacts } from './types';
 
 /**
@@ -39,7 +40,13 @@ export async function extractVectorTakeoff(
     const pageText = allPageTexts.find((p) => p.page === pageNum);
     const geometry = await extractCadGeometry(nodeBuf.slice(0), pageNum);
 
-    // 1. Extract text annotations from PDF text layer
+    // 1. If page is texty, extract exact text layer + schedule tables
+    let textFacts: TakeoffFacts | null = null;
+    if (pageText && isTextyPage(pageText)) {
+      textFacts = assembleTextTakeoff([pageText], projectName);
+    }
+
+    // 2. Extract text annotations from PDF text layer
     const annotations: CadAnnotation[] = [];
     if (pageText) {
       for (let idx = 0; idx < pageText.items.length; idx++) {
@@ -55,30 +62,35 @@ export async function extractVectorTakeoff(
       }
     }
 
-    // 2. Extract SHX vector stroke annotations
+    // 3. Extract SHX vector stroke annotations
     const shxClusters = clusterShxStrokes(geometry);
     if (shxClusters.length > 0) {
       const shxAnnotations = decodeShxClusters(shxClusters);
       annotations.push(...shxAnnotations);
     }
 
-    // 3. Extract structure symbols (Legend matching -> geometric fallback)
+    // 4. Extract structure symbols (Legend matching -> geometric fallback)
     const symbols = extractStructureSymbols(geometry, pageText);
 
-    // 4. Build topological SiteNetwork graph
+    // 5. Build topological SiteNetwork graph
     const network = buildSiteNetwork(geometry, symbols, undefined, pageText);
 
-    // 5. Bind annotations to structures and pipes via leader lines & proximity
+    // 6. Bind annotations to structures and pipes via leader lines & proximity
     const boundNetwork = bindAnnotationsToNetwork(network, annotations, geometry);
 
-    // 6. Evaluate natural network invariants (hydraulics, capacity, depth, length)
+    // 7. Evaluate natural network invariants (hydraulics, capacity, depth, length)
     const validation = evaluateNetworkInvariants(boundNetwork);
 
-    // 7. Apply estimator conventions (rounding, label normalization, grouping)
-    const fittedFacts = applyEstimatorConventions(validation.validEntities);
-    fittedFacts.projectName = projectName;
+    // 8. Apply estimator conventions (rounding, label normalization, grouping)
+    let vectorPageFacts = applyEstimatorConventions(validation.validEntities);
+    vectorPageFacts.projectName = projectName;
 
-    pageFacts.push(fittedFacts);
+    // 9. Merge text layer facts (primary) with vector topology facts
+    if (textFacts) {
+      vectorPageFacts = mergeTakeoffs(textFacts, vectorPageFacts);
+    }
+
+    pageFacts.push(vectorPageFacts);
   }
 
   if (pageFacts.length === 0) {

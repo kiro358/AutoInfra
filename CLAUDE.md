@@ -33,7 +33,7 @@ PDF ──▶ extractFromPDF()  ──▶ TakeoffFacts   facts only, NO dollars 
 - **Costing** is deterministic: every dollar/labor/fee comes from one explicit, versioned,
   unit-tested rule table (`DEFAULT_COSTING` in `costing-rules.ts`).
 
-`extractFromPDF()` (`extraction.ts`) has three interpretation paths, chosen by the
+`extractFromPDF()` (`extraction.ts`) has four interpretation paths, chosen by the
 `EXTRACTION_MODE` env var. **Unset/any other value = the original default path** (vision
 both reads AND interprets tiles into TakeoffFacts JSON directly via
 `getSinglePassPrompt`) — unchanged, still what runs in production today.
@@ -45,6 +45,11 @@ both reads AND interprets tiles into TakeoffFacts JSON directly via
   read the drawing" from "can the model reason about a takeoff," and — because the parser/
   assembler/reconciler are pure — makes iterating on the interpretation step free after one
   LLM run (see `assemble-from-transcripts.ts` below).
+- `EXTRACTION_MODE=vector`: full CAD vector linework, topology graph, symbol dictionary,
+  leader-line annotation binding, physical invariant validation, and fitted estimator conventions
+  (`cad-geometry.ts` + `cad-symbols.ts` + `site-network.ts` + `cad-annotations.ts` +
+  `cad-invariants.ts` + `shx-cluster.ts` + `shx-decode.ts` + `convention-rules.ts` +
+  `vector-takeoff.ts`), zero LLM calls ($0 cost) across all vector drawing sets.
 - `EXTRACTION_MODE=hybrid`: ~1/3 of the drawing corpus carries servicing callouts as real PDF
   text objects (not SHX/scanned) — those pages are read EXACTLY via the PDF text layer
   (`pdf-text.ts::extractPageText` + `isTextyPage` + `text-takeoff.ts::assembleTextTakeoff`),
@@ -249,6 +254,10 @@ is the one artifact left over from when it ran. Do NOT re-introduce prompt-rule 
 without the facts metric as the gate — see REDESIGN §3.5).
 
 - `evaluate-golden.ts` (`npm run evaluate:golden`) — the LLM golden-set eval (see "Run it").
+- `evaluate-vector.ts` (`npm run evaluate:vector`) — $0 validation of the vector-native CAD
+  extraction path directly against golden drawing PDFs (zero LLM calls).
+- `calibrate-conventions.ts` (`npm run calibrate:conventions`) — calibrates and evaluates
+  declarative estimator convention rules across held-out splits.
 - `evaluate-text.ts` (`npm run evaluate:text`) — $0 validation of the text-layer path: runs
   `extractPageText` + `assembleTextTakeoff` directly against each golden project's real PDFs
   (no LLM calls) and prints textF1 next to the cached LLM run's F1 for direct comparison.

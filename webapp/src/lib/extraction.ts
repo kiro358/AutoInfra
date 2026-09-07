@@ -19,6 +19,7 @@ import { mergeTakeoffs } from './reconcile';
 import { extractPageText, isTextyPage } from './pdf-text';
 import { verifyStructureProvenance } from './provenance';
 import { assembleTextTakeoff } from './text-takeoff';
+import { extractVectorTakeoff } from './vector-takeoff';
 
 // Globally override Undici's default 30-second headers/body timeout and configure proxy if present
 try {
@@ -736,6 +737,15 @@ export async function extractFromPDF(
             ...locatorIndex.watermainPages,
           ])).sort((a, b) => a - b)
         : [];
+
+      // EXTRACTION_MODE=vector: full CAD vector geometry and topology graph extraction ($0 LLM cost).
+      if (process.env.EXTRACTION_MODE === 'vector') {
+        const facts = await extractVectorTakeoff(pdfBuffer, unionPages, projectName);
+        facts.locatorIndex = locatorIndex;
+        facts.cost = cost;
+        console.log(`      [extraction.ts] vector-native: ${unionPages.length} located page(s). cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);
+        return facts;
+      }
 
       // EXTRACTION_MODE=transcribe: vision transcribes verbatim, code (Task 8's
       // assembleTranscriptTakeoff) does ALL the interpretation. Additive branch —

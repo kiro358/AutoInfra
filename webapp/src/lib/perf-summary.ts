@@ -22,6 +22,8 @@ export interface GoldenRow {
   detF1: number | null;
   detF1Lo?: number | null;
   detF1Hi?: number | null;
+  asDrawnF1?: number | null;
+  conventionF1?: number | null;
   structM: number;
   structT: number;
   runM: number;
@@ -72,6 +74,8 @@ export interface ProjectSummary {
   detF1: number;
   detF1Lo: number | null;
   detF1Hi: number | null;
+  asDrawnF1?: number | null;
+  conventionF1?: number | null;
   fieldAcc: number | null;
   status: ProjectStatus;
   /** Truth entity count — the drawing's size. Drives the scale-vs-accuracy read. */
@@ -89,6 +93,8 @@ export interface PerformanceSummary {
   /** Mean detF1 counting failed/empty extractions as zero. The pessimistic read. */
   meanDetF1WithFailures: number;
   meanFieldAcc: number;
+  meanAsDrawnF1?: number | null;
+  meanConventionF1?: number | null;
   projectsTotal: number;
   projectsScored: number;
   projectsFailed: number;
@@ -146,6 +152,8 @@ export function summarizePerformance(rows: GoldenRow[]): PerformanceSummary {
       detF1: r.detF1 ?? 0,
       detF1Lo: r.detF1Lo ?? null,
       detF1Hi: r.detF1Hi ?? null,
+      asDrawnF1: r.asDrawnF1 ?? null,
+      conventionF1: r.conventionF1 ?? null,
       fieldAcc: r.fieldT > 0 ? ratio(r.fieldM, r.fieldT) : null,
       status,
       truthSize: truthFromEntities ?? r.structT + r.runT,
@@ -211,11 +219,15 @@ export function summarizePerformance(rows: GoldenRow[]): PerformanceSummary {
   }
 
   const fieldAccs = scored.map((p) => p.fieldAcc).filter((x): x is number => x != null);
+  const asDrawnF1s = scored.map((p) => p.asDrawnF1).filter((x): x is number => x != null);
+  const convF1s = scored.map((p) => p.conventionF1).filter((x): x is number => x != null);
 
   return {
     meanDetF1: mean(scored.map((p) => p.detF1)),
     meanDetF1WithFailures: mean(projects.map((p) => p.detF1)),
     meanFieldAcc: mean(fieldAccs),
+    meanAsDrawnF1: asDrawnF1s.length > 0 ? mean(asDrawnF1s) : null,
+    meanConventionF1: convF1s.length > 0 ? mean(convF1s) : null,
     projectsTotal: projects.length,
     projectsScored: scored.length,
     projectsFailed: projects.filter((p) => p.status !== 'ok').length,

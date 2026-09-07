@@ -28,7 +28,7 @@ export interface PageText {
 
 export async function extractPageText(pdfBuffer: Buffer, pages?: number[]): Promise<PageText[]> {
   const lib = await getPdfjs();
-  const doc = await lib.getDocument({ data: new Uint8Array(pdfBuffer), isEvalSupported: false, useSystemFonts: true }).promise;
+  const doc = await lib.getDocument({ data: new Uint8Array(pdfBuffer.buffer.slice(pdfBuffer.byteOffset, pdfBuffer.byteOffset + pdfBuffer.byteLength)), isEvalSupported: false, useSystemFonts: true }).promise;
   const out: PageText[] = [];
   try {
     const wanted = pages && pages.length > 0 ? pages : Array.from({ length: doc.numPages }, (_, i) => i + 1);

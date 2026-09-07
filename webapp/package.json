@@ -16,7 +16,9 @@
     "analyze:eval": "tsx src/scripts/analyze-eval.ts",
     "score:manual": "tsx src/scripts/score-manual-facts.ts",
     "score:offline": "tsx src/scripts/score-offline.ts",
-    "assemble:transcripts": "tsx src/scripts/assemble-from-transcripts.ts"
+    "assemble:transcripts": "tsx src/scripts/assemble-from-transcripts.ts",
+    "calibrate:conventions": "tsx src/scripts/calibrate-conventions.ts",
+    "evaluate:vector": "tsx src/scripts/evaluate-vector.ts"
   },
   "dependencies": {
     "@google-cloud/storage": "^7.19.0",

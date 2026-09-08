@@ -145,27 +145,48 @@ npm run assemble:transcripts   # re-runs assembleTranscriptTakeoff+reconcileTake
 **Reading the accuracy number.** `score:offline` reports two means and they are not
 interchangeable: **detF1 over runs that returned a takeoff** (the model's accuracy) and
 **detF1 counting failed runs as zero** (what a user actually gets). A run that returns *no*
-entities at all is a transport/harness failure, not a 0%-accurate read — `perf-summary.ts`
-classifies those separately so they can never be averaged in silently. As of **2026-09-06**
-(`npm run score:offline`, HEAD of the Phase 0 branch) the cached predictions score **48.1% mean
-detF1 over the 12 runs that returned a takeoff** and **36.0% counting the 4 empty runs as zero**;
-mean field accuracy 48.5%. Per entity, over those 12 scored runs: sewerRuns R43.8/P61.6/F1 51.2 ·
-structures R44.1/P38.0/F1 40.9 · catchbasins R57.6/P71.7/F1 63.9 · watermain R13.8/P100/F1 24.2.
+entities at all is classified separately by `perf-summary.ts` so it can never be averaged in
+silently. As of **2026-09-08** (`npm run score:offline`): **50.2% mean detF1 over 15 scored
+projects**, **47.1% counting the 1 remaining empty run as zero**, field accuracy 46.2%.
+Per entity: sewerRuns R42.2/P51.6/F1 46.4 · structures R43.7/P38.2/F1 40.8 ·
+catchbasins R60.8/P77.0/F1 68.0 · watermain R26.5/P75.0/F1 39.1.
 
-Careful when comparing to older tables: `score:offline` aggregates entities over **scored rows
-only** (the 4 empty rows are excluded — `perf-summary.ts:166`), while the 2026-08-21 design spec
-aggregated all 16 rows. Same data, different denominator (e.g. structures F1 40.9% scored-only vs
-36.5% all-16). State which framing a number uses or it will be compared to the wrong baseline.
+That is up from 48.1% / 36.0% (2026-09-06). **The entire +11.1pp came from re-running the
+four "empty" projects live on Vertex — no extraction-code change was involved.** The cached
+predictions were simply two months stale and predated the Phase 0 fixes.
 
-The 4 empty runs are Georgian Dr, Eric Smith Way, White Oak Woodbine and Milton #13 — same count
-as 2026-07-28 because the cached predictions predate the Phase 0 fixes. Eric Smith Way is a
-confirmed *wrong-drawing* failure (its cached warning says only cost-estimate tables were
-supplied); `dataset.ts::chooseDrawingPdfs` now picks the right sheet, but only a live run can
-clear it. For the other three the cache carries no `cost` telemetry, so "never tiled" cannot be
-told apart from "returned nothing" offline. Because the cache predates the extraction changes,
-the offline number can only move for changes that execute at SCORING time — tiling/coverage and
-parser fixes are structurally invisible to it (see EVAL_METHODOLOGY.md, "What each $0 loop can
-and cannot prove").
+**Mixed provenance warning:** 3 of those 16 rows are fresh (2026-09-08 Vertex) and 13 are
+still the July cache. Do NOT read the per-entity table as a clean measurement of HEAD — it is
+a blend. A full `GOLDEN_REPEATS=3` run is still owed before any of these become a baseline.
+
+**Empty-run triage, resolved 2026-09-08 (live Vertex, `ENABLE_EVAL_CACHE=false`):**
+
+| project | was | now | cause |
+|---|---|---|---|
+| Georgian Dr | 0% | **76%** | stale cache only; recovers on default config |
+| Eric Smith Way | 0% | **64%** | wrong-drawing bug; `chooseDrawingPdfs` now picks the `SS` sheet |
+| Milton #13 | 0% | **37.5%** | output truncation — needs `BATCH_TILES=6 MAX_OUTPUT_TOKENS=65536` |
+| White Oak Woodbine | 0% | **0%** | unresolved, see below |
+
+**`evaluate-golden`'s "likely transport failure" label is MISLEADING — do not trust it.**
+All four had `facts.cost` showing real LLM calls and real token spend (White Oak: 2 calls,
+94k tokens; Milton: 2 calls, 49k). They ran, cost money, and returned zero entities. The
+message predates `facts.cost` telemetry; check `cost.llmCalls` before believing it.
+
+**Milton #13 needs non-default knobs.** At the defaults (`BATCH_TILES=16`,
+`MAX_OUTPUT_TOKENS=32768`) it still returns nothing; with `BATCH_TILES=6` +
+`MAX_OUTPUT_TOKENS=65536` it scores 37.5%. **The defaults were deliberately NOT changed** —
+that would be a global change justified by two projects, and it must be validated against the
+other 14 with `GOLDEN_REPEATS=3` before being accepted. Note `BATCH_TILES=6` raises LLM calls
+per project (24 tiles → 4 calls instead of 2), so it trades cost for completeness.
+
+**White Oak Woodbine is a distinct, unsolved failure — not truncation.** Raising the ceiling
+made it *worse*: at `MAX_OUTPUT_TOKENS=65536` it emitted **229k output tokens across 4 calls**
+(~57k each, pinned to the ceiling) and still parsed to zero entities. Generating 229k tokens
+for a 2-page drawing is pathological — it looks like a repetition/runaway loop, not a drawing
+the model cannot read. Smaller batches alone (`BATCH_TILES=6`, default ceiling) yielded 3
+entities against 89 in truth. Next diagnostic should capture the raw response text and
+`finishReason` rather than tuning budgets further.
 
 Run the eval on stable infra: local works for a small filtered set (streaming rides the
 laptop's flaky network), but the full set belongs on the throwaway GCP VM using **Vertex**

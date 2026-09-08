@@ -608,8 +608,12 @@ export async function createSyntheticCadPdf(
 
       if (s.rimElevation != null || s.invertElevation != null) {
         const elevLines: string[] = [];
-        if (s.rimElevation != null) elevLines.push(`RIM ${s.rimElevation.toFixed(2)}`);
-        if (s.invertElevation != null) elevLines.push(`INV ${s.invertElevation.toFixed(2)}`);
+        // Ontario servicing drawings write the rim as "T/G=" (top of grate) and the
+        // invert as "INV=" — verified against the corpus text layers (158 T/G tokens,
+        // zero "RIM"). Emitting "RIM" here would have tested a notation no real
+        // drawing uses, and callout-parser's grammar rightly does not accept it.
+        if (s.rimElevation != null) elevLines.push(`T/G=${s.rimElevation.toFixed(2)}`);
+        if (s.invertElevation != null) elevLines.push(`INV=${s.invertElevation.toFixed(2)}`);
         let lineY = s.y + offset.y - 9;
         for (const el of elevLines) {
           page.drawText(el, {

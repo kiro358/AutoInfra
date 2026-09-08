@@ -142,11 +142,20 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
   };
 }
 
+/**
+ * Combine two extraction paths' facts, `primary` winning conflicts.
+ *
+ * Secondary structures are appended WHOLE rather than dropped when their label
+ * already appears in primary: reconcileTakeoff groups by normalized label and
+ * mergeStructureGroup fills only the fields the first (primary) row left null.
+ * Filtering them out instead discarded values that nothing else supplied — the
+ * text layer reads the label + invert while the vector/topology path reads the
+ * rim, and the rim was being thrown away. Primary still wins any field both read.
+ */
 export function mergeTakeoffs(primary: TakeoffFacts, secondary: TakeoffFacts): TakeoffFacts {
-  const primaryLabels = new Set(primary.structures.map((s) => normalizeLabel(s.description)));
   return reconcileTakeoff({
     ...primary,
-    structures: [...primary.structures, ...secondary.structures.filter((s) => !primaryLabels.has(normalizeLabel(s.description)))],
+    structures: [...primary.structures, ...secondary.structures],
     sewers: [...primary.sewers, ...secondary.sewers],
     catchbasins: [...primary.catchbasins, ...secondary.catchbasins],
     watermain: [...primary.watermain, ...secondary.watermain],

@@ -63,6 +63,26 @@ describe('mergeTakeoffs', () => {
     expect(m.structures.find((s) => s.description === 'MH 1')!.topElevation).toBe(100);
     expect(m.sewers).toHaveLength(1);
   });
+
+  // Two decode paths see the same physical structure but read different fields:
+  // the text layer gets the label + invert, the vector/topology path gets the rim.
+  // Dropping the secondary row entirely threw away a value nothing else supplied.
+  it('fills fields the primary is missing from the secondary structure', () => {
+    const a = emptyFacts({ structures: [struct({ description: 'MH 1', lowInvert: 97.5 })] });
+    const b = emptyFacts({ structures: [struct({ description: 'MH 1', topElevation: 100.5, depth: 3.0 })] });
+    const m = mergeTakeoffs(a, b);
+    expect(m.structures).toHaveLength(1);
+    const mh1 = m.structures[0];
+    expect(mh1.lowInvert).toBe(97.5);      // primary's own read survives
+    expect(mh1.topElevation).toBe(100.5);  // secondary fills the gap
+    expect(mh1.depth).toBe(3.0);
+  });
+
+  it('still lets the primary win when both paths read the same field', () => {
+    const a = emptyFacts({ structures: [struct({ description: 'MH 1', topElevation: 100 })] });
+    const b = emptyFacts({ structures: [struct({ description: 'MH 1', topElevation: 999 })] });
+    expect(mergeTakeoffs(a, b).structures[0].topElevation).toBe(100);
+  });
 });
 
 describe('watermain aggregation by diameter', () => {

@@ -44,8 +44,8 @@ describe('synthetic-cad-pdf fixture generator', () => {
     expect(fullText).toContain('34.0m - 150mmØ PVC WATERMAIN');
 
     // Elevations
-    expect(fullText).toContain('RIM 100.50');
-    expect(fullText).toContain('INV 97.50');
+    expect(fullText).toContain('T/G=100.50');
+    expect(fullText).toContain('INV=97.50');
 
     // Legend
     expect(fullText).toContain('LEGEND');

@@ -169,6 +169,14 @@ describe('normalizeLabel / runSignature', () => {
       expect(normalizeLabel('MH06A')).toBe(normalizeLabel('MH 6A'));
     });
 
+    it("strips brand prefixes and note suffixes on structures", () => {
+      expect(normalizeLabel("Stormceptor - EF4")).toBe("EF4");
+      expect(normalizeLabel("MH 1A-DH")).toBe("MH1A");
+      expect(normalizeLabel("MH 8 - EXT DROP")).toBe("MH8");
+      expect(normalizeLabel("MH 42 - OIL GRIT")).toBe("MH42");
+      expect(normalizeLabel("MH 42 - OGS")).toBe("MH42");
+    });
+
     it('strips estimator qualifier prefixes', () => {
       expect(normalizeLabel('DIV.MH 2')).toBe(normalizeLabel('MH2'));
       expect(normalizeLabel('CTRL MH 5')).toBe(normalizeLabel('MH 5'));

@@ -61,19 +61,25 @@ export function stripSystemPrefix(token: string): string {
 // Estimator note prefixes that qualify a structure without changing its identity:
 // "DIV.MH 2" is MH 2 on a diversion, "CTRL MH 5" is MH 5 used as a control. The
 // digit lookahead keeps them anchored to a real structure id.
-const QUALIFIER_PREFIX = /^(?:DIV|CTRL|CONTROL)(?=(?:DDICB|DCBMH|CBMH|DICB|DCB|CB|MH|HS|OS)\d)/;
+const QUALIFIER_PREFIX = /^(?:DIV|CTRL|CONTROL|STORMCEPTOR|JELLYFISH|OGS|OILGRITSEPARATOR)(?=(?:DDICB|DCBMH|CBMH|DICB|DCB|CB|MH|HS|OS|JF|EF)\d)/;
 
 // A structure id is (letters)(number)(optional letter suffix). Comparing the number
 // NUMERICALLY is what makes "MH01" and "MH 1" the same structure while keeping
 // "MH10" distinct — stripping zeros textually would merge them.
 const LABEL_PARTS = /^([A-Z]+)0*(\d+)([A-Z]*)$/;
 
+const NOTE_SUFFIX_RE = /[-\s/]+(?:DH|EXT\.?\s*DROP|DROP|OIL\s*GRIT|OGS|RIP\s*RAP|O\.?P\.?|REPL\.?|EX\.?|PROP\.?)$/i;
+
 export function normalizeLabel(label: string): string {
+  const pre = (label || '')
+    .toUpperCase()
+    .replace(/\(.*?\)/g, '')
+    .split('/')[0] // drop note suffix after the first slash
+    .replace(NOTE_SUFFIX_RE, '') // drop note suffixes after hyphen or space
+    .trim();
+
   const flat = stripSystemPrefix(
-    (label || '')
-      .toUpperCase()
-      .replace(/\(.*?\)/g, '')
-      .split('/')[0] // drop note suffix after the first slash
+    pre
       .replace(/[^A-Z0-9]/g, '')
       .replace(QUALIFIER_PREFIX, '')
   );

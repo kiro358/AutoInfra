@@ -13,6 +13,8 @@ import {
   isNonMainlineSewer,
   isNonStructure,
   tilesNeededPerPage,
+  findDegenerateRepetition,
+  stripDegenerateKeys,
 } from './extraction';
 
 describe('parseFacts structure/catchbasin categorization', () => {
@@ -134,6 +136,116 @@ describe('repairTruncatedJson', () => {
   });
   it('drops a trailing incomplete key/value pair inside an object', () => {
     expect(JSON.parse(repairTruncatedJson('{"a":1,"b":2,"c'))).toEqual({ a: 1, b: 2 });
+  });
+});
+
+describe('findDegenerateRepetition', () => {
+  // gemini-2.5-flash at temperature 0 can fall into a decode loop on a dense sheet:
+  // it emitted "300mm PVC SOW-30 STM @ 1.00%" 1160 times in a row into pipeScan,
+  // burned the whole maxOutputTokens budget inside the FIRST key, and so never
+  // emitted sewers/manholes at all. repairTruncatedJson then "succeeds" into a
+  // valid object holding only that key, which scores as a silent 0% extraction.
+  it('flags a long run of an identical repeated string', () => {
+    const looped = { pipeScan: Array(400).fill('300mm PVC SOW-30 STM @ 1.00%') };
+    const found = findDegenerateRepetition(looped);
+    expect(found).not.toBeNull();
+    expect(found!.key).toBe('pipeScan');
+    expect(found!.runLength).toBe(400);
+  });
+
+  it('flags an incrementing fabricated label sequence', () => {
+    // The other observed shape: unique-but-arithmetic labels (SMH 30..SMH 277).
+    // Every label differs, so dedupe cannot collapse it — but 248 structures on a
+    // sheet whose truth is 31 is a runaway counter, not a read.
+    const fabricated = { manholes: Array.from({ length: 260 }, (_, i) => ({ description: `SMH ${i + 30}` })) };
+    const found = findDegenerateRepetition(fabricated);
+    expect(found).not.toBeNull();
+    expect(found!.key).toBe('manholes');
+  });
+
+  it('flags a runaway nested groups array (e.g. catchbasins.groups)', () => {
+    const runawayCb = {
+      catchbasins: {
+        groups: Array.from({ length: 200 }, (_, i) => ({ type: 'SINGLE_CB', quantity: 1, depth: 1.8 + (i % 5) })),
+      },
+    };
+    const found = findDegenerateRepetition(runawayCb);
+    expect(found).not.toBeNull();
+    expect(found!.key).toBe('catchbasins');
+  });
+
+  it('does NOT flag a normal dense response', () => {
+    // A real dense sheet: many rows, varied labels, short repeat runs.
+    const healthy = {
+      sewers: Array.from({ length: 58 }, (_, i) => ({ runLabel: `MH ${i}-MH ${i + 1}`, length: 10 + (i % 7) })),
+      manholes: Array.from({ length: 31 }, (_, i) => ({ description: `CBMH ${i}` })),
+      pipeScan: ['17.3m-825mm CONC STM @0.5%', '12.9m-250mm PVC STM @1.0%', '8.2m-300mm PVC STM @0.7%'],
+    };
+    expect(findDegenerateRepetition(healthy)).toBeNull();
+  });
+
+  it('tolerates a short legitimate repeat run', () => {
+    // Identical pipe callouts DO recur legitimately on a drawing (same spec, many
+    // segments). Only a pathological run should trip the detector.
+    const legit = { pipeScan: [...Array(12).fill('300mm PVC STM @ 1.00%'), 'MH 4-MH 5', '250mm PVC SAN'] };
+    expect(findDegenerateRepetition(legit)).toBeNull();
+  });
+
+  it('ignores non-array and empty values', () => {
+    expect(findDegenerateRepetition({ confidence: 0.9, warnings: [] })).toBeNull();
+    expect(findDegenerateRepetition({})).toBeNull();
+  });
+});
+
+describe('stripDegenerateKeys', () => {
+  // Whole-batch discard was too blunt. Measured on Bradford (2026-09-12): discarding
+  // 3 of 4 looped batches killed 54 fabricated structures (good) but ALSO destroyed
+  // 2 real structures and 3 real runs — sewerRuns F1 fell 54%->48%. The loop is
+  // usually confined to ONE key (pipeScan, which is scratch and never consumed
+  // downstream), so drop only the degenerate keys and keep the healthy ones.
+  it('drops only the looped key and keeps healthy entity arrays', () => {
+    const batch = {
+      pipeScan: Array(400).fill('300mm PVC SOW-30 STM @ 1.00%'),
+      sewers: [{ runLabel: 'MH 1-MH 2', length: 40 }, { runLabel: 'MH 2-MH 3', length: 31 }],
+      manholes: [{ description: 'MH 1' }, { description: 'MH 2' }],
+    };
+    const { cleaned, dropped } = stripDegenerateKeys(batch);
+    expect(dropped.map((d) => d.key)).toEqual(['pipeScan']);
+    expect(cleaned.pipeScan).toBeUndefined();
+    expect(cleaned.sewers).toHaveLength(2);
+    expect(cleaned.manholes).toHaveLength(2);
+  });
+
+  it('drops a fabricated entity array while keeping a healthy sibling', () => {
+    const batch = {
+      manholes: Array.from({ length: 260 }, (_, i) => ({ description: `SMH ${i + 30}` })),
+      sewers: [{ runLabel: 'MH 1-MH 2', length: 40 }],
+    };
+    const { cleaned, dropped } = stripDegenerateKeys(batch);
+    expect(dropped.map((d) => d.key)).toEqual(['manholes']);
+    expect(cleaned.manholes).toBeUndefined();
+    expect(cleaned.sewers).toHaveLength(1);
+  });
+
+  it('leaves a healthy batch completely untouched', () => {
+    const batch = {
+      sewers: Array.from({ length: 58 }, (_, i) => ({ runLabel: `MH ${i}-MH ${i + 1}` })),
+      manholes: Array.from({ length: 31 }, (_, i) => ({ description: `CBMH ${i}` })),
+    };
+    const { cleaned, dropped } = stripDegenerateKeys(batch);
+    expect(dropped).toEqual([]);
+    expect(cleaned).toEqual(batch);
+  });
+
+  it('reports every degenerate key when more than one loops', () => {
+    const batch = {
+      pipeScan: Array(400).fill('x'),
+      manholes: Array.from({ length: 260 }, (_, i) => ({ description: `SMH ${i}` })),
+      sewers: [{ runLabel: 'MH 1-MH 2' }],
+    };
+    const { cleaned, dropped } = stripDegenerateKeys(batch);
+    expect(dropped.map((d) => d.key).sort()).toEqual(['manholes', 'pipeScan']);
+    expect(cleaned.sewers).toHaveLength(1);
   });
 });
 

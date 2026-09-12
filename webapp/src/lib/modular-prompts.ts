@@ -46,7 +46,7 @@ is the #1 cause of missed runs. Then derive the "sewers" array below with ONE ro
 (non-"Ex.") entry in pipeScan. Emit "pipeScan" in your output (it is your working list, kept for audit).
 Doing the pipe scan first also prevents the common error of dumping catchbasins into the structure list.
 
-OUTPUT KEY ORDER (important): emit the JSON keys in this exact order — "pipeScan", "sewers",
+OUTPUT KEY ORDER (important): emit the JSON keys in this exact order — "sewers", "pipeScan",
 "catchbasins", "watermain", "watermainSpecials", "watermainValves", "manholes", "warnings". Sewers
 MUST come before manholes so that if the response is truncated, the pipe runs (the hardest-won and
 most important data) are already emitted rather than lost at the end.

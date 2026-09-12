@@ -688,9 +688,20 @@ export async function extractFromPDF(
                   thinkingConfig: { thinkingBudget: THINKING_BUDGET },
                 },
               });
-              let acc = '', usage: any = null;
-              for await (const chunk of stream) { acc += chunk.text || ''; if (chunk.usageMetadata) usage = chunk.usageMetadata; }
+              let acc = '', usage: any = null, finishReason: string | null = null;
+              for await (const chunk of stream) {
+                acc += chunk.text || '';
+                if (chunk.usageMetadata) usage = chunk.usageMetadata;
+                // finishReason was previously DISCARDED. The model reported
+                // MAX_TOKENS on every call of a silently-failing project and
+                // nothing was listening — see findDegenerateRepetition.
+                const fr = chunk.candidates?.[0]?.finishReason;
+                if (fr) finishReason = String(fr);
+              }
               addUsage(cost, usage);
+              if (finishReason && finishReason !== 'STOP') {
+                console.warn(`      [extraction.ts] finishReason=${finishReason} (response hit a limit — output may be truncated).`);
+              }
               return acc || '{}';
             });
           }, projectName);
@@ -826,6 +837,10 @@ export async function extractFromPDF(
       if (tileBatches.length === 0) tileBatches.push([]); // no tiles -> PDF fallback below
       if (tileBatches.length > 1) console.log(`      [extraction.ts] Splitting ${tileParts.length} tiles into ${tileBatches.length} batched calls (concurrency ${BATCH_CONCURRENCY}).`);
 
+      // Batches discarded for degenerate repetition — surfaced as a warning on the
+      // facts so a 0-entity result is never mistaken for "the drawing was empty".
+      const degenerateBatches: string[] = [];
+
       const parts = await mapLimit(tileBatches, BATCH_CONCURRENCY, async (batch, bi) => {
         const media = batch.length > 0 ? batch : [await preparePdfPart(pdfBuffer)];
         let text = '{}';
@@ -851,16 +866,43 @@ export async function extractFromPDF(
                   thinkingConfig: { thinkingBudget: THINKING_BUDGET },
                 },
               });
-              let acc = '', usage: any = null;
-              for await (const chunk of stream) { acc += chunk.text || ''; if (chunk.usageMetadata) usage = chunk.usageMetadata; }
+              let acc = '', usage: any = null, finishReason: string | null = null;
+              for await (const chunk of stream) {
+                acc += chunk.text || '';
+                if (chunk.usageMetadata) usage = chunk.usageMetadata;
+                // finishReason was previously DISCARDED. The model reported
+                // MAX_TOKENS on every call of a silently-failing project and
+                // nothing was listening — see findDegenerateRepetition.
+                const fr = chunk.candidates?.[0]?.finishReason;
+                if (fr) finishReason = String(fr);
+              }
               addUsage(cost, usage);
+              if (finishReason && finishReason !== 'STOP') {
+                console.warn(`      [extraction.ts] finishReason=${finishReason} (response hit a limit — output may be truncated).`);
+              }
               return acc || '{}';
             });
           }, projectName);
         } catch (e: any) {
           console.error(`      [extraction.ts] Single-pass batch ${bi + 1}/${tileBatches.length} failed: ${e.message}`);
         }
-        try { return tryParseJSONWithRepair(text); } catch (e: any) {
+        try {
+          const parsed = tryParseJSONWithRepair(text);
+          // A decode loop yields VALID JSON that is nonetheless worthless: the
+          // budget was spent repeating one element, so the keys carrying the
+          // actual takeoff were never emitted. Without this check the batch looks
+          // like a clean empty result and the project scores 0% silently.
+          const { cleaned, dropped } = stripDegenerateKeys(parsed);
+          for (const d of dropped) {
+            console.error(
+              `      [extraction.ts] Batch ${bi + 1}/${tileBatches.length}: dropped degenerate key "${d.key}" ` +
+              `(${d.length} entries, longest identical run ${d.runLength}, e.g. ${JSON.stringify(d.sample)}). ` +
+              `Decode loop, not a read of the drawing — other keys in this batch are kept.`
+            );
+            degenerateBatches.push(`batch ${bi + 1}: "${d.key}" x${d.length} (run ${d.runLength})`);
+          }
+          return cleaned;
+        } catch (e: any) {
           console.error(`      [extraction.ts] Batch ${bi + 1} parse failed: ${e.message}`);
           return {} as any;
         }
@@ -910,6 +952,13 @@ export async function extractFromPDF(
       }
 
       facts.warnings = [...facts.warnings, ...validateExtraction(facts)];
+      if (degenerateBatches.length > 0) {
+        facts.warnings.push(
+          `${degenerateBatches.length} degenerate key(s) dropped from extraction batches ` +
+          `(model repetition loop, not a read of the drawing): ${degenerateBatches.join('; ')}. ` +
+          `Those responses hit the output ceiling mid-loop, so coverage is incomplete — re-run before trusting this takeoff.`
+        );
+      }
       facts.locatorIndex = locatorIndex;
       facts.cost = cost;
       console.log(`      [extraction.ts] cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);
@@ -1033,6 +1082,112 @@ export function repairTruncatedJson(text: string): string {
   let closing = '';
   for (let j = cutStack.length - 1; j >= 0; j--) closing += cutStack[j] === '{' ? '}' : ']';
   return text.slice(0, cutLen) + closing;
+}
+
+/**
+ * Detect a degenerate decode loop in a parsed LLM response.
+ *
+ * gemini-2.5-flash at `temperature: 0` can fall into a repetition loop on a dense
+ * sheet and burn the ENTIRE maxOutputTokens budget inside a single key. Measured
+ * on White Oak (2026-09-12, Vertex, `finishReason: MAX_TOKENS` on every call) in
+ * two distinct shapes:
+ *
+ *   1. "300mm PVC SOW-30 STM @ 1.00%" emitted 1160 CONSECUTIVE times into
+ *      "pipeScan" — 99.3% of the array — so "sewers"/"manholes" (emitted later in
+ *      key order) never appeared at all.
+ *   2. An incrementing counter, "SMH 30".."SMH 277": 248 UNIQUE labels on a sheet
+ *      whose truth is 31 structures. Because every label differs,
+ *      deduplicateManholes() cannot collapse it — this is the "structure
+ *      fabrication" shape CLAUDE.md documents.
+ *
+ * In both cases repairTruncatedJson() then returns a *valid* object, the batch
+ * merge contributes nothing, and the project scores 0% with no error raised. The
+ * point of this function is to make that silent failure loud.
+ *
+ * Thresholds are set from measured data, deliberately well clear of real drawings:
+ *   - MAX_IDENTICAL_RUN=50: identical pipe callouts DO recur legitimately (same
+ *     spec, many segments), but the observed loops ran 927-1160 long.
+ *   - MAX_ARRAY_LEN=150: the densest golden project (Panattoni) has 89 runs / 85
+ *     structures in truth; the observed fabrications were 248-309.
+ */
+export interface DegenerateRepetition {
+  key: string;
+  runLength: number;
+  length: number;
+  sample: string;
+}
+
+const MAX_IDENTICAL_RUN = 50;
+const MAX_ARRAY_LEN = 150;
+
+export function findDegenerateRepetition(parsed: any): DegenerateRepetition | null {
+  if (!parsed || typeof parsed !== 'object') return null;
+
+  for (const [key, value] of Object.entries(parsed)) {
+    let arr: any[] | null = null;
+    if (Array.isArray(value)) {
+      arr = value;
+    } else if (value && typeof value === 'object' && Array.isArray((value as any).groups)) {
+      arr = (value as any).groups;
+    }
+    if (!arr || arr.length === 0) continue;
+
+    // Compare by a stable string form so plain strings (pipeScan) and row
+    // objects (manholes/sewers/catchbasin groups) are covered by the same scan.
+    const asText = arr.map((v) =>
+      typeof v === 'string' ? v : JSON.stringify(v) ?? String(v)
+    );
+
+    let longestRun = 1;
+    let run = 1;
+    let runSample = asText[0];
+    for (let i = 1; i < asText.length; i++) {
+      if (asText[i] === asText[i - 1]) {
+        run++;
+        if (run > longestRun) { longestRun = run; runSample = asText[i]; }
+      } else {
+        run = 1;
+      }
+    }
+
+    if (longestRun >= MAX_IDENTICAL_RUN) {
+      return { key, runLength: longestRun, length: arr.length, sample: runSample.slice(0, 120) };
+    }
+    if (arr.length >= MAX_ARRAY_LEN) {
+      return { key, runLength: longestRun, length: arr.length, sample: asText[asText.length - 1].slice(0, 120) };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Remove ONLY the degenerate keys from a parsed batch, keeping healthy siblings.
+ *
+ * Discarding the whole batch was the first fix and it was too blunt. Measured on
+ * Bradford (2026-09-12, Vertex): dropping 3 of 4 looped batches killed 54
+ * fabricated structures (good) but ALSO destroyed 2 real structures and 3 real
+ * runs — sewerRuns F1 fell 54% -> 48%. Net detF1 still rose (54.3 -> 59.8) purely
+ * because the fabrication loss outweighed the real loss, which is luck, not design.
+ *
+ * The loop is normally confined to ONE key. In every observed case that key was
+ * "pipeScan", which is prompt scratch and never consumed downstream (nothing reads
+ * it — see modular-prompts.ts STEP 0). Stripping just the looped key preserves the
+ * sewers/manholes the same response read correctly.
+ */
+export function stripDegenerateKeys(parsed: any): { cleaned: any; dropped: DegenerateRepetition[] } {
+  if (!parsed || typeof parsed !== 'object') return { cleaned: parsed, dropped: [] };
+
+  const dropped: DegenerateRepetition[] = [];
+  const cleaned: any = {};
+
+  for (const [key, value] of Object.entries(parsed)) {
+    const hit = findDegenerateRepetition({ [key]: value });
+    if (hit) { dropped.push(hit); continue; }
+    cleaned[key] = value;
+  }
+
+  return { cleaned, dropped };
 }
 
 export function tryParseJSONWithRepair(text: string): any {

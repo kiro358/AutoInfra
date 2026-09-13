@@ -484,6 +484,17 @@ button, input, select, textarea {
   color: var(--text-primary);
 }
 
+.btn-outline {
+  background: transparent;
+  border-color: var(--border-active);
+  color: var(--text-primary);
+}
+
+.btn-outline:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
 .btn-storm {
   background: var(--storm);
   color: #ffffff;

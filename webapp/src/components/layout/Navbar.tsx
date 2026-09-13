@@ -60,14 +60,12 @@ export const Navbar: React.FC<NavbarProps> = ({ activeMode, onReset }) => {
             Engine Live
           </Badge>
 
-          <Link href="/settings">
-            <Button
-              variant="outline"
-              size="sm"
-              icon={<SettingsIcon size={13} />}
-            >
-              Rates &amp; Settings
-            </Button>
+          <Link
+            href="/settings"
+            className="btn btn-outline btn-sm inline-flex items-center gap-1.5"
+          >
+            <SettingsIcon size={13} />
+            <span>Rates &amp; Settings</span>
           </Link>
         </div>
       </div>

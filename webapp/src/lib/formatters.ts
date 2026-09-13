@@ -1,6 +1,10 @@
 export function formatCurrency(amount: number | null | undefined): string {
   if (amount == null || isNaN(amount)) return '$0';
-  return '$' + Math.round(amount).toLocaleString('en-US');
+  const rounded = Math.round(amount);
+  if (rounded < 0) {
+    return '-$' + Math.abs(rounded).toLocaleString('en-US');
+  }
+  return '$' + rounded.toLocaleString('en-US');
 }
 
 export function formatNumber(val: number | null | undefined, decimals = 1): string {

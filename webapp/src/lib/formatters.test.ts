@@ -4,6 +4,7 @@ import { formatCurrency, formatNumber, formatPercent, formatMeters, formatMm, fo
 describe('formatters', () => {
   it('formats currency cleanly without decimals', () => {
     expect(formatCurrency(124500.75)).toBe('$124,501');
+    expect(formatCurrency(-450.2)).toBe('-$450');
     expect(formatCurrency(0)).toBe('$0');
     expect(formatCurrency(null)).toBe('$0');
     expect(formatCurrency(undefined)).toBe('$0');

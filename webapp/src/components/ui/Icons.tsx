@@ -391,3 +391,12 @@ export const BoxIcon: React.FC<Omit<IconProps, 'name'>> = (props) => <Icon name=
 export const DollarIcon: React.FC<Omit<IconProps, 'name'>> = (props) => <Icon name="dollar" {...props} />;
 export const ActivityIcon: React.FC<Omit<IconProps, 'name'>> = (props) => <Icon name="activity" {...props} />;
 export const SpinnerIcon: React.FC<Omit<IconProps, 'name'>> = (props) => <Icon name="spinner" {...props} />;
+export const TrashIcon: React.FC<Omit<IconProps, 'name'>> = (props) => <Icon name="trash" {...props} />;
+export const CpuIcon: React.FC<Omit<IconProps, 'name'>> = (props) => <Icon name="cpu" {...props} />;
+export const TerminalIcon: React.FC<Omit<IconProps, 'name'>> = (props) => <Icon name="terminal" {...props} />;
+export const InfoIcon: React.FC<Omit<IconProps, 'name'>> = (props) => <Icon name="info" {...props} />;
+export const HelpIcon: React.FC<Omit<IconProps, 'name'>> = (props) => <Icon name="help" {...props} />;
+export const EyeIcon: React.FC<Omit<IconProps, 'name'>> = (props) => <Icon name="eye" {...props} />;
+export const PlusIcon: React.FC<Omit<IconProps, 'name'>> = (props) => <Icon name="plus" {...props} />;
+export const DatabaseIcon: React.FC<Omit<IconProps, 'name'>> = (props) => <Icon name="database" {...props} />;
+

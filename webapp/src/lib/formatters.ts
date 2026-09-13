@@ -22,3 +22,14 @@ export function formatMm(val: number | null | undefined): string {
   if (val == null || isNaN(val)) return '— mm';
   return Math.round(val) + ' mm';
 }
+
+export function formatFileSize(bytes: number | null | undefined): string {
+  if (bytes == null || isNaN(bytes) || bytes <= 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  const idx = Math.min(i, sizes.length - 1);
+  const val = bytes / Math.pow(k, idx);
+  return `${idx === 0 ? Math.round(val) : val.toFixed(1)} ${sizes[idx]}`;
+}
+

@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Card } from '@/components/ui/Card';
 import { Column, DataTable } from '@/components/ui/DataTable';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/formatters';
-import { addOnCost, classifySewerSystem, shareOfTotal, valveGroupCost } from './rows';
+import { addOnCost, classifySewerSystem, shareOfTotal, specialGroupCost, valveGroupCost } from './rows';
 
 /**
  * Cost ledger — where the money is, by trade, and every line that produced it.
@@ -164,7 +164,6 @@ export function buildLedgerLines(extraction: ExtractionResult): LedgerLine[] {
   }
 
   for (const special of extraction.watermainSpecials ?? []) {
-    const each = (special.costEach ?? 0) + (special.anodeCost ?? 0) + (special.laborEach ?? 0);
     lines.push({
       id: `special-${special.item}-${special.specialName}`,
       trade: 'appurtenances',
@@ -172,7 +171,7 @@ export function buildLedgerLines(extraction: ExtractionResult): LedgerLine[] {
       description: special.specialName,
       quantity: special.quantity ?? 0,
       unit: 'ea',
-      cost: (special.quantity ?? 0) * each,
+      cost: specialGroupCost(special),
     });
   }
 

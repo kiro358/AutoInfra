@@ -19,6 +19,7 @@ import type {
   SewerRun,
   TakeoffFacts,
   WatermainRun,
+  WatermainSpecial,
   WatermainValve,
 } from '@/lib/types';
 
@@ -262,6 +263,19 @@ export function valveGroupCost(valve: {
   return (valve.quantity ?? 0) * each;
 }
 
+/** All-in cost of a watermain special fitting: quantity × (cost + thrust block + anode + labor). */
+export function specialGroupCost(special: {
+  quantity?: number | null;
+  costEach?: number | null;
+  thrustBlock?: number | null;
+  anodeCost?: number | null;
+  laborEach?: number | null;
+}): number {
+  const each =
+    (special.costEach ?? 0) + (special.thrustBlock ?? 0) + (special.anodeCost ?? 0) + (special.laborEach ?? 0);
+  return (special.quantity ?? 0) * each;
+}
+
 // ============ Adapters: ExtractionResult -> rows ============
 
 export function toSewerRunRows(runs: SewerRun[] | null | undefined): SewerRunRow[] {
@@ -328,11 +342,12 @@ export function watermainMaterial(sizeAndType: string | null | undefined): strin
 }
 
 export function toWatermainValveRows(
-  valves: WatermainValve[] | null | undefined
+  valves: WatermainValve[] | null | undefined,
+  specials?: WatermainSpecial[] | null | undefined
 ): WatermainValveRow[] {
-  return (valves ?? []).map((valve) => ({
+  const valveRows: WatermainValveRow[] = (valves ?? []).map((valve) => ({
     item: valve.item,
-    itemName: valve.valveSize,
+    itemName: valve.valveSize || (valve.item != null ? `Item ${valve.item}` : '—'),
     valveSize: valve.valveSize,
     quantity: valve.quantity,
     valveCost: valve.valveCost,
@@ -341,6 +356,20 @@ export function toWatermainValveRows(
     laborPerValve: valve.laborPerValve,
     totalCost: valveGroupCost(valve),
   }));
+
+  const specialRows: WatermainValveRow[] = (specials ?? []).map((special) => ({
+    item: special.item,
+    itemName: special.specialName || (special.item != null ? `Special ${special.item}` : 'Special'),
+    valveSize: special.specialName || 'Special',
+    quantity: special.quantity,
+    valveCost: special.costEach,
+    boxCost: special.thrustBlock,
+    anodeCost: special.anodeCost,
+    laborPerValve: special.laborEach,
+    totalCost: specialGroupCost(special),
+  }));
+
+  return [...valveRows, ...specialRows];
 }
 
 // ============ Aggregation ============

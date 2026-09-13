@@ -1100,17 +1100,665 @@ button, input, select, textarea {
   }
 }
 
-/* ---------- 16. Responsive Breakpoints ---------- */
+/* ---------- 16. Processing Pipeline Stages ---------- */
+
+@keyframes radarSweep {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes nodePulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--proc-accent-bg); }
+  50% { box-shadow: 0 0 0 6px transparent; }
+}
+
+.proc-elapsed {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  letter-spacing: 0.04em;
+}
+
+.proc-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-bottom: 14px;
+  margin-bottom: 14px;
+  border-bottom: var(--hair) solid var(--border-subtle);
+}
+
+.proc-meta-file {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proc-meta-sep {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.proc-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+}
+
+/* --- CAD radar / reticle scan --- */
+
+.proc-radar {
+  position: relative;
+  flex-shrink: 0;
+  width: 120px;
+  height: 120px;
+  border: var(--hair) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background-color: var(--bg-canvas);
+  overflow: hidden;
+}
+
+.proc-radar-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.proc-radar-ring,
+.proc-radar-cross {
+  fill: none;
+  stroke: var(--border-active);
+  stroke-width: 1;
+}
+
+.proc-radar-cross {
+  stroke-dasharray: 3 4;
+}
+
+.proc-radar-sweep {
+  transform-origin: 60px 60px;
+  animation: radarSweep 2.8s linear infinite;
+}
+
+.proc-radar-beam {
+  stroke: var(--water);
+  stroke-width: 1.5;
+  opacity: 0.85;
+}
+
+.proc-radar-core {
+  fill: var(--water);
+}
+
+.proc-radar-caption {
+  position: absolute;
+  bottom: 4px;
+  left: 6px;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--text-muted);
+}
+
+/* --- Stage timeline --- */
+
+.proc-timeline {
+  flex: 1 1 0%;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.proc-stage {
+  --proc-accent: var(--muted);
+  --proc-accent-bg: var(--muted-bg);
+  display: flex;
+  gap: 12px;
+  min-height: 52px;
+}
+
+.proc-stage.is-storm { --proc-accent: var(--storm); --proc-accent-bg: var(--storm-bg); }
+.proc-stage.is-sanitary { --proc-accent: var(--sanitary); --proc-accent-bg: var(--sanitary-bg); }
+.proc-stage.is-water { --proc-accent: var(--water); --proc-accent-bg: var(--water-bg); }
+.proc-stage.is-structures { --proc-accent: var(--structures); --proc-accent-bg: var(--structures-bg); }
+
+.proc-stage-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.proc-stage-node {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-full);
+  border: var(--hair) solid var(--border-active);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.proc-stage-line {
+  flex: 1 1 auto;
+  width: 1px;
+  min-height: 16px;
+  margin: 3px 0;
+  background: var(--border-subtle);
+}
+
+.proc-stage-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: var(--radius-full);
+  background: var(--text-muted);
+}
+
+.proc-stage.is-complete .proc-stage-node {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.proc-stage.is-complete .proc-stage-line {
+  background: var(--success-border);
+}
+
+.proc-stage.is-active .proc-stage-node {
+  border-color: var(--proc-accent);
+  background: var(--proc-accent-bg);
+  color: var(--proc-accent);
+  animation: nodePulse 1.6s ease-out infinite;
+}
+
+.proc-stage.is-pending .proc-stage-node {
+  opacity: 0.55;
+}
+
+.proc-stage-body {
+  padding-bottom: 14px;
+  min-width: 0;
+}
+
+.proc-stage-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.proc-stage-index {
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+}
+
+.proc-stage-icon {
+  display: inline-flex;
+  color: var(--proc-accent);
+}
+
+.proc-stage-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+
+.proc-stage.is-pending .proc-stage-name,
+.proc-stage.is-pending .proc-stage-icon {
+  color: var(--text-muted);
+}
+
+.proc-stage-desc {
+  margin: 3px 0 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-secondary);
+}
+
+.proc-stage.is-pending .proc-stage-desc {
+  color: var(--text-muted);
+}
+
+/* --- Progress rail & status line --- */
+
+.proc-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.proc-progress-track {
+  flex: 1 1 auto;
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--bg-active);
+  overflow: hidden;
+}
+
+.proc-progress-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--water);
+  transition: width 400ms var(--ease);
+}
+
+.proc-progress-pct {
+  font-size: 11px;
+  color: var(--text-secondary);
+  min-width: 34px;
+  text-align: right;
+}
+
+.proc-status {
+  margin: 10px 0 0;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* ---------- 17. Benchmark Accuracy Dashboard ---------- */
+
+.bench-state {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 14px 16px;
+  border: var(--hair) solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.bench-state.is-alarm {
+  border-color: var(--alarm-border);
+  background: var(--alarm-bg);
+  color: var(--alarm);
+}
+
+.bench-empty {
+  padding: 14px 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* --- Headline figure + KPI row --- */
+
+.bench-headline {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) 1fr;
+  gap: 18px;
+  align-items: stretch;
+}
+
+.bench-figure {
+  --bench-tone: var(--text-muted);
+  padding: 16px 18px;
+  border: var(--hair) solid var(--border-subtle);
+  border-left: 3px solid var(--bench-tone);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+}
+
+.bench-figure.is-strong { --bench-tone: var(--success); }
+.bench-figure.is-fair { --bench-tone: var(--sanitary); }
+.bench-figure.is-alarm { --bench-tone: var(--alarm); }
+
+.bench-figure-value {
+  font-size: 34px;
+  line-height: 1.05;
+  font-weight: 700;
+  color: var(--bench-tone);
+  letter-spacing: -0.02em;
+}
+
+.bench-figure-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-family: var(--font-condensed);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.bench-figure-note {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.bench-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.bench-kpi {
+  padding: 12px 14px;
+  border: var(--hair) solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+}
+
+.bench-kpi-value {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.bench-kpi.is-alarm .bench-kpi-value { color: var(--alarm); }
+.bench-kpi.is-strong .bench-kpi-value { color: var(--success); }
+
+.bench-kpi-label {
+  margin-top: 2px;
+  font-family: var(--font-condensed);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.bench-kpi-note {
+  margin-top: 6px;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+/* --- Sections & toolbar --- */
+
+.bench-section {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: var(--hair) solid var(--border-subtle);
+}
+
+.bench-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+  font-family: var(--font-condensed);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+}
+
+.bench-count {
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--text-muted);
+}
+
+.bench-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.bench-toolbar .bench-section-title {
+  margin-bottom: 0;
+}
+
+.bench-search {
+  width: 260px;
+  max-width: 100%;
+}
+
+.bench-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+/* --- Entity accuracy meters --- */
+
+.meter-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.meter {
+  --meter-tone: var(--text-muted);
+  padding: 12px 0;
+  border-bottom: var(--hair) solid var(--border-subtle);
+}
+
+.meter:last-child {
+  border-bottom: none;
+}
+
+.meter[data-tone='storm'] { --meter-tone: var(--storm); }
+.meter[data-tone='sanitary'] { --meter-tone: var(--sanitary); }
+.meter[data-tone='water'] { --meter-tone: var(--water); }
+.meter[data-tone='structures'] { --meter-tone: var(--structures); }
+
+.meter-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.meter-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--meter-tone);
+}
+
+.meter-name {
+  font-family: var(--font-condensed);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+}
+
+.meter-counts {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.meter-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.meter-line {
+  display: grid;
+  grid-template-columns: 66px 1fr 56px;
+  align-items: center;
+  gap: 10px;
+}
+
+.meter-key {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.meter-track {
+  height: 7px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-elevated);
+  border: var(--hair) solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  background: var(--meter-tone);
+  border-radius: inherit;
+  transition: width 260ms var(--ease);
+}
+
+/* Recall/precision read as the diagnostic pair; detF1 is the summary mark. */
+.meter-fill.is-recall { opacity: 0.95; }
+.meter-fill.is-precision { opacity: 0.6; }
+.meter-fill.is-f1 { opacity: 1; }
+
+.meter-val {
+  font-size: 11px;
+  text-align: right;
+  color: var(--text-primary);
+}
+
+.meter-foot {
+  margin-top: 7px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* --- Project score cards --- */
+
+.pscore {
+  --pscore-tone: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 13px 14px;
+  border: var(--hair) solid var(--border-subtle);
+  border-top: 2px solid var(--pscore-tone);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  transition: border-color 150ms var(--ease), background 150ms var(--ease);
+}
+
+.pscore:hover {
+  background: var(--bg-elevated);
+}
+
+.pscore.is-strong { --pscore-tone: var(--success); }
+.pscore.is-fair { --pscore-tone: var(--sanitary); }
+.pscore.is-alarm { --pscore-tone: var(--alarm); }
+
+.pscore-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pscore-ident {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pscore-code {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.pscore-name {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.pscore-rail {
+  height: 5px;
+  border-radius: var(--radius-xs);
+  background: var(--bg-elevated);
+  border: var(--hair) solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.pscore-fill {
+  height: 100%;
+  background: var(--pscore-tone);
+  transition: width 260ms var(--ease);
+}
+
+.pscore-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.pscore-note {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.pscore-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 7px 9px;
+  border: var(--hair) solid var(--alarm-border);
+  border-radius: var(--radius-xs);
+  background: var(--alarm-bg);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--alarm);
+}
+
+/* ---------- 18. Responsive Breakpoints ---------- */
 
 @media (max-width: 900px) {
   .studio-kpi-grid {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .bench-headline {
+    grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 640px) {
   .studio-kpi-grid {
     grid-template-columns: 1fr;
+  }
+
+  .bench-search {
+    width: 100%;
+  }
+
+  .meter-line {
+    grid-template-columns: 58px 1fr 50px;
+    gap: 8px;
+  }
+
+  .meter-counts {
+    margin-left: 0;
+    width: 100%;
   }
 
   .cov {
@@ -1124,6 +1772,18 @@ button, input, select, textarea {
 
   .navbar-subtitle {
     display: none;
+  }
+
+  .proc-layout {
+    flex-direction: column;
+  }
+
+  .proc-radar {
+    align-self: center;
+  }
+
+  .proc-meta-file {
+    max-width: 100%;
   }
 
   .results-header,

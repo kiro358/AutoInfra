@@ -135,7 +135,7 @@ function extraction(over: Partial<ExtractionResult> = {}): ExtractionResult {
     sewers: [sewerRun(), sewerRun({ item: 2, runLabel: 'SAN MH 4 - SAN MH 5', addMaterials: 900, addLE: 100 })],
     watermain: [watermainRun()],
     watermainSpecials: [
-      { item: 1, specialName: 'Hydrant', quantity: 2, costEach: 3000, thrustBlock: 200, anodeCost: 60, laborEach: 900 },
+      { item: 1, specialName: 'Hydrant', quantity: 2, costEach: 3000, thrustBlock: 0, anodeCost: 60, laborEach: 900 },
     ],
     watermainValves: [valve()],
     confidence: 0.82,

@@ -263,6 +263,17 @@ export interface ProjectRecord {
   globalParams: GlobalParams;
 }
 
+// ============ API Response Types ============
+
+export interface ProcessResponse {
+  projectId: string;
+  extraction: ExtractionResult;
+  xlsxBase64: string;
+  quoteBase64: string;
+  status: string;
+  error?: string;
+}
+
 // ============ Heuristic Types ============
 
 export interface HeuristicRule {

@@ -127,7 +127,7 @@ export function structuresColumns(): Column<ManholeRow>[] {
     },
     {
       key: 'benching',
-      header: 'Benching',
+      header: 'Drop / Benching',
       sortable: true,
       sortKey: (row) => row.benching ?? '',
       render: (row) =>

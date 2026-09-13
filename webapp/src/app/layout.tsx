@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { Navbar } from "@/components/layout/Navbar";
+import { Footer } from "@/components/layout/Footer";
 
 export const metadata: Metadata = {
   title: "AutoInfra | Civil Engineering Estimation AI",
@@ -14,22 +16,12 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body>
-        <nav className="navbar">
-          <div className="navbar-inner">
-            <a href="/" className="navbar-brand">
-              <div className="navbar-logo" aria-hidden="true">N</div>
-              <div>
-                <div className="navbar-title">AutoInfra</div>
-                <div className="navbar-subtitle">Site servicing takeoff</div>
-              </div>
-            </a>
-            <div className="navbar-actions">
-              <a href="/settings" className="btn btn-secondary btn-sm">Rates &amp; settings</a>
-            </div>
-          </div>
-        </nav>
-        {children}
+      <body className="min-h-screen flex flex-col bg-canvas text-primary antialiased">
+        <Navbar />
+        <main className="flex-1">
+          {children}
+        </main>
+        <Footer />
       </body>
     </html>
   );

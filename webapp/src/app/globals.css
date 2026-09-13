@@ -329,6 +329,40 @@ button, input, select, textarea {
   gap: 10px;
 }
 
+/* ---------- 5b. Footer ---------- */
+
+.footer {
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  padding: 16px 0;
+  margin-top: auto;
+}
+
+.footer-inner {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 var(--gutter);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.footer-link {
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: color 150ms var(--ease);
+}
+
+.footer-link:hover {
+  color: var(--water);
+  text-decoration: underline;
+}
+
 /* ---------- 6. Container & Layout Primitives ---------- */
 
 .app-container {
@@ -413,6 +447,18 @@ button, input, select, textarea {
   background: var(--muted-bg);
   border-color: var(--muted-border);
   color: var(--text-muted);
+}
+
+.badge-warning {
+  background: rgba(245, 158, 11, 0.12);
+  border-color: rgba(245, 158, 11, 0.25);
+  color: var(--sanitary);
+}
+
+.badge-info {
+  background: rgba(2, 132, 199, 0.12);
+  border-color: rgba(2, 132, 199, 0.25);
+  color: var(--water);
 }
 
 .badge-dot {

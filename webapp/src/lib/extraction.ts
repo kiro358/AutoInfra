@@ -15,7 +15,7 @@ import { getSinglePassPrompt, getPageLocatorPrompt, getTranscriptionPrompt } fro
 import { renderTilesFlat, renderPageThumbnails, IMAGE_MIME } from './rasterize';
 import { normalizeLabel, runSignature } from './compare-facts';
 import { assembleTranscriptTakeoff } from './transcript-takeoff';
-import { mergeTakeoffs } from './reconcile';
+import { mergeTakeoffs, dropSpecNoteStructures, dropImplausibleCatchbasinGroups } from './reconcile';
 import { extractPageText, isTextyPage } from './pdf-text';
 import { verifyStructureProvenance } from './provenance';
 import { assembleTextTakeoff } from './text-takeoff';
@@ -949,6 +949,34 @@ export async function extractFromPDF(
         }
       } catch (e: any) {
         console.warn(`      [extraction.ts] Provenance check skipped: ${e.message}`);
+      }
+
+      // Junk filters. The default single-pass path does NOT route through
+      // reconcileTakeoff (only the transcribe/hybrid/vector/text paths do), so the two
+      // precision filters have to be applied here as well or they never run in
+      // production. Both are pure and defined in reconcile.ts; see the notes there.
+      {
+        const note = dropSpecNoteStructures(facts.structures);
+        if (note.dropped.length > 0) {
+          facts.structures = note.structures;
+          facts.warnings.push(
+            `Dropped ${note.dropped.length} structure(s) whose description is a spec note, not a structure id: ` +
+              `${note.dropped.slice(0, 8).join(' | ')}${note.dropped.length > 8 ? ' | …' : ''}`
+          );
+          console.log(`      [extraction.ts] dropped ${note.dropped.length} spec-note structure(s).`);
+        }
+        const networkSize = facts.structures.length + facts.sewers.filter((s) => !s.isLineItem).length;
+        const cb = dropImplausibleCatchbasinGroups(facts.catchbasins, networkSize);
+        if (cb.dropped.length > 0) {
+          facts.catchbasins = cb.catchbasins;
+          for (const d of cb.dropped) {
+            facts.warnings.push(
+              `Dropped catchbasin group ${d.type} qty ${d.quantity} — implausible against a drainage network ` +
+                `of ${networkSize} rows; the quantity was almost certainly misread. Count these catchbasins manually.`
+            );
+            console.log(`      [extraction.ts] dropped implausible catchbasin group ${d.type} x${d.quantity}.`);
+          }
+        }
       }
 
       facts.warnings = [...facts.warnings, ...validateExtraction(facts)];

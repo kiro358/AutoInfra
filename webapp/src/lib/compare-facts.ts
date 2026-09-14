@@ -183,19 +183,73 @@ export function matchSewerRuns(pred: SewerFact[], truth: SewerFact[]) {
   const usedPred = new Set(first.pairs.map((x) => x.p));
   const usedTruth = new Set(first.pairs.map((x) => x.t));
   const pairs = [...first.pairs];
-  // Phase 2: attribute fallback on the leftovers (greedy, one pred per truth).
-  for (const t of truth) {
-    if (usedTruth.has(t)) continue;
-    const p = pred.find((q) => !usedPred.has(q) && sewerAttrMatch(q, t));
-    if (p) { usedPred.add(p); usedTruth.add(t); pairs.push({ p, t }); }
-  }
+  // Phase 2: attribute fallback on the leftovers.
+  augmentPhase(pred, truth, usedPred, usedTruth, pairs, sewerAttrMatch);
   // Phase 3: shared endpoint + same diameter + close-ish length.
-  for (const t of truth) {
-    if (usedTruth.has(t)) continue;
-    const p = pred.find((q) => !usedPred.has(q) && sewerSharedEndpointMatch(q, t));
-    if (p) { usedPred.add(p); usedTruth.add(t); pairs.push({ p, t }); }
-  }
+  augmentPhase(pred, truth, usedPred, usedTruth, pairs, sewerSharedEndpointMatch);
   return { matched: pairs.length, pairs };
+}
+
+/**
+ * Pair up whatever a phase's predicate allows, taking the MAXIMUM number of pairs it
+ * admits rather than the first ones a single pass happens to find.
+ *
+ * This loosens no evidence: a pair is still made only where the phase predicate says
+ * the two rows describe the same physical pipe. It fixes contention only. Scanning once
+ * and keeping the first eligible prediction lets one truth run consume a prediction that
+ * was the ONLY candidate for a later truth run, so a pairing the predicate fully permits
+ * is lost to iteration order. Augmenting paths (Kuhn's) re-seat earlier pairs *within
+ * this phase* when that frees a prediction, which cannot manufacture a pair the
+ * predicate would reject.
+ *
+ * Earlier phases are frozen: their pairs rest on stronger evidence, so a weaker phase is
+ * never allowed to break one to gain a count. Candidates are tried closest-length first,
+ * so when several predictions are admissible the best-measured one is the pair whose
+ * fields get scored (the same intent as matchWatermain's phase ordering).
+ */
+function augmentPhase(
+  pred: SewerFact[],
+  truth: SewerFact[],
+  usedPred: Set<SewerFact>,
+  usedTruth: Set<SewerFact>,
+  pairs: { p: SewerFact; t: SewerFact }[],
+  eligible: (p: SewerFact, t: SewerFact) => boolean
+): void {
+  const freeTruth = truth.filter((t) => !usedTruth.has(t));
+  const freePred = pred.filter((p) => !usedPred.has(p));
+  if (freeTruth.length === 0 || freePred.length === 0) return;
+
+  const gap = (p: SewerFact, t: SewerFact) =>
+    p.length == null || t.length == null ? Number.POSITIVE_INFINITY : Math.abs(p.length - t.length);
+  const candidates = freeTruth.map((t) =>
+    freePred
+      .map((_, i) => i)
+      .filter((i) => eligible(freePred[i], t))
+      .sort((a, b) => gap(freePred[a], t) - gap(freePred[b], t))
+  );
+
+  const owner: number[] = new Array(freePred.length).fill(-1);
+  const assign = (ti: number, seen: boolean[]): boolean => {
+    for (const pi of candidates[ti]) {
+      if (seen[pi]) continue;
+      seen[pi] = true;
+      if (owner[pi] === -1 || assign(owner[pi], seen)) {
+        owner[pi] = ti;
+        return true;
+      }
+    }
+    return false;
+  };
+  for (let ti = 0; ti < freeTruth.length; ti++) assign(ti, new Array(freePred.length).fill(false));
+
+  for (let pi = 0; pi < owner.length; pi++) {
+    if (owner[pi] === -1) continue;
+    const p = freePred[pi];
+    const t = freeTruth[owner[pi]];
+    usedPred.add(p);
+    usedTruth.add(t);
+    pairs.push({ p, t });
+  }
 }
 
 /**

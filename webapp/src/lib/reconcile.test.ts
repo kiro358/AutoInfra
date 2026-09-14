@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { reconcileTakeoff, mergeTakeoffs } from './reconcile';
+import {
+  reconcileTakeoff,
+  mergeTakeoffs,
+  isSpecNoteDescription,
+  dropImplausibleCatchbasinGroups,
+} from './reconcile';
 import { TakeoffFacts, SewerFact, StructureFact, WatermainFact } from './types';
 
 const emptyFacts = (over: Partial<TakeoffFacts> = {}): TakeoffFacts => ({
@@ -48,6 +53,116 @@ describe('reconcileTakeoff', () => {
   it('is idempotent', () => {
     const facts = emptyFacts({ sewers: [run({ runLabel: 'MH 1-MH 2', length: 10, pipeDiameter: 200 })] });
     expect(reconcileTakeoff(reconcileTakeoff(facts))).toEqual(reconcileTakeoff(facts));
+  });
+
+  it('is still idempotent once the junk filters have fired', () => {
+    const facts = emptyFacts({
+      structures: [struct({ description: 'MH 1' }), struct({ description: 'ADJUST MH BENCHING TO SUIT' })],
+      catchbasins: [{ type: 'SINGLE_CB', quantity: 249, wallThickness: null, depth: null }],
+    });
+    expect(reconcileTakeoff(reconcileTakeoff(facts))).toEqual(reconcileTakeoff(facts));
+  });
+});
+
+describe('isSpecNoteDescription — spec notes vs structure identifiers', () => {
+  it('rejects instructions that open with an imperative verb', () => {
+    expect(isSpecNoteDescription('INSTALL 200mm VALVE AND BOX INCLUDING PLUG')).toBe(true);
+    expect(isSpecNoteDescription('ADJUST MH BENCHING TO SUIT')).toBe(true);
+    expect(isSpecNoteDescription('CONNECT INTO EXISTING 1200mmØ MANHOLE')).toBe(true);
+    expect(isSpecNoteDescription('CAP INSPECTION PORT INSIDE 300mm DIA. PLASTIC LANDSCAPING VALVE BOX')).toBe(true);
+  });
+
+  // An id inside the text does not redeem an instruction — this one names MH 38A and is
+  // still a note, which is why the imperative test runs before the id check.
+  it('rejects an instruction even when it quotes a real structure id', () => {
+    expect(isSpecNoteDescription('CORE 150mmØ PVC SAN INTO EX. SAN. MH.38A-1200mm')).toBe(true);
+  });
+
+  it('rejects directive/spec phrases anywhere in the text', () => {
+    expect(isSpecNoteDescription('HYDRO POLE TO BE RELOCATED')).toBe(true);
+    expect(isSpecNoteDescription('PUBLIC RIGHT-OF-WAY TO BE RESTORED TO TOWN SATISFACTION')).toBe(true);
+  });
+
+  it('rejects long prose that names no structure', () => {
+    expect(isSpecNoteDescription('WATERMAIN TO CROSS BELOW DUCT BANK WITH 0.5m CLEARANCE')).toBe(true);
+  });
+
+  it('keeps plain structure identifiers', () => {
+    for (const d of ['MH 12', 'CBMH 4', 'DCBMH 1', 'MH 98 A', 'EF4', 'CTRL MH', 'JF 6-3-1']) {
+      expect(isSpecNoteDescription(d)).toBe(false);
+    }
+  });
+
+  // These look like prose but are equipment NAMES and appear in the estimators'
+  // workbooks as real structures. The filter must not reach them — that is the whole
+  // reason it tests grammar rather than length alone.
+  it('keeps multi-word equipment names that are real structures', () => {
+    for (const d of [
+      'STORMTRAP DOUBLETRAP DETENTION SYSTEM OOS',
+      'GREENSTORM SWM DETENTION TANK',
+      'DOGHOUSE MAINTENANCE HOLE',
+      'SANITARY CONTROL MH',
+      'UNDERGROUND STORAGE CHAMBERS, EZSTORM B1',
+      'RELOCATED WILKINSON CISTERN',
+      'BIOSWALE INLET STRUCTURE (CB6)',
+    ]) {
+      expect(isSpecNoteDescription(d)).toBe(false);
+    }
+  });
+
+  it('leaves an empty description to other checks', () => {
+    expect(isSpecNoteDescription('')).toBe(false);
+  });
+
+  it('drops spec notes through reconcileTakeoff and warns', () => {
+    const r = reconcileTakeoff(
+      emptyFacts({
+        structures: [
+          struct({ description: 'MH 1' }),
+          struct({ description: 'INSTALL RODENT GRATE AT PIPE END' }),
+          struct({ description: 'GREENSTORM SWM DETENTION TANK' }),
+        ],
+      })
+    );
+    expect(r.structures.map((s) => s.description).sort()).toEqual(['GREENSTORM SWM DETENTION TANK', 'MH 1']);
+    expect(r.warnings.join(' ')).toContain('spec note');
+  });
+});
+
+describe('dropImplausibleCatchbasinGroups — misread quantities', () => {
+  const grp = (type: any, quantity: number) => ({ type, quantity, wallThickness: null, depth: null });
+
+  it('drops a quantity far beyond what the drainage network can carry', () => {
+    // The real case: 249 single CBs on a site whose whole extracted network is 16 rows.
+    const r = dropImplausibleCatchbasinGroups([grp('SINGLE_CB', 249), grp('DOUBLE_CB', 2)], 16);
+    expect(r.catchbasins).toEqual([grp('DOUBLE_CB', 2)]);
+    expect(r.dropped).toEqual([{ type: 'SINGLE_CB', quantity: 249 }]);
+  });
+
+  it('keeps the largest genuine counts in the golden set', () => {
+    // Eric Smith Way: 27 single + 4 double against a 25-row network — the highest real
+    // catchbasins-to-network ratio observed, and it must survive untouched.
+    const groups = [grp('SINGLE_CB', 27), grp('DOUBLE_CB', 4)];
+    expect(dropImplausibleCatchbasinGroups(groups, 25).dropped).toEqual([]);
+    // Panattoni: 28 double-ditch-inlets on a large network.
+    expect(dropImplausibleCatchbasinGroups([grp('DOUBLE_DITCH_INLET_CB', 28)], 174).dropped).toEqual([]);
+  });
+
+  it('does not squeeze a tiny drawing (floor of 10 network rows)', () => {
+    expect(dropImplausibleCatchbasinGroups([grp('SINGLE_CB', 40)], 0).dropped).toEqual([]);
+    expect(dropImplausibleCatchbasinGroups([grp('SINGLE_CB', 41)], 0).dropped).toHaveLength(1);
+  });
+
+  it('drops through reconcileTakeoff and warns, without inventing a replacement count', () => {
+    const r = reconcileTakeoff(
+      emptyFacts({
+        structures: [struct({ description: 'MH 1' })],
+        sewers: [run({ runLabel: 'MH 1-MH 2', length: 10, pipeDiameter: 300 })],
+        catchbasins: [grp('SINGLE_CB', 249), grp('DOUBLE_CB', 2)],
+      })
+    );
+    expect(r.catchbasins).toEqual([grp('DOUBLE_CB', 2)]);
+    expect(r.warnings.join(' ')).toContain('misread');
   });
 });
 

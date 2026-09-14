@@ -51,6 +51,68 @@ describe('sewer run matching (endpoint label + physical-attribute fallback)', ()
     const truth = facts({ sewers: [run({ runLabel: 'MH 2-CONN.', length: 104, pipeDiameter: 450 })] });
     expect(sewerScore(pred, truth).matched).toBe(0);
   });
+
+  // Contention, not evidence. Truth A admits both predictions; truth B admits only the
+  // 10.5m one. Taking the first eligible prediction gives A the 10.5m run and strands B,
+  // scoring 1 — even though the predicate permits both pairs. Maximum matching finds them.
+  it('does not strand a truth run whose only candidate was taken by an earlier truth run', () => {
+    const pred = facts({
+      sewers: [
+        run({ runLabel: '10.5m-300 PVC STM', length: 10.5, pipeDiameter: 300 }),
+        run({ runLabel: '11.8m-300 PVC STM', length: 11.8, pipeDiameter: 300 }),
+      ],
+    });
+    const truth = facts({
+      sewers: [
+        run({ runLabel: 'MH 1-MH 2', length: 11, pipeDiameter: 300 }), // admits both preds
+        run({ runLabel: 'MH 2-MH 3', length: 10, pipeDiameter: 300 }), // admits only the 10.5m
+      ],
+    });
+    expect(sewerScore(pred, truth).matched).toBe(2);
+  });
+
+  it('never exceeds what the predicate allows when re-seating pairs', () => {
+    // Three truth runs, one admissible prediction between them: still exactly one pair.
+    const pred = facts({ sewers: [run({ runLabel: 'x', length: 10, pipeDiameter: 300 })] });
+    const truth = facts({
+      sewers: [
+        run({ runLabel: 'MH 1-MH 2', length: 10, pipeDiameter: 300 }),
+        run({ runLabel: 'MH 2-MH 3', length: 60, pipeDiameter: 300 }),
+        run({ runLabel: 'MH 3-MH 4', length: 10, pipeDiameter: 200 }), // wrong diameter
+      ],
+    });
+    const e = sewerScore(pred, truth);
+    expect(e.matched).toBe(1);
+    expect(e.precision).toBe(1);
+  });
+
+  it('does not break a phase-1 signature pair to gain an attribute pair', () => {
+    // The signature pair (MH 1-MH 2) must survive even though that prediction is also
+    // the only attribute-eligible candidate for the second truth run.
+    const pred = facts({ sewers: [run({ runLabel: 'MH 1-MH 2', length: 10, pipeDiameter: 300 })] });
+    const truth = facts({
+      sewers: [
+        run({ runLabel: 'MH 1-MH 2', length: 10, pipeDiameter: 300 }),
+        run({ runLabel: 'MH 7-MH 8', length: 10, pipeDiameter: 300 }),
+      ],
+    });
+    const c = compareFacts(pred, truth);
+    expect(c.entities.find((e) => e.kind === 'sewerRuns')!.matched).toBe(1);
+    expect(c.fields.find((f) => f.field === 'sewer.length')!.matched).toBe(1);
+  });
+
+  it('pairs the closest-length prediction so fields are scored against the best read', () => {
+    const pred = facts({
+      sewers: [
+        run({ runLabel: 'bad', length: 40.9, pipeDiameter: 300 }),
+        run({ runLabel: 'good', length: 40.0, pipeDiameter: 300 }),
+      ],
+    });
+    const truth = facts({ sewers: [run({ runLabel: 'MH 1-MH 2', length: 40, pipeDiameter: 300 })] });
+    const c = compareFacts(pred, truth);
+    expect(c.entities.find((e) => e.kind === 'sewerRuns')!.matched).toBe(1);
+    expect(c.fields.find((f) => f.field === 'sewer.length')!.matched).toBe(1);
+  });
 });
 
 describe('watermain matching (blank truth labels → attribute match)', () => {

@@ -1,5 +1,5 @@
 /**
- * golden-set.ts — single source of truth for the 16-project golden evaluation
+ * golden-set.ts — single source of truth for the 26-project golden evaluation
  * set and its curated FOCUS_SET subset.
  *
  * Cut verbatim out of evaluate-golden.ts (Task 5) so evaluate-text.ts (the
@@ -9,10 +9,13 @@
  * consumers; this module is canonical for new code.
  */
 
-// Golden set: 16 curated projects from the dataset manifest — all "usable"
+// Golden set: 26 curated projects from the dataset manifest — all "usable"
 // (standard-template, has runs, has a findable civil drawing, not hand-scoped) and
 // not oversize. Stratified across complexity (truth runs 3 -> 89) incl. multi-sheet.
 // See build-dataset-manifest.ts. Override count with GOLDEN_REPEATS to average.
+// Labels carry the truth (structures/sewerRuns) counts as resolved by
+// truth-facts.ts::resolveTruthFacts — golden-set.test.ts guards that every folder
+// still exists and still resolves to non-empty truth.
 export const GOLDEN_PROJECTS = [
   { folder: '2026-067 201 GEORGIAN DR,BARRIE', label: 'Georgian Dr (2/3)' },
   { folder: '2026-020 559 KING FOREST BURLINGTON', label: 'King Forest (5/8)' },
@@ -30,6 +33,24 @@ export const GOLDEN_PROJECTS = [
   { folder: '2026-005 ONTARIO TECH UNIVERSITY STUDENT COMMUNITY BLDG 1A & 1B', label: 'Ontario Tech (25/36)' },
   { folder: '2026-060 PROPOSED COMMERCIAL DEVELOPMENT', label: 'Proposed Commercial (32/56, multi)' },
   { folder: '2026-050 PANATTONI-6500 MISSISSAUGA ROAD', label: 'Panattoni (85/89, multi)' },
+
+  // --- Added 2026-09-14: +10 projects (16 -> 26). NO cached predictions exist for
+  // these yet, so score:offline will report "no prediction cached" for them until a
+  // live eval run covers them — they do NOT drag the offline mean down, they are
+  // simply absent from it. Chosen to (a) thicken watermain coverage (+27 watermain
+  // runs, the entity with the worst recall ~25%), (b) add shape variety (Future Park
+  // = 2 structures / 24 runs; Walmart Port Perry = zero watermain), and (c) stay off
+  // oversize PDFs and degenerate (0-structure) projects.
+  { folder: '2026-040 WALMART -PORT PERRY', label: 'Walmart Port Perry (4/9)' },
+  { folder: '2026-008 TCDSB LORRETTO ABBEY CATHOLIC SCHOOL', label: 'Loretto Abbey (10/14)' },
+  { folder: '2026-017 WIGMORE PARK PLAYGROUND', label: 'Wigmore Park (9/17)' },
+  { folder: '2026-064 1410 STEVENSON ROAD NORTH-OSHAWA', label: 'Stevenson Road (7/20)' },
+  { folder: '2026-018 2535 GERRARD SHELTER- TENDER # 3 Servicing', label: 'Gerrard Shelter (9/21)' },
+  { folder: '2026-011 PROJECT CRIMSON', label: 'Project Crimson (13/23)' },
+  { folder: '2026-043 FUTURE PARK', label: 'Future Park (2/24)' },
+  { folder: '2026-015 UXBRIDGE POOL SPRUNG', label: 'Uxbridge Pool Sprung (9/26)' },
+  { folder: '2026-039 NEW TOTTENHAHAM E.S', label: 'New Tottenham (12/27)' },
+  { folder: '2026-035 RIOCAN WINDFIELDS-OSHAWA', label: 'Riocan Windfields (14/31)' },
 ];
 
 // Two-tier workflow: iterate on a small FOCUS set fast, then run the full set as a

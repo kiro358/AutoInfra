@@ -10,7 +10,7 @@ import path from 'path';
 // wherever they appear in its path (e.g. a "granular quote/" subfolder).
 export const PDF_HARD_EXCLUDE_PATH = [
   'quote', 'quotation', 'invoice', 'geotechnical', 'geotech', 'hydrogeological',
-  'estimate', 'pricing', 'budget', 'proposal', 'unit price',
+  'estimate', 'pricing', 'budget', 'proposal', 'unit price', 'schedule of values',
 ];
 
 // BASENAME-level hard excludes: never a drawing set, but matched on the filename
@@ -18,7 +18,7 @@ export const PDF_HARD_EXCLUDE_PATH = [
 export const PDF_HARD_EXCLUDE = [
   'breakdown', 'letter', 'backup', 'addendum', 'bid form', 'tender_form',
   'tender form', 'tipp', 'report', 'rpt', 'contracting', 'designated substance',
-  'bid leveling', 'leveling', 'locate', 'locates',
+  'bid leveling', 'leveling', 'locate', 'locates', 'schedule of values',
 ];
 
 // SOFT excludes: discipline tags that co-occur with a bundled civil set. A STRONG
@@ -28,8 +28,15 @@ export const PDF_SOFT_EXCLUDE = [
   'electrical', 'mechanical', 'cover sheet',
 ];
 
-export const PDF_STRONG_CIVIL = ['civil', 'servicing', 'storm', 'sewer', 'watermain', 'grading', 'site servicing'];
-export const PDF_CIVIL_HINTS = [...PDF_STRONG_CIVIL, 'drainage', 'plan', 'pnp', 'plan and profile', 'plan & profile', 'site'];
+export const PDF_STRONG_CIVIL = [
+  'civil', 'servicing', 'storm', 'sewer', 'watermain', 'grading', 'site servicing',
+];
+export const PDF_CIVIL_HINTS = [
+  ...PDF_STRONG_CIVIL, 'drainage', 'plan', 'pnp', 'plan and profile', 'plan & profile', 'site',
+];
+
+// Standard civil drawing sheet-code patterns (e.g., SS-1, A01SS, C101A, STM-1, SAN-1, PNP)
+const CIVIL_SHEET_PATTERN = /(?:^|[^a-z0-9])(?:ss|stm|san|wm|pnp|c\d{2,3})(?:-\d+|\d+)?(?:[^a-z0-9]|$)/i;
 
 const lc = (f: string) => f.toLowerCase();
 
@@ -40,6 +47,9 @@ const lc = (f: string) => f.toLowerCase();
  */
 const hasWord = (text: string, kw: string) =>
   new RegExp('(?:^|[^a-z0-9])' + kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:[^a-z0-9]|$)', 'i').test(text);
+
+const isCivilPath = (f: string) =>
+  PDF_CIVIL_HINTS.some((c) => hasWord(lc(f), c)) || CIVIL_SHEET_PATTERN.test(path.basename(f));
 
 /**
  * Choose the civil drawing PDFs from a list of relative paths.
@@ -54,11 +64,22 @@ export function selectDrawingPdfs(relPaths: string[]): string[] {
     !PDF_HARD_EXCLUDE.some((b) => base(f).includes(b))
   );
   const keep = notHard.filter((f) =>
-    PDF_STRONG_CIVIL.some((c) => hasWord(lc(f), c)) || !PDF_SOFT_EXCLUDE.some((b) => base(f).includes(b))
+    PDF_STRONG_CIVIL.some((c) => hasWord(lc(f), c)) ||
+    CIVIL_SHEET_PATTERN.test(base(f)) ||
+    !PDF_SOFT_EXCLUDE.some((b) => base(f).includes(b))
   );
-  const civil = keep.filter((f) => PDF_CIVIL_HINTS.some((c) => hasWord(lc(f), c)));
+  const civil = keep.filter((f) => isCivilPath(f));
   const chosen = civil.length > 0 ? civil : keep;
-  return rankBySheetCode(chosen);
+  const ranked = rankBySheetCode(chosen);
+
+  // If dedicated servicing sheets (rank 0) exist, drop pure standard detail sheets (rank 3)
+  // so they do not crowd out the tile/token budget on multi-file projects.
+  const hasServicing = ranked.some((p) => getSheetCodeRank(p) === 0);
+  if (hasServicing) {
+    const withoutDetails = ranked.filter((p) => getSheetCodeRank(p) < 3);
+    if (withoutDetails.length > 0) return withoutDetails;
+  }
+  return ranked;
 }
 
 // Servicing sheets carry the takeoff; grading/erosion/detail sheets rarely do.
@@ -73,13 +94,14 @@ const SHEET_CODE_RANK: [RegExp, number][] = [
   [/(?:^|[^a-z])(?:d\d|det|detail)(?:[^a-z0-9]|$)/i, 3],
 ];
 
+export function getSheetCodeRank(p: string): number {
+  const base = path.basename(p);
+  for (const [re, r] of SHEET_CODE_RANK) if (re.test(base)) return r;
+  return 2.5; // unknown code: ahead of details, behind servicing/grading/erosion
+}
+
 export function rankBySheetCode(paths: string[]): string[] {
-  const rank = (p: string) => {
-    const base = path.basename(p);
-    for (const [re, r] of SHEET_CODE_RANK) if (re.test(base)) return r;
-    return 2.5; // unknown code: ahead of details, behind servicing/grading/erosion
-  };
-  return [...paths].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+  return [...paths].sort((a, b) => getSheetCodeRank(a) - getSheetCodeRank(b) || a.localeCompare(b));
 }
 
 /** Recursively list all PDF paths (relative to projectDir), deduped by basename. */

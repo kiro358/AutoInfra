@@ -682,7 +682,7 @@ export async function extractFromPDF(
                 model: EXTRACTION_MODEL,
                 contents: [{ role: 'user', parts: [{ text: prompt }, ...batch] }],
                 config: {
-                  temperature: 0,
+                  temperature: Number(process.env.EXTRACTION_TEMPERATURE || '0'),
                   responseMimeType: 'application/json',
                   maxOutputTokens: MAX_OUTPUT_TOKENS,
                   thinkingConfig: { thinkingBudget: THINKING_BUDGET },
@@ -860,7 +860,7 @@ export async function extractFromPDF(
                 // last) to 0 and halving sewers. Set an explicit, ample ceiling so the
                 // full response always fits. (AI Studio's larger default masked this locally.)
                 config: {
-                  temperature: 0,
+                  temperature: Number(process.env.EXTRACTION_TEMPERATURE || '0'),
                   responseMimeType: 'application/json',
                   maxOutputTokens: MAX_OUTPUT_TOKENS,
                   thinkingConfig: { thinkingBudget: THINKING_BUDGET },
@@ -1190,18 +1190,12 @@ export function findDegenerateRepetition(parsed: any): DegenerateRepetition | nu
 }
 
 /**
- * Remove ONLY the degenerate keys from a parsed batch, keeping healthy siblings.
+ * Remove or salvage degenerate keys from a parsed batch.
  *
- * Discarding the whole batch was the first fix and it was too blunt. Measured on
- * Bradford (2026-09-12, Vertex): dropping 3 of 4 looped batches killed 54
- * fabricated structures (good) but ALSO destroyed 2 real structures and 3 real
- * runs — sewerRuns F1 fell 54% -> 48%. Net detF1 still rose (54.3 -> 59.8) purely
- * because the fabrication loss outweighed the real loss, which is luck, not design.
- *
- * The loop is normally confined to ONE key. In every observed case that key was
- * "pipeScan", which is prompt scratch and never consumed downstream (nothing reads
- * it — see modular-prompts.ts STEP 0). Stripping just the looped key preserves the
- * sewers/manholes the same response read correctly.
+ * For prompt scratch keys ("pipeScan"), the degenerate array is dropped completely.
+ * For actual takeoff arrays ("sewers", "manholes"), collapsing consecutive identical
+ * loops and capping the array prevents a repetition loop at the end of a batch from
+ * completely discarding the legitimate rows emitted before the loop started.
  */
 export function stripDegenerateKeys(parsed: any): { cleaned: any; dropped: DegenerateRepetition[] } {
   if (!parsed || typeof parsed !== 'object') return { cleaned: parsed, dropped: [] };
@@ -1211,7 +1205,26 @@ export function stripDegenerateKeys(parsed: any): { cleaned: any; dropped: Degen
 
   for (const [key, value] of Object.entries(parsed)) {
     const hit = findDegenerateRepetition({ [key]: value });
-    if (hit) { dropped.push(hit); continue; }
+    if (hit) {
+      dropped.push(hit);
+      if (key === 'pipeScan' || !Array.isArray(value) || hit.runLength < MAX_IDENTICAL_RUN) {
+        // Drop scratch keys or massive synthetic sequence arrays (e.g. SMH 30..277)
+        continue;
+      }
+      // If the failure was an identical repeating run (e.g. same pipe emitted 50+ times),
+      // collapse the repeating run and salvage legitimate preceding rows.
+      const asText = value.map((v) => (typeof v === 'string' ? v : JSON.stringify(v) ?? String(v)));
+      const salvaged: any[] = [];
+      for (let i = 0; i < value.length; i++) {
+        if (i > 0 && asText[i] === asText[i - 1]) continue;
+        salvaged.push(value[i]);
+        if (salvaged.length >= 80) break;
+      }
+      if (salvaged.length > 0 && salvaged.length < MAX_ARRAY_LEN) {
+        cleaned[key] = salvaged;
+      }
+      continue;
+    }
     cleaned[key] = value;
   }
 

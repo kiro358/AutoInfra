@@ -42,8 +42,11 @@ Before extracting structures or anything else, sweep EVERY tile pipe-by-pipe and
 dimension callout of every storm/sanitary pipe segment into a "pipeScan" string array — e.g.
 "17.34m-825mmØ CONC STM @0.5%", "12.91m-250mm PVC STM @1.0%", "Ex.1200Ø CONC STM 58.7m @0.34%".
 Do not stop until you have swept all tiles; a servicing plan has many pipes, and skipping this step
-is the #1 cause of missed runs. Then derive the "sewers" array below with ONE row per PROPOSED
-(non-"Ex.") entry in pipeScan. Emit "pipeScan" in your output (it is your working list, kept for audit).
+is the #1 cause of missed runs.
+IMPORTANT:
+- List each UNIQUE proposed pipe callout at most once. NEVER emit duplicate or repeating identical copies of the same pipe callout.
+- Cap "pipeScan" at 80 distinct callouts.
+Then derive the "sewers" array below with ONE row per PROPOSED (non-"Ex.") entry in pipeScan. Emit "pipeScan" in your output (it is your working list, kept for audit).
 Doing the pipe scan first also prevents the common error of dumping catchbasins into the structure list.
 
 OUTPUT KEY ORDER (important): emit the JSON keys in this exact order — "sewers", "pipeScan",
@@ -60,6 +63,7 @@ Each PROPOSED manhole/structure (and non-structure line items like "SANITARY", "
 List each proposed structure exactly ONCE. Do NOT list existing structures (labelled "EX."/"EXIST."),
 structures on adjacent properties/streets, or the same structure seen in several overlapping tiles more
 than once — over-listing structures is a common error. Prefer the boxed/bubbled structure labels on the plan.
+IMPORTANT: Do NOT invent synthetic sequence numbers (e.g. MH 100, MH 101, MH 102...) or loop over numbering patterns. Only extract structures that are explicitly labelled on the drawing.
 - description (exact label; drop ST/STM/SAN prefixes: STMH 1 -> MH 1), topElevation, lowInvert, highInvert,
   pipeOutDiameter (mm), structureType, depth (m, if stated). Use null where not shown.
 
@@ -87,6 +91,7 @@ those callouts is one sewer run; scan every pipe line and list them all.
 - DO NOT create a run for: pipe CROSSINGS ("SEWER CROSSING", "STM/SAN CROSSING"), bare notes about
   connecting to existing infrastructure that aren't a new pipe, or landscape/architectural callouts.
   One physical proposed pipe = one row; consolidate the same run seen across overlapping tiles.
+- Do NOT generate synthetic repeating loops. Stop when all drawn segments on the tiles are extracted.
 Non-pipe line items that still belong on the sewer sheet (SWALE, DEWATERING, ...): isLineItem=true
 with null pipe fields.
 
@@ -94,8 +99,11 @@ with null pipe fields.
 Most servicing plans that have sewers ALSO have a proposed watermain. Returning an empty
 watermain array on a plan that shows water service is a common and costly MISS — scan for the
 water line before you conclude there is none.
-- Watermain is drawn as its own line, usually annotated like "150mmØ PVC WM", "200mmØ DR-18
-  WATERMAIN", "100mmØ DOMESTIC", "150mmØ FIRELINE". A service to the building counts.
+- Look specifically for watermain linework and callouts: "150mmØ PVC WM", "200mmØ DR-18 WM",
+  "100mmØ DOMESTIC WATER", "150mmØ FIRE SERVICE", "HYDRANT LEAD", "GATE VALVE", "BEEHIVE",
+  water curb stops, or water service connections.
+- Watermain is drawn as its own line (often labelled WM, W, or WATERMAIN). A water service or fire
+  service to the building counts.
 - EMIT ONE ROW PER PIPE SIZE, not one row per segment or per service name. Add up every
   proposed run of that size and report the TOTAL metres as "length". A plan with 195m of
   200mmØ and 104m of 150mmØ is exactly two rows.

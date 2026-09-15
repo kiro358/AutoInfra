@@ -175,6 +175,60 @@ describe('watermain matching (blank truth labels → attribute match)', () => {
   });
 });
 
+describe('structure matching (strict normalized label + manhole family fallback)', () => {
+  const struct = (description: string, topElevation: number | null = null) => ({
+    description,
+    topElevation,
+    lowInvert: null,
+    highInvert: null,
+    pipeOutDiameter: null,
+    structureType: 'MANHOLE',
+    depth: null,
+  });
+  const structEntity = (pred: ReturnType<typeof facts>, truth: ReturnType<typeof facts>) =>
+    compareFacts(pred, truth).entities.find((e) => e.kind === 'structures')!;
+
+  it('matches identical normalized labels in Phase 1', () => {
+    const pred = facts({ structures: [struct('STMH 1'), struct('CBMH 2')] });
+    const truth = facts({ structures: [struct('MH 1'), struct('CBMH 2')] });
+    expect(structEntity(pred, truth).matched).toBe(2);
+  });
+
+  it('rescues CBMH vs MH prefix differences for the same numeric identifier in Phase 2', () => {
+    const pred = facts({ structures: [struct('MH 5'), struct('MH 6'), struct('MH 7')] });
+    const truth = facts({ structures: [struct('CBMH 5'), struct('CBMH 6'), struct('CBMH 7')] });
+    expect(structEntity(pred, truth).matched).toBe(3);
+  });
+
+  it('rescues DCBMH vs CBMH / MH for the same numeric identifier', () => {
+    const pred = facts({ structures: [struct('CBMH 153')] });
+    const truth = facts({ structures: [struct('DCBMH 153')] });
+    expect(structEntity(pred, truth).matched).toBe(1);
+  });
+
+  it('does NOT match structures with different numbers across families', () => {
+    const pred = facts({ structures: [struct('MH 5')] });
+    const truth = facts({ structures: [struct('CBMH 6')] });
+    expect(structEntity(pred, truth).matched).toBe(0);
+  });
+
+  it('does NOT match non-manhole structures across families', () => {
+    const pred = facts({ structures: [struct('HEADWALL 1')] });
+    const truth = facts({ structures: [struct('MH 1')] });
+    expect(structEntity(pred, truth).matched).toBe(0);
+  });
+
+  it('pairs each truth structure at most once', () => {
+    const pred = facts({ structures: [struct('MH 5'), struct('CBMH 5')] });
+    const truth = facts({ structures: [struct('CBMH 5')] });
+    const e = structEntity(pred, truth);
+    expect(e.matched).toBe(1);
+    expect(e.predCount).toBe(2);
+    expect(e.precision).toBe(0.5);
+  });
+});
+
+
 describe('normalizeLabel / runSignature', () => {
   it('normalizes structure labels ignoring case, spaces, punctuation, parens', () => {
     expect(normalizeLabel('CBMH 2')).toBe(normalizeLabel('cbmh-2'));

@@ -159,6 +159,43 @@ function sewerAttrMatch(p: SewerFact, t: SewerFact): boolean {
   return true;
 }
 
+// ---- structure matching ----
+
+const MANHOLE_FAMILY_RE = /^(?:MH|CBMH|DCBMH|DICBMH|STMH|SANMH|STMCBMH|SANCBMH)(\d+[A-Z]?)$/;
+export function manholeFamilyKey(norm: string): string | null {
+  const m = MANHOLE_FAMILY_RE.exec(norm);
+  return m ? m[1] : null;
+}
+
+/**
+ * Structure matching:
+ * Phase 1: strict normalized label equality (exact match).
+ * Phase 2: manhole family prefix relaxation (e.g. "MH 5" <-> "CBMH 5", "CBMH 10" <-> "MH 10").
+ * Only applies when both structure labels belong to the manhole family and share the exact same
+ * numeric identifier, matching the common drafter vs estimator convention mismatch.
+ */
+export function matchStructures(pred: StructureFact[], truth: StructureFact[]) {
+  const first = matchByKey<StructureFact>(pred, truth, (s) => normalizeLabel(s.description));
+  const usedPred = new Set(first.pairs.map((x) => x.p));
+  const usedTruth = new Set(first.pairs.map((x) => x.t));
+  const pairs = [...first.pairs];
+
+  for (const t of truth) {
+    if (usedTruth.has(t)) continue;
+    const tn = normalizeLabel(t.description);
+    const tk = manholeFamilyKey(tn);
+    if (!tk) continue;
+    const p = pred.find((q) => !usedPred.has(q) && manholeFamilyKey(normalizeLabel(q.description)) === tk);
+    if (p) {
+      usedPred.add(p);
+      usedTruth.add(t);
+      pairs.push({ p, t });
+    }
+  }
+
+  return { matched: pairs.length, pairs };
+}
+
 // Endpoint structure tokens of a run label, for partial matching (drop /notes and the
 // CONN/PLUG/WYE sentinels, which are ends the drawing abstracts rather than named structures).
 function runEndpoints(label: string): string[] {
@@ -326,9 +363,9 @@ export function compareFacts(pred: TakeoffFacts, truth: TakeoffFacts): FactsComp
   const entities: EntityScore[] = [];
   const fields: FieldScore[] = [];
 
-  // Structures — match by normalized label
+  // Structures — match by normalized label with manhole family fallback
   {
-    const m = matchByKey<StructureFact>(pred.structures, truth.structures, (s) => normalizeLabel(s.description));
+    const m = matchStructures(pred.structures, truth.structures);
     entities.push({ ...prf(m.matched, pred.structures.length, truth.structures.length), kind: 'structures' });
     fields.push(
       ...scoreFields(m.pairs, [

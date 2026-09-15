@@ -59,11 +59,37 @@ describe('selectDrawingPdfs with sheet-code ranking', () => {
     expect(picked.some((p) => /quote/i.test(p))).toBe(false);
   });
 
-  it('ranks the servicing sheet ahead of grading/erosion/detail sheets', () => {
+  it('ranks the servicing sheet ahead of grading/erosion and prunes detail sheets', () => {
     const picked = selectDrawingPdfs(ERIC_SMITH);
     const idx = (frag: string) => picked.findIndex((p) => p.includes(frag));
     expect(idx('A01SS')).toBeGreaterThanOrEqual(0);
     expect(idx('A01SS')).toBeLessThan(idx('A01EC'));
-    expect(idx('A01SS')).toBeLessThan(idx('A01D1'));
+    // Standard detail sheets (D1, D2) are pruned when a servicing plan exists
+    expect(picked.some((p) => p.includes('A01D1'))).toBe(false);
+    expect(picked.some((p) => p.includes('A01D2'))).toBe(false);
+  });
+
+  it('selects SS-1 and prunes standard detail sheets (Proposed Commercial case)', () => {
+    const files = [
+      '3. 24133 - SS-1.pdf',
+      '4. 24133 - DET-1.pdf',
+      '5. 24133 - DET-2.pdf',
+      '6. 24133 - DET-3.pdf',
+      '7. 24133 - DET-4.pdf',
+      '8. 24133 - DET-5.pdf',
+    ];
+    const picked = selectDrawingPdfs(files);
+    expect(picked).toEqual(['3. 24133 - SS-1.pdf']);
+  });
+
+  it('hard-excludes schedule of values and tender documents (Gerrard Shelter case)', () => {
+    const files = [
+      '2535 Gerrard Shelter - Civil Schedule of Values– Appendix H.pdf',
+      '1.1.3- 4.06 25.12.12 2535 Gerrard St Shelter - Appendix G-Topsite.pdf',
+      '2535 Gerrard Shelter - Civil Schedule of Values– Appendix H - Topsite.pdf',
+    ];
+    const picked = selectDrawingPdfs(files);
+    expect(picked).toEqual(['1.1.3- 4.06 25.12.12 2535 Gerrard St Shelter - Appendix G-Topsite.pdf']);
   });
 });
+

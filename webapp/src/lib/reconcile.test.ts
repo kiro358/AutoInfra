@@ -309,3 +309,162 @@ describe('cross-source dedup (schedule row vs plan callout)', () => {
     expect(reconcileTakeoff(facts).sewers).toHaveLength(2);
   });
 });
+
+describe('stitchSewerRuns — multi-tile deduplication', () => {
+  it('merges runs with matching endpoints (order-insensitive) and same diameter', () => {
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: 'MH 1-MH 2', length: 25.0, pipeDiameter: 300, slope: 0.01 }),
+        run({ runLabel: 'MH 2-MH 1', length: 24.8, pipeDiameter: 300, depth: 2.0 }),
+      ],
+    });
+    const r = reconcileTakeoff(facts);
+    expect(r.sewers).toHaveLength(1);
+    expect(r.sewers[0].runLabel).toBe('MH 1-MH 2');
+    expect(r.sewers[0].length).toBe(25.0); // max length
+    expect(r.sewers[0].slope).toBe(0.01);
+    expect(r.sewers[0].depth).toBe(2.0);
+  });
+
+  it('merges runs with matching endpoints and preserves /INS. suffix', () => {
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: 'MH 1-MH 2', length: 25.0, pipeDiameter: 300 }),
+        run({ runLabel: 'MH 2-MH 1/INS.', length: 24.8, pipeDiameter: 300 }),
+      ],
+    });
+    const r = reconcileTakeoff(facts);
+    expect(r.sewers).toHaveLength(1);
+    expect(r.sewers[0].runLabel).toContain('/INS');
+  });
+
+  it('deduplicates attribute-level duplicates with identical diameter and length', () => {
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: 'CBMH 103-CBMH 104', length: 29.3, pipeDiameter: 375, slope: 0.02 }),
+        run({ runLabel: 'CBMH 103-CBMH 104', length: 29.1, pipeDiameter: 375, slope: 0.02 }),
+      ],
+    });
+    const r = reconcileTakeoff(facts);
+    expect(r.sewers).toHaveLength(1);
+    expect(r.sewers[0].length).toBe(29.3); // keeps max
+  });
+
+  it('preserves distinct valid runs with different endpoints', () => {
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: 'MH 1-MH 2', length: 30.0, pipeDiameter: 300 }),
+        run({ runLabel: 'MH 2-MH 3', length: 30.5, pipeDiameter: 300 }),
+      ],
+    });
+    const r = reconcileTakeoff(facts);
+    expect(r.sewers).toHaveLength(2);
+  });
+
+  it('keeps pipes of same size but different lengths beyond tolerance', () => {
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: 'MH 1-MH 2', length: 30.0, pipeDiameter: 300 }),
+        run({ runLabel: '50.0m-300mm STM', length: 50.0, pipeDiameter: 300 }),
+      ],
+    });
+    const r = reconcileTakeoff(facts);
+    expect(r.sewers).toHaveLength(2);
+  });
+
+  it('collapses tile overlap duplicates with length within 2% tolerance', () => {
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: '30.0m-300mm STM', length: 30.0, pipeDiameter: 300, slope: 1.0 }),
+        run({ runLabel: '29.8m-300mm STM', length: 29.8, pipeDiameter: 300, slope: 1.0 }),
+      ],
+    });
+    const r = reconcileTakeoff(facts);
+    expect(r.sewers).toHaveLength(1);
+    expect(r.sewers[0].length).toBe(30.0);
+  });
+
+  it('collapses tile overlap duplicates with length within 0.5m absolute tolerance', () => {
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: '10.0m-250mm SAN', length: 10.0, pipeDiameter: 250, typeClass: 2.35 }),
+        run({ runLabel: '10.4m-250mm SAN', length: 10.4, pipeDiameter: 250, typeClass: 2.35 }),
+      ],
+    });
+    const r = reconcileTakeoff(facts);
+    expect(r.sewers).toHaveLength(1);
+    expect(r.sewers[0].length).toBe(10.4);
+  });
+
+  it('keeps runs with matching diameter and length but different slopes', () => {
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: '30.0m-300mm STM', length: 30.0, pipeDiameter: 300, slope: 0.5 }),
+        run({ runLabel: '30.0m-300mm STM', length: 30.0, pipeDiameter: 300, slope: 2.0 }),
+      ],
+    });
+    const r = reconcileTakeoff(facts);
+    expect(r.sewers).toHaveLength(2);
+  });
+
+  it('merges complementary fields from multiple tile reads', () => {
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: 'MH 1-MH 2', length: 42.0, pipeDiameter: 300 }),
+        run({ runLabel: 'MH 2-MH 1', length: 41.8, pipeDiameter: 300, typeClass: 2.35, slope: 0.01, depth: 2.5 }),
+      ],
+    });
+    const r = reconcileTakeoff(facts);
+    expect(r.sewers).toHaveLength(1);
+    expect(r.sewers[0].length).toBe(42.0);
+    expect(r.sewers[0].typeClass).toBe(2.35);
+    expect(r.sewers[0].slope).toBe(0.01);
+    expect(r.sewers[0].depth).toBe(2.5);
+  });
+
+  it('handles system prefix variations in endpoint matching', () => {
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: 'STMH 10-STMH 11', length: 42.0, pipeDiameter: 300 }),
+        run({ runLabel: 'MH 11-MH 10', length: 41.5, pipeDiameter: 300 }),
+      ],
+    });
+    const r = reconcileTakeoff(facts);
+    expect(r.sewers).toHaveLength(1);
+    expect(r.sewers[0].length).toBe(42.0);
+  });
+
+  it('does not merge runs with different diameters even if endpoints match', () => {
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: 'MH 1-MH 2', length: 30.0, pipeDiameter: 300 }),
+        run({ runLabel: 'MH 2-MH 1', length: 30.0, pipeDiameter: 375 }),
+      ],
+    });
+    const r = reconcileTakeoff(facts);
+    expect(r.sewers).toHaveLength(2);
+  });
+
+  it('handles CBMH structures in endpoint matching', () => {
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: 'CBMH 1-CBMH 2', length: 20.0, pipeDiameter: 250 }),
+        run({ runLabel: 'CBMH 2-CBMH 1', length: 19.8, pipeDiameter: 250 }),
+      ],
+    });
+    const r = reconcileTakeoff(facts);
+    expect(r.sewers).toHaveLength(1);
+  });
+
+  it('preserves isLineItem and lineItemType fields during stitching', () => {
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: 'VIDEO INSPECTION', isLineItem: true, lineItemType: 'VIDEO', length: null, pipeDiameter: null }),
+        run({ runLabel: 'LAYOUT', isLineItem: true, lineItemType: 'LAYOUT', length: null, pipeDiameter: null }),
+      ],
+    });
+    const r = reconcileTakeoff(facts);
+    expect(r.sewers).toHaveLength(2);
+    expect(r.sewers.every((s) => s.isLineItem)).toBe(true);
+  });
+});

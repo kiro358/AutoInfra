@@ -54,7 +54,14 @@ OUTPUT KEY ORDER (important): emit the JSON keys in this exact order — "sewers
 MUST come before manholes so that if the response is truncated, the pipe runs (the hardest-won and
 most important data) are already emitted rather than lost at the end.
 
-Work SCHEDULE-FIRST where a Manhole/Catchbasin/Pipe schedule table exists. Otherwise read plan and profile annotations (e.g. "DCBMH 2 TOP 260.15", "17.1m-250mm PVC STM @ 0.79%", "CB 3", "DICB 1") and assemble ONE row per PROPOSED run/structure using the EXACT labels printed on the drawing.
+Work SCHEDULE-FIRST where a Manhole/Catchbasin/Pipe schedule table exists:
+- ~40% of Ontario servicing drawings have clean SCHEDULE TABLES in the drawing margin or profile views.
+- When you see a MANHOLE SCHEDULE or PIPE SCHEDULE table, transcribe its rows DIRECTLY into the manholes/sewers arrays.
+- Each table row becomes one JSON row with the schedule's exact values (structure labels, elevations, inverts, depths, pipe sizes, slopes).
+- Schedule tables provide 100% precision and complete elevation/invert fields — prefer them over scattered plan annotations.
+- Look for tables labeled: "MANHOLE SCHEDULE", "PIPE SCHEDULE", "CATCHBASIN SCHEDULE", "STRUCTURE SCHEDULE".
+
+Otherwise read plan and profile annotations (e.g. "DCBMH 2 TOP 260.15", "17.1m-250mm PVC STM @ 0.79%", "CB 3", "DICB 1") and assemble ONE row per PROPOSED run/structure using the EXACT labels printed on the drawing.
 
 Extract these four groups in a single JSON object:
 
@@ -91,11 +98,24 @@ with null pipe fields.
 Most servicing plans that have sewers ALSO have a proposed watermain. Returning an empty
 watermain array on a plan that shows water service is a common and costly MISS — scan for the
 water line before you conclude there is none.
+
+SCHEDULE-FIRST: If a WATERMAIN SCHEDULE table exists, transcribe it directly into the watermain
+array — each table row becomes one JSON row with the schedule's exact values.
+
+Otherwise, extract from plan/profile:
 - Look specifically for watermain linework and callouts: "150mmØ PVC WM", "200mmØ DR-18 WM",
   "100mmØ DOMESTIC WATER", "150mmØ FIRE SERVICE", "HYDRANT LEAD", "GATE VALVE", "BEEHIVE",
   water curb stops, or water service connections.
+- Building service connections ARE watermain work and MUST be counted:
+  * "DOMESTIC WATER SERVICE" (typically 25mm-50mm diameter)
+  * "FIRE SERVICE LEAD" (typically 100mm-150mm diameter)
+  * Service lines from the main to building property lines
+- Hydrant branches ARE watermain work:
+  * "HYDRANT LEAD" or "FIRE HYDRANT LEAD" (typically 150mm diameter)
+  * Branch lines connecting hydrants to the watermain
 - Watermain is drawn as its own line (often labelled WM, W, or WATERMAIN). A water service or fire
   service to the building counts.
+- Common Ontario municipal watermain sizes: 150mm, 200mm, 250mm, 300mm (less common: 100mm, 400mm)
 - EMIT ONE ROW PER PIPE SIZE, not one row per segment or per service name. Add up every
   proposed run of that size and report the TOTAL metres as "length". A plan with 195m of
   200mmØ and 104m of 150mmØ is exactly two rows.
@@ -131,6 +151,62 @@ Return ONLY valid JSON:
   "warnings": ["string"]
 }
 `;
+}
+
+/**
+ * Dedicated watermain extraction prompt. Used for focused watermain-only passes
+ * to improve recall (currently 42.2%). Watermain often gets omitted in single-pass
+ * extraction when the model's token/attention budget is consumed by dense sewer networks.
+ */
+export function getWatermainExtractionPrompt(projectName: string): string {
+  return `You are a senior civil engineering estimator extracting WATERMAIN FACTS ONLY from civil servicing drawings for the project: "${projectName}".
+
+The images provided are overlapping high-resolution TILES of one or more large-format drawing sheets. Read the actual printed text/annotations. The SAME watermain segment appears in multiple overlapping tiles — CONSOLIDATE duplicates into a single entry per pipe size.
+
+## WATERMAIN EXTRACTION — FOCUSED SCAN
+
+Your ONLY task is to find and extract proposed watermain work. ~40% of Ontario servicing plans that show sewers ALSO have watermain — missing it is a costly error.
+
+SCHEDULE-FIRST: If a WATERMAIN SCHEDULE table exists, transcribe it directly — each table row becomes one JSON row with the schedule's exact values.
+
+Otherwise, extract from plan/profile views:
+
+### What to look for:
+- Watermain linework and callouts: "150mmØ PVC WM", "200mmØ DR-18 WM", "250mmØ WATERMAIN"
+- Building service connections (MUST be counted):
+  * "DOMESTIC WATER SERVICE" (typically 25mm-50mm diameter)
+  * "FIRE SERVICE LEAD" (typically 100mm-150mm diameter)
+  * Service lines from the main to building property lines
+- Hydrant branches (MUST be counted):
+  * "HYDRANT LEAD" or "FIRE HYDRANT LEAD" (typically 150mm diameter)
+  * Branch lines connecting hydrants to the watermain
+- Common Ontario municipal watermain sizes: 150mm, 200mm, 250mm, 300mm (less common: 100mm, 400mm)
+- Watermain fittings and specials: "GATE VALVE", "BEEHIVE", "TAPPING SLEEVE", "WATERMAIN TEE", curb stops
+- Watermain valves by size: gate valves, check valves, air release valves
+
+### Extraction rules:
+- EMIT ONE ROW PER PIPE SIZE, not per segment. Add up all proposed runs of that size and report TOTAL metres.
+  Example: 195m of 200mmØ + 104m of 150mmØ = exactly two rows.
+- "length" is REQUIRED and must be the real total in metres — never 0, never null.
+  If no length is printed, add up dimension callouts or scale from the drawing.
+- "sizeAndType" is the size (e.g. "200mm"). Add material/purpose only if the drawing shows two DIFFERENT pipes of the same size (e.g., separate domestic and fire lines both at 150mmØ).
+- "pipeDiameter" (mm) must match sizeAndType.
+- "ocSc" and "avgCover": read if shown, else null.
+- Specials/valves: name/size + quantity.
+- IGNORE EXISTING watermain ("EX.", "EXIST.", "EXISTING") — extract only proposed/new work.
+
+${NO_PRICING_RULE}
+
+## OUTPUT FORMAT
+Return ONLY valid JSON:
+{
+  "watermain": [{"sizeAndType": "string", "length": number, "pipeDiameter": number, "ocSc": number|null, "avgCover": number|null}],
+  "watermainSpecials": [{"specialName": "string", "quantity": number}],
+  "watermainValves": [{"valveSize": "string", "quantity": number}],
+  "warnings": ["string"]
+}
+
+If the plan genuinely shows no proposed watermain work, return empty arrays for all three fields.`;
 }
 
 /**

@@ -5,7 +5,7 @@
  * being able to re-run this for free against cached inputs.
  */
 import { TakeoffFacts, StructureFact, SewerFact, WatermainFact } from './types';
-import { normalizeLabel, runSignature } from './compare-facts';
+import { normalizeLabel, runSignature, stripSystemPrefix } from './compare-facts';
 import { mergeCatchbasinGroups } from './extraction';
 
 const nonNullCount = (o: object) => Object.values(o).filter((v) => v !== null && v !== '').length;
@@ -20,33 +20,244 @@ function mergeStructureGroup(group: StructureFact[]): StructureFact {
   return out;
 }
 
-function samePipe(a: SewerFact, b: SewerFact): boolean {
-  if (a.pipeDiameter == null || b.pipeDiameter == null || a.pipeDiameter !== b.pipeDiameter) return false;
-  if (a.length == null || b.length == null) return false;
-  return Math.abs(a.length - b.length) <= Math.max(1, 0.02 * Math.max(a.length, b.length));
-}
-
-// A run is "endpoint-labelled" when its label names two ENDPOINTS, not when it
-// merely contains a hyphen — "83.7m-375mm SAN" is a dimension callout whose
-// hyphen would otherwise make runSignature look like an endpoint pair, so the
-// schedule row and its plan callout both survived as separate pipes.
-//
-// An endpoint is a structure ("MH 8", "EX CBMH 3") or a connection sentinel:
-// runSignature collapses CONN/PLUG/OUTLET to one `CONN` token precisely so
-// "MH 8-CONN." keeps its second endpoint, so `CONN` must count as one here or
-// that real run is both blunted and newly killable. ST/SA stay in the list:
-// they are run/schedule ids rather than structures, but excluding them would
-// only narrow the predicate, and narrowing costs recall.
 const ENDPOINT_TOKEN = /^(?:EX)?(?:DDICB|DCBMH|CBMH|DICB|DCB|CB|MH|HS|OS|JF|EF|ST|SA)\d|^CONN$/;
 const STRUCTURE_TOKEN = /^(?:EX)?(?:DDICB|DCBMH|CBMH|DICB|DCB|CB|MH|HS|OS|JF|EF|ST|SA)\d/;
+const LABEL_PARTS = /^([A-Z]+)0*(\d+)([A-Z]*)$/;
 
-const isEndpointPair = (s: SewerFact) => {
-  const tokens = runSignature(s.runLabel).split('|');
+function normalizeEndpointToken(t: string): string {
+  const stripped = stripSystemPrefix(t.replace(/[^A-Z0-9]/g, ''));
+  if (/^(CONN|PLUG|OUTLET)/.test(stripped)) return 'CONN';
+  const m = LABEL_PARTS.exec(stripped);
+  return m ? `${m[1]}${Number(m[2])}${m[3]}` : stripped;
+}
+
+export function getEndpointSignature(label: string): string | null {
+  let s = (label || '').toUpperCase();
+  s = s.replace(/\bC\/W.*$/, '');
+  s = s.replace(/\/.*$/, '');
+  s = s.replace(/\bTO\b/g, '-');
+  s = s.replace(/\s+/g, '');
+  const tokens = s
+    .split('-')
+    .map(normalizeEndpointToken)
+    .filter(Boolean);
   const endpoints = tokens.filter((t) => ENDPOINT_TOKEN.test(t));
-  // Two endpoints, at least one of them a real structure — so a label made only
-  // of connection sentinels can never masquerade as a pipe run.
-  return endpoints.length >= 2 && endpoints.some((t) => STRUCTURE_TOKEN.test(t));
+  if (endpoints.length >= 2 && endpoints.some((t) => STRUCTURE_TOKEN.test(t))) {
+    return Array.from(new Set(endpoints)).sort().join('|');
+  }
+  return null;
+}
+
+export const isEndpointPair = (s: SewerFact): boolean => {
+  return getEndpointSignature(s.runLabel) !== null;
 };
+
+export function hasInsulation(label: string): boolean {
+  return /\/P?\.?INS/i.test(label || '');
+}
+
+export function getSystem(label: string): 'STORM' | 'SAN' | 'UNKNOWN' {
+  const upper = (label || '').toUpperCase();
+  if (/\b(SAN|SANITARY)\b/.test(upper)) return 'SAN';
+  if (/\b(STM|STORM)\b/.test(upper)) return 'STORM';
+  return 'UNKNOWN';
+}
+
+export function compatibleSystem(labelA: string, labelB: string): boolean {
+  const sysA = getSystem(labelA);
+  const sysB = getSystem(labelB);
+  if (sysA !== 'UNKNOWN' && sysB !== 'UNKNOWN' && sysA !== sysB) {
+    return false;
+  }
+  return true;
+}
+
+export function closeLength(a: number | null, b: number | null): boolean {
+  if (a == null || b == null) return false;
+  const diff = Math.abs(a - b);
+  const maxLen = Math.max(a, b);
+  return diff <= Math.max(0.5, 0.02 * maxLen);
+}
+
+export function compatibleSlope(a: number | null, b: number | null): boolean {
+  if (a == null || b == null) return true;
+  const diff = Math.abs(a - b);
+  const maxSlope = Math.max(Math.abs(a), Math.abs(b));
+  return diff <= Math.max(0.2, 0.15 * maxSlope);
+}
+
+export function compatibleTypeClass(a: number | null, b: number | null): boolean {
+  if (a == null || b == null) return true;
+  return a === b;
+}
+
+export function mergeRunLabels(labelA: string, labelB: string): string {
+  const a = (labelA || '').trim();
+  const b = (labelB || '').trim();
+  if (!a) return b;
+  if (!b) return a;
+
+  const endA = getEndpointSignature(a);
+  const endB = getEndpointSignature(b);
+
+  let base: string;
+  if (endA && !endB) {
+    base = a;
+  } else if (!endA && endB) {
+    base = b;
+  } else {
+    const cleanA = a.replace(/\/.*$/, '').trim();
+    const cleanB = b.replace(/\/.*$/, '').trim();
+    base = cleanA.length >= cleanB.length ? a : b;
+  }
+
+  const isIns = hasInsulation(a) || hasInsulation(b);
+  if (isIns && !hasInsulation(base)) {
+    base = base.includes('/') ? base.replace(/\/.*$/, '/INS.') : `${base}/INS.`;
+  }
+  return base;
+}
+
+export function mergeSewerFact(a: SewerFact, b: SewerFact): SewerFact {
+  let length: number | null = null;
+  if (a.length != null && b.length != null) {
+    length = Math.max(a.length, b.length);
+  } else {
+    length = a.length ?? b.length;
+  }
+
+  let pipeDiameter: number | null = null;
+  if (a.pipeDiameter != null && b.pipeDiameter != null) {
+    pipeDiameter = Math.max(a.pipeDiameter, b.pipeDiameter);
+  } else {
+    pipeDiameter = a.pipeDiameter ?? b.pipeDiameter;
+  }
+
+  let depth: number | null = null;
+  if (a.depth != null && b.depth != null) {
+    depth = Math.max(a.depth, b.depth);
+  } else {
+    depth = a.depth ?? b.depth;
+  }
+
+  return {
+    runLabel: mergeRunLabels(a.runLabel, b.runLabel),
+    isLineItem: a.isLineItem && b.isLineItem,
+    lineItemType: a.lineItemType ?? b.lineItemType,
+    length,
+    pipeDiameter,
+    typeClass: a.typeClass ?? b.typeClass,
+    slope: a.slope ?? b.slope,
+    depth,
+  };
+}
+
+export function canMergeSewerRuns(a: SewerFact, b: SewerFact): boolean {
+  if (a === b) return false;
+  if (a.isLineItem || b.isLineItem) return false;
+
+  // 1. System check: SAN vs STM never merge
+  if (!compatibleSystem(a.runLabel, b.runLabel)) return false;
+
+  const sigA = getEndpointSignature(a.runLabel);
+  const sigB = getEndpointSignature(b.runLabel);
+
+  // 2. Both runs have endpoint signatures
+  if (sigA && sigB) {
+    // If endpoint signatures do not match, these are distinct runs (e.g. MH 1-MH 2 vs MH 3-MH 4)
+    if (sigA !== sigB) {
+      return false;
+    }
+    // Matching endpoints! Pipe diameters must match if both are present
+    if (a.pipeDiameter != null && b.pipeDiameter != null && a.pipeDiameter !== b.pipeDiameter) {
+      return false;
+    }
+    return true;
+  }
+
+  // 3. At least one run lacks an endpoint signature (dimension callout or schedule id)
+  // Attribute-level duplicate deduplication:
+  if (a.pipeDiameter == null || b.pipeDiameter == null || a.pipeDiameter !== b.pipeDiameter) {
+    return false;
+  }
+
+  if (!closeLength(a.length, b.length)) {
+    return false;
+  }
+
+  if (!compatibleSlope(a.slope, b.slope)) {
+    return false;
+  }
+  if (!compatibleTypeClass(a.typeClass, b.typeClass)) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * Stitch sewer runs that represent the same physical pipe extracted from overlapping tiles.
+ *
+ * Two merging strategies:
+ * 1. Endpoint match: same two structure IDs (order-insensitive, e.g. MH 1 & MH 2) + matching diameter
+ *    → merge, taking max length, merging non-null fields, and preserving /INS. suffix
+ * 2. Attribute match: same diameter + length within 2% (or 0.5m) + similar slope/typeClass
+ *    → collapse to one run (unless they have distinct, non-matching endpoint structure IDs)
+ */
+export function stitchSewerRuns(sewers: SewerFact[]): SewerFact[] {
+  if (!sewers || sewers.length === 0) return [];
+
+  const result: SewerFact[] = [];
+
+  for (const raw of sewers) {
+    if (!raw) continue;
+    const s = { ...raw };
+
+    if (s.isLineItem) {
+      const existingIdx = result.findIndex(
+        (r) => r.isLineItem && r.runLabel === s.runLabel && r.lineItemType === s.lineItemType
+      );
+      if (existingIdx >= 0) {
+        result[existingIdx] = mergeSewerFact(result[existingIdx], s);
+      } else {
+        result.push(s);
+      }
+      continue;
+    }
+
+    let merged = false;
+    for (let i = 0; i < result.length; i++) {
+      if (canMergeSewerRuns(result[i], s)) {
+        result[i] = mergeSewerFact(result[i], s);
+        merged = true;
+        break;
+      }
+    }
+
+    if (!merged) {
+      result.push(s);
+    }
+  }
+
+  // Iterative consolidation pass until fixed point
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < result.length; i++) {
+      for (let j = i + 1; j < result.length; j++) {
+        if (canMergeSewerRuns(result[i], result[j])) {
+          result[i] = mergeSewerFact(result[i], result[j]);
+          result.splice(j, 1);
+          changed = true;
+          break;
+        }
+      }
+      if (changed) break;
+    }
+  }
+
+  return result;
+}
 
 /**
  * Collapse watermain rows to one per pipe diameter, summing their lengths — the
@@ -172,29 +383,10 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
   }
   const structures = Array.from(byLabel.values()).map(mergeStructureGroup);
 
-  // 2. sewers: exact-signature dedupe (keep most complete), then dual-label kill
-  const bySig = new Map<string, SewerFact>();
-  const sewers: SewerFact[] = [];
-  for (const s of facts.sewers) {
-    const sig = runSignature(s.runLabel);
-    const prev = sig ? bySig.get(sig) : undefined;
-    if (prev) {
-      if (nonNullCount(s) > nonNullCount(prev)) { sewers[sewers.indexOf(prev)] = s; bySig.set(sig, s); }
-      continue;
-    }
-    if (sig) bySig.set(sig, s);
-    sewers.push(s);
-  }
-  const kill = new Set<SewerFact>();
-  for (const a of sewers) {
-    if (kill.has(a) || !isEndpointPair(a)) continue;
-    for (const b of sewers) {
-      if (a === b || kill.has(b) || isEndpointPair(b)) continue;
-      if (samePipe(a, b)) kill.add(b); // b is the schedule-id duplicate of endpoint-labeled a
-    }
-  }
+  // 2. sewers: multi-tile sewer run stitching & endpoint-aware consolidation
+  const keptSewers = stitchSewerRuns(facts.sewers);
 
-  // 4. watermain: exact dedupe, then AGGREGATE BY DIAMETER.
+  // 3. watermain: exact dedupe, then AGGREGATE BY DIAMETER.
   //
   // The estimator's workbook carries one watermain row per pipe SIZE holding the
   // total metres of that size — you buy 195m of 200mmØ, not nine separate segments.
@@ -215,8 +407,6 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
       return true;
     })
   );
-
-  const keptSewers = sewers.filter((s) => !kill.has(s));
 
   // 5. junk filters. Structures first, so the network size the catchbasin ceiling is
   // measured against is the CLEANED one — spec notes must not inflate the budget that

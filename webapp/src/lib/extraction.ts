@@ -5,13 +5,13 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env.local') });
 
 import { GoogleGenAI } from '@google/genai';
 import { Storage } from '@google-cloud/storage';
-import { TakeoffFacts, CatchbasinGroupFact, TileTranscript } from './types';
+import { TakeoffFacts, CatchbasinGroupFact, TileTranscript, WatermainFact, WatermainSpecialFact, WatermainValveFact } from './types';
 import { PIPE_DIAMETERS } from './constants';
 import { snapToPipeDiameter, normalizeSlope } from './geometry';
 import { buildFewShotPromptSection } from './few-shot-examples';
 import { setGlobalDispatcher, Agent, ProxyAgent } from 'undici';
 import crypto from 'crypto';
-import { getSinglePassPrompt, getPageLocatorPrompt, getTranscriptionPrompt } from './modular-prompts';
+import { getSinglePassPrompt, getPageLocatorPrompt, getTranscriptionPrompt, getWatermainExtractionPrompt } from './modular-prompts';
 import { renderTilesFlat, renderPageThumbnails, IMAGE_MIME } from './rasterize';
 import { normalizeLabel, runSignature } from './compare-facts';
 import { assembleTranscriptTakeoff } from './transcript-takeoff';
@@ -104,7 +104,7 @@ const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS) || 32768;
 const THINKING_BUDGET = Number(process.env.THINKING_BUDGET) || 8192;
 
 // Sum a streamed/one-shot response's usageMetadata into a per-extraction cost accumulator.
-type CostAcc = { promptTokens: number; outputTokens: number; totalTokens: number; llmCalls: number; tiles: number; dpi: number };
+export type CostAcc = { promptTokens: number; outputTokens: number; totalTokens: number; llmCalls: number; tiles: number; dpi: number };
 function addUsage(cost: CostAcc, usage: any) {
   if (!usage) return;
   cost.llmCalls++;
@@ -929,6 +929,25 @@ export async function extractFromPDF(
         confidence: 0.9,
         warnings: raw.warnings,
       }, projectName);
+
+      // Dedicated two-pass watermain extraction: on dense servicing drawings with 50+ sewer
+      // and structure callouts, the model often exhausts its output token/attention budget
+      // on sewers and emits 0 watermain runs. If single-pass extraction produces 0 watermain
+      // runs, run a lightweight second pass specifically using getWatermainExtractionPrompt(projectName)
+      // over the located page tiles.
+      if (facts.watermain.length === 0 && (tileParts.length > 0 || pdfBuffer)) {
+        await runSecondPassWatermain(facts, {
+          projectName,
+          sourceHash,
+          tileBatches,
+          pdfBuffer,
+          preparePdfPart,
+          ai,
+          cost,
+          batchConcurrency: BATCH_CONCURRENCY,
+        });
+      }
+
       // Fabrication check. Asked for a JSON list of structures the model continues label
       // sequences it never read — "DCBMH 1..DCBMH 29" where the drawing has one — with
       // complete arithmetic elevations attached, so nothing about the row itself gives it
@@ -1382,4 +1401,165 @@ export function deduplicateValves(valves: any[]): any[] {
   }
   return Array.from(seen.values());
 }
+
+export interface WatermainExtractionRaw {
+  watermain?: any[];
+  watermainSpecials?: any[];
+  watermainValves?: any[];
+  warnings?: string[];
+}
+
+export function parseWatermainFacts(raw: WatermainExtractionRaw): {
+  watermain: WatermainFact[];
+  watermainSpecials: WatermainSpecialFact[];
+  watermainValves: WatermainValveFact[];
+  warnings: string[];
+} {
+  const rawWatermain = (raw.watermain || []).map((w: Record<string, unknown>) => {
+    const parsedLen = typeof w.length === 'number' ? w.length : (parseFloat(String(w.length || '')) || 0);
+    let parsedDia = typeof w.pipeDiameter === 'number' ? w.pipeDiameter : (parseFloat(String(w.pipeDiameter || '')) || 0);
+    if (!parsedDia) {
+      const match = String(w.sizeAndType || '').match(/(\d+)\s*(?:mm)?/i);
+      if (match) parsedDia = parseFloat(match[1]) || 0;
+    }
+    return {
+      sizeAndType: String(w.sizeAndType || ''),
+      length: parsedLen,
+      pipeDiameter: snapToPipeDiameter(parsedDia),
+      ocSc: Number(w.ocSc) || 1.1,
+      avgCover: Number(w.avgCover) || 1.8,
+    };
+  });
+
+  const dedupedWm = deduplicateWatermain(rawWatermain).filter((w: WatermainFact) => w.length > 0);
+  const dedupedSpecials = deduplicateSpecials(raw.watermainSpecials || []).map((sp: Record<string, unknown>) => ({
+    specialName: String(sp.specialName || ''),
+    quantity: typeof sp.quantity === 'number' ? sp.quantity : (parseInt(String(sp.quantity || ''), 10) || 0),
+  })).filter((sp: WatermainSpecialFact) => sp.quantity > 0);
+
+  const dedupedValves = deduplicateValves(raw.watermainValves || []).map((v: Record<string, unknown>) => ({
+    valveSize: String(v.valveSize || ''),
+    quantity: typeof v.quantity === 'number' ? v.quantity : (parseInt(String(v.quantity || ''), 10) || 0),
+  })).filter((v: WatermainValveFact) => v.quantity > 0);
+
+  return {
+    watermain: dedupedWm,
+    watermainSpecials: dedupedSpecials,
+    watermainValves: dedupedValves,
+    warnings: Array.isArray(raw.warnings) ? raw.warnings : [],
+  };
+}
+
+export function applySecondPassWatermain(
+  facts: TakeoffFacts,
+  secondPassRaw: WatermainExtractionRaw
+): boolean {
+  if (facts.watermain && facts.watermain.length > 0) {
+    return false;
+  }
+  const parsed = parseWatermainFacts(secondPassRaw);
+  if (parsed.watermain.length > 0) {
+    facts.watermain = parsed.watermain;
+    facts.watermainSpecials = deduplicateSpecials([
+      ...(facts.watermainSpecials || []),
+      ...parsed.watermainSpecials,
+    ]);
+    facts.watermainValves = deduplicateValves([
+      ...(facts.watermainValves || []),
+      ...parsed.watermainValves,
+    ]);
+    if (parsed.warnings.length > 0) {
+      facts.warnings = [...(facts.warnings || []), ...parsed.warnings];
+    }
+    console.log(`      [extraction.ts] Two-pass watermain extraction found ${facts.watermain.length} watermain run(s).`);
+    return true;
+  }
+  return false;
+}
+
+export async function runSecondPassWatermain(
+  facts: TakeoffFacts,
+  options: {
+    projectName: string;
+    sourceHash: string;
+    tileBatches: any[][];
+    pdfBuffer: Buffer;
+    preparePdfPart: (buffer: Buffer) => Promise<any>;
+    ai: any;
+    cost: CostAcc;
+    batchConcurrency?: number;
+  }
+): Promise<boolean> {
+  if (facts.watermain && facts.watermain.length > 0) {
+    return false;
+  }
+  const { projectName, sourceHash, tileBatches, pdfBuffer, preparePdfPart, ai, cost, batchConcurrency = 3 } = options;
+  if (!tileBatches || (tileBatches.length === 0 && !pdfBuffer)) {
+    return false;
+  }
+
+  console.log(`      [extraction.ts] Initial watermain extraction returned 0 runs; running dedicated second pass...`);
+  const wmPrompt = getWatermainExtractionPrompt(projectName);
+  const batches = tileBatches.length > 0 ? tileBatches : [[]];
+
+  const wmParts = await mapLimit(batches, batchConcurrency, async (batch, bi) => {
+    const media = batch.length > 0 ? batch : [await preparePdfPart(pdfBuffer)];
+    let text = '{}';
+    try {
+      text = await getCachedOrCallLLM(`${sourceHash}_watermain_b${bi}of${batches.length}`, wmPrompt, 'watermain', async () => {
+        return await callWithRetry(async () => {
+          const stream = await ai.models.generateContentStream({
+            model: EXTRACTION_MODEL,
+            contents: [{ role: 'user', parts: [{ text: wmPrompt }, ...media] }],
+            config: {
+              temperature: Number(process.env.EXTRACTION_TEMPERATURE || '0'),
+              responseMimeType: 'application/json',
+              maxOutputTokens: MAX_OUTPUT_TOKENS,
+              thinkingConfig: { thinkingBudget: THINKING_BUDGET },
+            },
+          });
+          let acc = '', usage: any = null, finishReason: string | null = null;
+          for await (const chunk of stream) {
+            acc += chunk.text || '';
+            if (chunk.usageMetadata) usage = chunk.usageMetadata;
+            const fr = chunk.candidates?.[0]?.finishReason;
+            if (fr) finishReason = String(fr);
+          }
+          addUsage(cost, usage);
+          if (finishReason && finishReason !== 'STOP') {
+            console.warn(`      [extraction.ts] finishReason=${finishReason} (response hit a limit — output may be truncated).`);
+          }
+          return acc || '{}';
+        });
+      }, projectName);
+    } catch (e: any) {
+      console.error(`      [extraction.ts] Watermain batch ${bi + 1}/${batches.length} failed: ${e.message}`);
+    }
+    try {
+      const parsed = tryParseJSONWithRepair(text);
+      const { cleaned, dropped } = stripDegenerateKeys(parsed);
+      for (const d of dropped) {
+        console.error(
+          `      [extraction.ts] Watermain batch ${bi + 1}/${batches.length}: dropped degenerate key "${d.key}" ` +
+          `(${d.length} entries, longest identical run ${d.runLength}, e.g. ${JSON.stringify(d.sample)}).`
+        );
+      }
+      return cleaned;
+    } catch (e: any) {
+      console.error(`      [extraction.ts] Watermain batch ${bi + 1} parse failed: ${e.message}`);
+      return {} as any;
+    }
+  });
+
+  const rawWm: any = { watermain: [], watermainSpecials: [], watermainValves: [], warnings: [] };
+  for (const part of wmParts) {
+    if (Array.isArray(part.watermain)) rawWm.watermain.push(...part.watermain);
+    if (Array.isArray(part.watermainSpecials)) rawWm.watermainSpecials.push(...part.watermainSpecials);
+    if (Array.isArray(part.watermainValves)) rawWm.watermainValves.push(...part.watermainValves);
+    if (Array.isArray(part.warnings)) rawWm.warnings.push(...part.warnings);
+  }
+
+  return applySecondPassWatermain(facts, rawWm);
+}
+
 

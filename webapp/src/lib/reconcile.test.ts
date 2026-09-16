@@ -3,6 +3,8 @@ import {
   reconcileTakeoff,
   mergeTakeoffs,
   isSpecNoteDescription,
+  isNonStructureFeature,
+  dropNonStructureFeatures,
   dropImplausibleCatchbasinGroups,
 } from './reconcile';
 import { TakeoffFacts, SewerFact, StructureFact, WatermainFact } from './types';
@@ -126,6 +128,113 @@ describe('isSpecNoteDescription — spec notes vs structure identifiers', () => 
     );
     expect(r.structures.map((s) => s.description).sort()).toEqual(['GREENSTORM SWM DETENTION TANK', 'MH 1']);
     expect(r.warnings.join(' ')).toContain('spec note');
+  });
+});
+
+describe('isNonStructureFeature — non-structure civil features vs structure identifiers', () => {
+  it('identifies bare headings surrounded by optional punctuation/whitespace', () => {
+    for (const d of [
+      'SANITARY',
+      'STORM',
+      'WATER',
+      'SEWER',
+      'SEWER CONNECTION',
+      'WATER METER',
+      'WATER VAULT',
+      'GAS',
+      'HYDRO',
+      'ELECTRICAL',
+      '(SANITARY)',
+      '[STORM]',
+      'STORM:',
+      '  SEWER CONNECTION  ',
+      'PROP. SANITARY',
+      'EX. WATER',
+    ]) {
+      expect(isNonStructureFeature(d)).toBe(true);
+    }
+  });
+
+  it('identifies elevation equations', () => {
+    for (const d of [
+      'MH INV=246.48',
+      'INV=223.10',
+      'T/G=150.20',
+      'TG=150.20',
+      'T/G = 150.20',
+      'EX. MH 1 INV = 100.5',
+    ]) {
+      expect(isNonStructureFeature(d)).toBe(true);
+    }
+  });
+
+  it('identifies non-structure site keywords', () => {
+    for (const d of [
+      'PROP. MUD MAT',
+      'PROP. RETAINING WALL',
+      'PROP. DEPRESSED CURB',
+      'SEWER CROSSING (STM)',
+      'SEWER CROSSING (SAN)',
+      'PROP. SNOW STORAGE',
+      'PROP. BIKE RACKS',
+      '6m X 5m TRANSFORMER',
+      'LIGHT POLE',
+      'HYDRO POLE',
+      'TREE PROTECTION',
+      'SILT FENCE',
+      'HANDRAIL',
+      'GUARDRAIL',
+      'BOLLARD',
+      'CROSSING C',
+    ]) {
+      expect(isNonStructureFeature(d)).toBe(true);
+    }
+  });
+
+  it('preserves valid structures', () => {
+    for (const d of [
+      'MH 1',
+      'CBMH 2',
+      'JELLYFISH UNIT',
+      'STORMTRAP DOUBLETRAP DETENTION SYSTEM OOS',
+      'DOGHOUSE MAINTENANCE HOLE',
+      'C100 CHAMBER',
+      'SAN MH 1',
+      'DICB 5',
+      'DCBMH 10',
+      'CB 3',
+      'OCS 1',
+      'HEADWALL 1',
+    ]) {
+      expect(isNonStructureFeature(d)).toBe(false);
+    }
+  });
+
+  it('drops non-structure features through reconcileTakeoff and warns', () => {
+    const r = reconcileTakeoff(
+      emptyFacts({
+        structures: [
+          struct({ description: 'MH 1' }),
+          struct({ description: 'PROP. MUD MAT' }),
+          struct({ description: 'SANITARY' }),
+          struct({ description: 'MH INV=246.48' }),
+          struct({ description: 'CBMH 2' }),
+        ],
+      })
+    );
+    expect(r.structures.map((s) => s.description).sort()).toEqual(['CBMH 2', 'MH 1']);
+    expect(r.warnings.join(' ')).toContain('civil site feature');
+  });
+
+  it('dropNonStructureFeatures returns kept and dropped lists', () => {
+    const list = [
+      struct({ description: 'MH 1' }),
+      struct({ description: 'PROP. RETAINING WALL' }),
+      struct({ description: 'SEWER CROSSING (STM)' }),
+    ];
+    const res = dropNonStructureFeatures(list);
+    expect(res.structures.map((s) => s.description)).toEqual(['MH 1']);
+    expect(res.dropped).toEqual(['PROP. RETAINING WALL', 'SEWER CROSSING (STM)']);
   });
 });
 

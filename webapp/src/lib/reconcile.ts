@@ -291,11 +291,46 @@ export function aggregateWatermainByDiameter(rows: WatermainFact[]): WatermainFa
 
 // ---- junk filters (precision) ----
 //
-// Both filters below answer the same question — "is this row a reading of a physical
-// thing, or is it something the model scraped off the sheet that isn't one?" — and both
+// Filters below answer the question — "is this row a reading of a physical
+// thing, or is it something the model scraped off the sheet that isn't one?" — and
 // are deliberately NARROW. Three broader structure filters (long-contiguous-run,
 // missing-data, sewer-endpoint corroboration) were measured and REJECTED because each
 // killed real structures; see CLAUDE.md. Do not widen these into those.
+
+const BARE_HEADING =
+  /^(?:(?:PROP|PROPOSED|EX|EXISTING)\.?\s*)?(?:\((?:STM|SAN|WTR|WATER|STORM|SANITARY)\)\s*)?(?:SANITARY|STORM|WATER|SEWER|SEWER\s+CONNECTION|WATER\s+METER|WATER\s+VAULT|GAS|HYDRO|ELECTRICAL)(?:\s*\((?:STM|SAN|WTR|WATER|STORM|SANITARY)\))?$/i;
+
+const ELEVATION_EQUATION = /\b(?:INV|T\/?G)\s*=\s*\d/i;
+
+const NON_STRUCTURE_KEYWORDS =
+  /\b(?:BIKE\s+RACKS?|RETAINING\s+WALLS?|DEPRESSED\s+CURBS?|MUD\s+MATS?|SNOW\s+STORAGE|SEWER\s+CROSSINGS?|CROSSING\s+C|TRANSFORMERS?|LIGHT\s+POLES?|HYDRO\s+POLES?|SILT\s+FENCES?|TREE\s+PROTECTIONS?|HANDRAILS?|GUARDRAILS?|BOLLARDS?)\b/i;
+
+/**
+ * True when a structure description is a civil site feature, bare discipline heading,
+ * or elevation equation rather than a structure identifier.
+ */
+export function isNonStructureFeature(description: string): boolean {
+  const d = (description || '').trim();
+  if (!d) return false;
+  if (ELEVATION_EQUATION.test(d)) return true;
+  if (NON_STRUCTURE_KEYWORDS.test(d)) return true;
+  const stripped = d.replace(/^[^\w]+|[^\w]+$/g, '').trim();
+  if (BARE_HEADING.test(stripped)) return true;
+  return false;
+}
+
+export function dropNonStructureFeatures(structures: StructureFact[]): {
+  structures: StructureFact[];
+  dropped: string[];
+} {
+  const dropped: string[] = [];
+  const kept = structures.filter((s) => {
+    if (!isNonStructureFeature(s.description)) return true;
+    dropped.push(s.description);
+    return false;
+  });
+  return { structures: kept, dropped };
+}
 
 // A structure's description is an IDENTIFIER ("MH 12", "CBMH 4", "JELLYFISH UNIT",
 // "STORMTRAP DOUBLETRAP DETENTION SYSTEM OOS"). It is never an instruction to the
@@ -409,15 +444,22 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
   );
 
   // 5. junk filters. Structures first, so the network size the catchbasin ceiling is
-  // measured against is the CLEANED one — spec notes must not inflate the budget that
-  // decides whether a catchbasin count is plausible.
-  const note = dropSpecNoteStructures(structures);
+  // measured against is the CLEANED one — spec notes and non-structure features must
+  // not inflate the budget that decides whether a catchbasin count is plausible.
+  const nonStruct = dropNonStructureFeatures(structures);
+  const note = dropSpecNoteStructures(nonStruct.structures);
   const cb = dropImplausibleCatchbasinGroups(
     mergeCatchbasinGroups(facts.catchbasins) as TakeoffFacts['catchbasins'],
     note.structures.length + keptSewers.filter((s) => !s.isLineItem).length
   );
 
   const warnings = [...facts.warnings];
+  if (nonStruct.dropped.length > 0) {
+    warnings.push(
+      `Dropped ${nonStruct.dropped.length} structure(s) whose description is a civil site feature or heading, not a structure: ` +
+        `${nonStruct.dropped.slice(0, 8).join(' | ')}${nonStruct.dropped.length > 8 ? ' | …' : ''}`
+    );
+  }
   if (note.dropped.length > 0) {
     warnings.push(
       `Dropped ${note.dropped.length} structure(s) whose description is a spec note, not a structure id: ` +

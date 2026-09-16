@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { normalizeSlope, snapToPipeDiameter, snapToMHSize } from './geometry';
 import {
   repairTruncatedJson,
@@ -15,6 +15,9 @@ import {
   tilesNeededPerPage,
   findDegenerateRepetition,
   stripDegenerateKeys,
+  parseWatermainFacts,
+  applySecondPassWatermain,
+  runSecondPassWatermain,
 } from './extraction';
 
 describe('parseFacts structure/catchbasin categorization', () => {
@@ -433,3 +436,239 @@ describe('tilesNeededPerPage — per-page tile budget from sheet geometry', () =
     }
   });
 });
+
+describe('parseWatermainFacts', () => {
+  it('parses valid watermain items, specials, and valves', () => {
+    const raw = {
+      watermain: [
+        { sizeAndType: '200mm PVC WM', length: 145.5, pipeDiameter: 200, ocSc: 1.2, avgCover: 2.1 },
+        { sizeAndType: '150mm DI WM', length: '50m', pipeDiameter: 150 },
+        { sizeAndType: '100mm PVC', length: 0 }, // 0-length dropped
+      ],
+      watermainSpecials: [
+        { specialName: 'Hydrant Assembly', quantity: 2 },
+        { specialName: 'Tapping Sleeve', quantity: '1' },
+      ],
+      watermainValves: [
+        { valveSize: '200mm Gate Valve', quantity: 3 },
+      ],
+      warnings: ['Check connection to existing main'],
+    };
+
+    const parsed = parseWatermainFacts(raw);
+    expect(parsed.watermain).toHaveLength(2);
+    expect(parsed.watermain[0]).toEqual({
+      sizeAndType: '200mm PVC WM',
+      length: 145.5,
+      pipeDiameter: 200,
+      ocSc: 1.2,
+      avgCover: 2.1,
+    });
+    expect(parsed.watermain[1]).toEqual({
+      sizeAndType: '150mm DI WM',
+      length: 50,
+      pipeDiameter: 150,
+      ocSc: 1.1,
+      avgCover: 1.8,
+    });
+    expect(parsed.watermainSpecials).toEqual([
+      { specialName: 'Hydrant Assembly', quantity: 2 },
+      { specialName: 'Tapping Sleeve', quantity: 1 },
+    ]);
+    expect(parsed.watermainValves).toEqual([
+      { valveSize: '200mm Gate Valve', quantity: 3 },
+    ]);
+    expect(parsed.warnings).toEqual(['Check connection to existing main']);
+  });
+
+  it('infers diameter from sizeAndType if pipeDiameter is omitted or 0', () => {
+    const parsed = parseWatermainFacts({
+      watermain: [
+        { sizeAndType: '300mm PVC DR-18', length: 80 },
+      ],
+    });
+    expect(parsed.watermain).toHaveLength(1);
+    expect(parsed.watermain[0].pipeDiameter).toBe(300);
+  });
+
+  it('sums lengths for duplicate pipe sizes in the second pass response', () => {
+    const parsed = parseWatermainFacts({
+      watermain: [
+        { sizeAndType: '200mm WM', length: 60, pipeDiameter: 200 },
+        { sizeAndType: '200mm wm', length: 40, pipeDiameter: 200 },
+      ],
+    });
+    expect(parsed.watermain).toHaveLength(1);
+    expect(parsed.watermain[0].length).toBe(100);
+  });
+});
+
+describe('two-pass watermain extraction', () => {
+  it('triggers two-pass watermain when initial watermain is empty and merges facts', () => {
+    const facts = parseFacts({
+      manholes: [{ description: 'MH 1' }],
+      sewers: [{ runLabel: 'MH 1-MH 2', length: 50, pipeDiameter: 250 }],
+      watermain: [], // empty initial watermain
+      watermainSpecials: [],
+      watermainValves: [],
+    }, 'Test Project');
+
+    expect(facts.watermain).toHaveLength(0);
+
+    const secondPassRaw = {
+      watermain: [
+        { sizeAndType: '200mm PVC WM', length: 180, pipeDiameter: 200, ocSc: 1.1, avgCover: 1.8 },
+      ],
+      watermainSpecials: [
+        { specialName: 'Hydrant Lead', quantity: 1 },
+      ],
+      watermainValves: [
+        { valveSize: '200mm Gate Valve', quantity: 2 },
+      ],
+      warnings: ['Watermain second pass note'],
+    };
+
+    const triggered = applySecondPassWatermain(facts, secondPassRaw);
+    expect(triggered).toBe(true);
+    expect(facts.watermain).toHaveLength(1);
+    expect(facts.watermain[0]).toEqual({
+      sizeAndType: '200mm PVC WM',
+      length: 180,
+      pipeDiameter: 200,
+      ocSc: 1.1,
+      avgCover: 1.8,
+    });
+    expect(facts.watermainSpecials).toEqual([
+      { specialName: 'Hydrant Lead', quantity: 1 },
+    ]);
+    expect(facts.watermainValves).toEqual([
+      { valveSize: '200mm Gate Valve', quantity: 2 },
+    ]);
+    expect(facts.warnings).toContain('Watermain second pass note');
+  });
+
+  it('does NOT trigger second pass if initial watermain was already found', () => {
+    const facts = parseFacts({
+      manholes: [{ description: 'MH 1' }],
+      sewers: [{ runLabel: 'MH 1-MH 2', length: 50, pipeDiameter: 250 }],
+      watermain: [
+        { sizeAndType: '150mm PVC', length: 100, pipeDiameter: 150 },
+      ],
+      watermainSpecials: [{ specialName: 'Existing Special', quantity: 1 }],
+      watermainValves: [{ valveSize: '150mm GV', quantity: 1 }],
+    }, 'Test Project');
+
+    expect(facts.watermain).toHaveLength(1);
+
+    const secondPassRaw = {
+      watermain: [
+        { sizeAndType: '300mm PVC WM', length: 500, pipeDiameter: 300 },
+      ],
+      watermainSpecials: [
+        { specialName: 'New Special', quantity: 5 },
+      ],
+      watermainValves: [
+        { valveSize: '300mm GV', quantity: 5 },
+      ],
+    };
+
+    const triggered = applySecondPassWatermain(facts, secondPassRaw);
+    expect(triggered).toBe(false);
+    expect(facts.watermain).toHaveLength(1);
+    expect(facts.watermain[0].sizeAndType).toBe('150mm PVC');
+    expect(facts.watermain[0].length).toBe(100);
+    expect(facts.watermainSpecials).toEqual([{ specialName: 'Existing Special', quantity: 1 }]);
+    expect(facts.watermainValves).toEqual([{ valveSize: '150mm GV', quantity: 1 }]);
+  });
+
+  it('returns false and keeps facts empty if second pass finds no watermain', () => {
+    const facts = parseFacts({
+      manholes: [],
+      sewers: [],
+      watermain: [],
+    }, 'Test Project');
+
+    const secondPassRaw = {
+      watermain: [],
+      watermainSpecials: [],
+      watermainValves: [],
+    };
+
+    const triggered = applySecondPassWatermain(facts, secondPassRaw);
+    expect(triggered).toBe(false);
+    expect(facts.watermain).toHaveLength(0);
+  });
+
+  it('runSecondPassWatermain does not call LLM if watermain is already present', async () => {
+    const facts = parseFacts({
+      watermain: [{ sizeAndType: '200mm', length: 50, pipeDiameter: 200 }],
+    }, 'Test Project');
+
+    const generateFn = vi.fn();
+    const preparePdfPart = vi.fn();
+
+    const cost = { promptTokens: 0, outputTokens: 0, totalTokens: 0, llmCalls: 0, tiles: 0, dpi: 150 };
+    const res = await runSecondPassWatermain(facts, {
+      projectName: 'Test Project',
+      sourceHash: 'test-hash-123',
+      tileBatches: [[{ inlineData: {} }]],
+      pdfBuffer: Buffer.from('mock pdf'),
+      preparePdfPart,
+      ai: { models: { generateContentStream: generateFn } },
+      cost,
+    });
+
+    expect(res).toBe(false);
+    expect(generateFn).not.toHaveBeenCalled();
+    expect(preparePdfPart).not.toHaveBeenCalled();
+  });
+
+  it('runSecondPassWatermain calls LLM and merges results when watermain is initially empty', async () => {
+    const facts = parseFacts({
+      watermain: [],
+    }, 'Test Project');
+
+    const cost = { promptTokens: 0, outputTokens: 0, totalTokens: 0, llmCalls: 0, tiles: 0, dpi: 150 };
+    const mockStream = (async function* () {
+      yield {
+        text: JSON.stringify({
+          watermain: [{ sizeAndType: '250mm PVC WM', length: 120, pipeDiameter: 250 }],
+          watermainSpecials: [{ specialName: 'Hydrant Tee', quantity: 2 }],
+          watermainValves: [{ valveSize: '250mm Gate Valve', quantity: 1 }],
+        }),
+        usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 50, totalTokenCount: 150 },
+        candidates: [{ finishReason: 'STOP' }],
+      };
+    })();
+
+    const generateFn = vi.fn().mockResolvedValue(mockStream);
+    const preparePdfPart = vi.fn().mockResolvedValue({ inlineData: { mimeType: 'application/pdf', data: 'abc' } });
+
+    // Temporarily disable eval cache for direct mock call
+    const origCache = process.env.ENABLE_EVAL_CACHE;
+    process.env.ENABLE_EVAL_CACHE = 'false';
+
+    try {
+      const res = await runSecondPassWatermain(facts, {
+        projectName: 'Test Project',
+        sourceHash: 'test-hash-empty-wm',
+        tileBatches: [[]],
+        pdfBuffer: Buffer.from('mock pdf'),
+        preparePdfPart,
+        ai: { models: { generateContentStream: generateFn } },
+        cost,
+      });
+
+      expect(res).toBe(true);
+      expect(generateFn).toHaveBeenCalled();
+      expect(facts.watermain).toHaveLength(1);
+      expect(facts.watermain[0].sizeAndType).toBe('250mm PVC WM');
+      expect(facts.watermain[0].length).toBe(120);
+      expect(facts.watermainSpecials).toEqual([{ specialName: 'Hydrant Tee', quantity: 2 }]);
+      expect(facts.watermainValves).toEqual([{ valveSize: '250mm Gate Valve', quantity: 1 }]);
+    } finally {
+      process.env.ENABLE_EVAL_CACHE = origCache;
+    }
+  });
+});
+

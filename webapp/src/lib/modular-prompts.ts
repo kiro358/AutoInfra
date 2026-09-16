@@ -71,27 +71,19 @@ IMPORTANT: Do NOT invent synthetic sequence numbers (e.g. MH 100, MH 101, MH 102
 Counted by type (SINGLE_CB, DOUBLE_CB, DITCH_INLET_CB, DOUBLE_DITCH_INLET_CB): quantity, wallThickness (in, or null), depth (m, or null).
 
 ## SEWERS ("sewers") — THIS IS THE MOST IMPORTANT SECTION; DO NOT SKIP IT
-One row per PROPOSED pipe run BETWEEN TWO STRUCTURES. A servicing plan ALWAYS has pipe runs
-connecting its structures — if you found N storm/sanitary structures there are usually a
-similar number of pipe runs. Returning structures with an EMPTY sewers list is almost always a
-MISTAKE: go back and read the pipe segments. Every proposed pipe on the plan carries a dimension
-callout next to it like "23.38m-250mmØ PVC STM @0.5%" or "16.78m-300mmØ PVC STM @0.5%" — EACH of
-those callouts is one sewer run; scan every pipe line and list them all.
-- EMIT EVERY proposed pipe run you can see — most site plans annotate runs only with a
-  dimension callout on the pipe (e.g. "30.0m-375mm PVC STM @ 1.69%") rather than a schedule
-  table; extract each one. NEVER drop a pipe just because it's hard to label.
+One row per PROPOSED pipe run BETWEEN TWO STRUCTURES. Extract actual pipe runs drawn and dimensioned on the sheet.
+- EMIT EVERY proposed pipe run you can see — scan every drawn pipe line and extract each one.
 - Prefer to label runLabel by the two connected structures as "FROM-TO" using their EXACT
-  labels — e.g. "MH 5-MH 4", "CBMH 2-MH 3", "CB 3-WYE" — tracing the pipe to the structure at
-  each end. If you genuinely cannot determine both end structures, STILL emit the run and use
-  the printed callout text as runLabel; put the numbers in the fields regardless.
+  labels as printed on the plan — e.g. "MH 5-MH 4", "CBMH 2-MH 3", "CB 3-WYE", "MH 10N-MH 13N" — tracing the pipe to the structure at
+  each end. If you cannot determine both end structures, use the printed dimension callout as runLabel (e.g. "30.0m-375mm PVC STM @ 1.69%").
   - If the downstream end ties into an existing / off-site structure, use "-CONN." (e.g. "MH 1A-CONN.").
   - Add a "/INS." suffix only if the run is marked insulated.
 - Put the pipe's numbers in the FIELDS (not the label): isLineItem=false, length (m), pipeDiameter
   (mm, one of: ${PIPE_DIAMETERS.join(', ')}), typeClass, slope (%; convert ‰ by /10), depth (m).
 - DO NOT create a run for: pipe CROSSINGS ("SEWER CROSSING", "STM/SAN CROSSING"), bare notes about
   connecting to existing infrastructure that aren't a new pipe, or landscape/architectural callouts.
-  One physical proposed pipe = one row; consolidate the same run seen across overlapping tiles.
-- Do NOT generate synthetic repeating loops. Stop when all drawn segments on the tiles are extracted.
+- STOPPING CRITERIA: A single drawing sheet typically has 5 to 45 proposed sewer runs. NEVER emit more than 60 sewer runs from a sheet.
+- STRICT PROHIBITION: NEVER generate synthetic counting sequences (e.g. "MH 1-MH 2", "MH 2-MH 3", "MH 3-MH 4" ... "MH 50"). Only extract pipes whose labels or dimensions are explicitly printed on the tiles. When all visible drawn runs are extracted, close the array and stop.
 Non-pipe line items that still belong on the sewer sheet (SWALE, DEWATERING, ...): isLineItem=true
 with null pipe fields.
 

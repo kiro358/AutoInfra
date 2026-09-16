@@ -19,6 +19,7 @@ export const PDF_HARD_EXCLUDE = [
   'breakdown', 'letter', 'backup', 'addendum', 'bid form', 'tender_form',
   'tender form', 'tipp', 'report', 'rpt', 'contracting', 'designated substance',
   'bid leveling', 'leveling', 'locate', 'locates', 'schedule of values',
+  'base', 'background',
 ];
 
 // SOFT excludes: discipline tags that co-occur with a bundled civil set. A STRONG

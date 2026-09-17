@@ -228,6 +228,108 @@ describe('structure matching (strict normalized label + manhole family fallback)
   });
 });
 
+describe('structure matching — phase 3 domain aliases (qualifiers, chambers, OGS)', () => {
+  const struct = (description: string) => ({
+    description,
+    topElevation: null,
+    lowInvert: null,
+    highInvert: null,
+    pipeOutDiameter: null,
+    structureType: 'MANHOLE',
+    depth: null,
+  });
+  const structEntity = (pred: ReturnType<typeof facts>, truth: ReturnType<typeof facts>) =>
+    compareFacts(pred, truth).entities.find((e) => e.kind === 'structures')!;
+
+  // ---- (1) qualifier abbreviations ----
+  it('pairs qualified manholes when abbreviation matches (DIV.MH 15 <-> DIVERSION MH 15)', () => {
+    const pred = facts({ structures: [struct('DIVERSION MH 15')] });
+    const truth = facts({ structures: [struct('DIV.MH 15')] });
+    expect(structEntity(pred, truth).matched).toBe(1);
+  });
+
+  it('pairs control manhole with spelled-out and system variants (SANITARY CONTROL MH <-> CTRL MH)', () => {
+    const pred = facts({ structures: [struct('SANITARY CONTROL MH')] });
+    const truth = facts({ structures: [struct('CTRL MH')] });
+    expect(structEntity(pred, truth).matched).toBe(1);
+  });
+
+  it('pairs STM CONTROL MANHOLE <-> CTRL MH', () => {
+    const pred = facts({ structures: [struct('STM CONTROL MANHOLE')] });
+    const truth = facts({ structures: [struct('CTRL MH')] });
+    expect(structEntity(pred, truth).matched).toBe(1);
+  });
+
+  it('pairs doghouse manhole spelled out vs note suffix (DOGHOUSE MAINTENANCE HOLE <-> MH 1A-DH)', () => {
+    const pred = facts({ structures: [struct('DOGHOUSE MAINTENANCE HOLE')] });
+    const truth = facts({ structures: [struct('MH 1A-DH')] });
+    expect(structEntity(pred, truth).matched).toBe(1);
+  });
+
+  // ---- (2) SWM chamber typology ----
+  it('pairs CULTEC C100HD CHAMBERS <-> C100 CHAMBER on matching model core', () => {
+    const pred = facts({ structures: [struct('CULTEC C100HD CHAMBERS')] });
+    const truth = facts({ structures: [struct('C100 CHAMBER')] });
+    expect(structEntity(pred, truth).matched).toBe(1);
+  });
+
+  it('pairs ADS STORMTECH MC-3500 CHAMBER on model core (singleton)', () => {
+    const pred = facts({ structures: [struct('ADS STORMTECH MC-3500 CHAMBER')] });
+    const truth = facts({ structures: [struct('MC-3500 CHAMBER')] });
+    expect(structEntity(pred, truth).matched).toBe(1);
+  });
+
+  // ---- (3) OGS product families with designations ----
+  it('pairs OGS units when model designation matches exactly (JF 6-3-1 <-> JELLYFISH JF6-3-1)', () => {
+    const pred = facts({ structures: [struct('JELLYFISH JF6-3-1 UNIT')] });
+    const truth = facts({ structures: [struct('JF 6-3-1')] });
+    expect(structEntity(pred, truth).matched).toBe(1);
+  });
+
+  it('pairs Stormceptor unit on model designation (STC 4000 <-> STORMCEPTOR STC4000)', () => {
+    const pred = facts({ structures: [struct('STORMCEPTOR STC4000')] });
+    const truth = facts({ structures: [struct('STC 4000')] });
+    expect(structEntity(pred, truth).matched).toBe(1);
+  });
+
+  it('pairs an unambiguous OGS singleton when no conflicting designation exists', () => {
+    // One OGS in truth, one generic in pred, neither carries a conflicting number
+    const pred = facts({ structures: [struct('OIL GRIT SEPARATOR')] });
+    const truth = facts({ structures: [struct('OGS 1')] });
+    expect(structEntity(pred, truth).matched).toBe(1);
+  });
+
+  // ---- (4) THE INTEGRITY GUARD: REFUSAL CASES (the most important tests) ----
+  it('REFUSES to pair when multiple truth units compete for one generic prediction (Bradford case)', () => {
+    // Bradford: truth has JF 6-3-1 and JF 4-1-1; pred emits a single generic JELLYFISH UNIT.
+    // Pairing would be arbitrary guessing -> MUST NOT match either.
+    const pred = facts({ structures: [struct('JELLYFISH UNIT')] });
+    const truth = facts({ structures: [struct('JF 6-3-1'), struct('JF 4-1-1')] });
+    expect(structEntity(pred, truth).matched).toBe(0);
+  });
+
+  it('REFUSES to pair when designations CONFLICT within the same family', () => {
+    const pred = facts({ structures: [struct('JELLYFISH JF4-1-1')] });
+    const truth = facts({ structures: [struct('JF 6-3-1')] });
+    expect(structEntity(pred, truth).matched).toBe(0);
+  });
+
+  it('preserves an ordinary sewer structure that merely mentions a treatment note', () => {
+    // "MH 3/OGS/EF 06" is MH 3 (a manhole), NOT an OGS unit -> must not pair with an OGS truth row
+    const pred = facts({ structures: [struct('MH 3/OGS/EF 06')] });
+    const truth = facts({ structures: [struct('OGS 1')] });
+    expect(structEntity(pred, truth).matched).toBe(0);
+  });
+
+  it('never breaks a phase-1 exact match to gain a phase-3 alias pair', () => {
+    const pred = facts({ structures: [struct('CTRL MH'), struct('CONTROL MANHOLE')] });
+    const truth = facts({ structures: [struct('CTRL MH')] });
+    const e = structEntity(pred, truth);
+    expect(e.matched).toBe(1);
+    expect(e.predCount).toBe(2);
+  });
+});
+
 
 describe('normalizeLabel / runSignature', () => {
   it('normalizes structure labels ignoring case, spaces, punctuation, parens', () => {

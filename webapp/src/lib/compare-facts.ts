@@ -167,12 +167,195 @@ export function manholeFamilyKey(norm: string): string | null {
   return m ? m[1] : null;
 }
 
+// ---- domain aliases (phase 3) ----
+//
+// The drafter names a structure the way it is drawn; the estimator names it the way it is
+// purchased. "DIVERSION MH 15" and "DIV.MH 15" are one manhole; "CULTEC C100HD CHAMBERS"
+// and "C100 CHAMBER" are one product. Phase 3 pairs those, but ONLY on corroborating
+// evidence — the same id/model designation, or an unambiguous singleton (exactly one
+// candidate free on each side). Family membership alone is never enough: two Jellyfish
+// units in truth and one generic "JELLYFISH UNIT" prediction stay unmatched, because
+// which one it is cannot be known.
+
+/** Qualifiers that describe a structure's role without changing which structure it is. */
+const ALIAS_PHRASES: [RegExp, string][] = [
+  [/\bMAINTENANCE\s*HOLES?\b/g, 'MH'],
+  [/\bMANHOLES?\b/g, 'MH'],
+  [/\bDOG\s*HOUSE\b/g, 'DH'],
+  [/\bDOGHOUSE\b/g, 'DH'],
+  [/\bDIVERSION\b/g, 'DIV'],
+  [/\bCONTROL\b/g, 'CTRL'],
+  [/\bSAFETY\s*PLATFORM\b/g, 'SP'],
+  [/\bOPEN\s*PLATFORM\b/g, 'OP'],
+];
+/** Qualifier tokens (post-expansion) that mark a label as a *qualified* structure. */
+const QUALIFIED_RE = /\b(?:CTRL|DIV|DH|SP|OP)\b/;
+/**
+ * System words. Dropped ONLY from a qualified label ("STM CONTROL MANHOLE" -> "CTRL MH"):
+ * the estimator keeps the system in a separate column. Dropping them unconditionally would
+ * reduce plain ids like "SAN 1A" to a bare number, which is not an identity.
+ */
+const SYSTEM_WORDS = /\b(?:STORM|STM|SANITARY|SAN)\b/g;
+
+/**
+ * Normalized label with estimator/drafter abbreviations expanded to one spelling, so
+ * "DIVERSION MH 15" and "DIV.MH 15" produce the same key.
+ */
+export function canonicalStructureLabel(label: string): string {
+  let s = (label || '').toUpperCase().replace(/\./g, ' ');
+  for (const [re, to] of ALIAS_PHRASES) s = s.replace(re, to);
+  if (QUALIFIED_RE.test(s)) s = s.replace(SYSTEM_WORDS, ' ');
+  return normalizeLabel(s.replace(/\s+/g, ' ').trim());
+}
+
+/** A structure typology: a product/equipment family plus its designation, when printed. */
+export interface StructureTypology {
+  family: string;
+  designation: string | null;
+}
+
+// A label that already reads as an ordinary sewer structure id is that structure, even when
+// it carries a treatment note ("MH 3/OGS/EF 06" is MH 3, not an OGS unit).
+const PLAIN_STRUCTURE_ID = /^(?:DDICB|DCBMH|DICBMH|CBMH|DICB|DCB|STMH|SANMH|MH|CB|HS|EF)\d/;
+
+// Oil-grit-separator / pre-treatment product families. The code and the product name are
+// the same unit: JF = Jellyfish, STC = Stormceptor, HF = Hydrofilter. Each regex consumes
+// only the LETTERS so an attached designation ("JF4-1-1") survives into `designation`.
+const OGS_FAMILIES: [RegExp, string][] = [
+  [/\b(?:JELLY\s*FISH|JF)(?=\d|\b)/, 'JF'],
+  [/\b(?:STORMCEPTOR|STC)(?=\d|\b)/, 'STC'],
+  [/\b(?:HYDRO\s*FILTER|HF)(?=\d|\b)/, 'HF'],
+  [/\bCDS(?=\d|\b)/, 'CDS'],
+  [/\b(?:OIL[\s-]*GRIT[\s-]*SEPARATOR|OGS)(?=\d|\b)/, 'OGS'],
+];
+
+const CHAMBER_WORD = /\b(?:CHAMBERS?|VAULTS?)\b/;
+const VAULT_WORD = /\bVAULTS?\b/;
+// Estimator chamber codes, as a whole normalized id: VC 300 (valve chamber), DC 150 /
+// DCVC-200 (double-check valve chamber), WMC 100 (water meter chamber).
+const CHAMBER_CODE = /^(DCVC|WMC|VC|DC)(\d*)$/;
+const CHAMBER_SPELLED: [RegExp, string][] = [
+  [/\bDOUBLE\s*CHECK\b/, 'DC'],
+  [/\bWATER\s*METER\b/, 'WMC'],
+  [/\bVALVE\b/, 'VC'],
+];
+// A manufacturer model core: CULTEC C100HD, ADS StormTech MC-3500. The trailing grade
+// letters ("HD") are a variant of the same line, so the core is letters + digits.
+const MODEL_CORE = /\b([A-Z]{1,3})[-\s]?(\d{2,5})(?:[A-Z]{1,3})?\b/;
+
+function digitsOf(s: string): string | null {
+  const m = s.match(/\d+/g);
+  return m && m.length > 0 ? m.join('-') : null;
+}
+
+/**
+ * Classify a structure label into a product/equipment typology, or null when it is an
+ * ordinary sewer structure (which phases 1 and 2 already handle).
+ */
+export function structureTypology(label: string): StructureTypology | null {
+  const raw = (label || '').toUpperCase();
+  if (!raw.trim()) return null;
+  const norm = normalizeLabel(label);
+
+  // Doghouse manholes are marked with a note ("MH 1A-DH") or spelled out
+  // ("DOGHOUSE MAINTENANCE HOLE"). Allowed on plain ids: the note IS the qualifier.
+  if (/\bDOG\s*HOUSE\b|\bDOGHOUSE\b|\bDH\b/.test(raw)) {
+    return { family: 'DOGHOUSE', designation: PLAIN_STRUCTURE_ID.test(norm) ? norm : digitsOf(raw) };
+  }
+
+  if (PLAIN_STRUCTURE_ID.test(norm)) return null;
+
+  for (const [re, fam] of OGS_FAMILIES) {
+    if (re.test(raw)) return { family: `OGS:${fam}`, designation: digitsOf(raw.replace(re, ' ')) };
+  }
+
+  const code = CHAMBER_CODE.exec(norm);
+  if (code) return { family: `CH:${code[1] === 'DCVC' ? 'DC' : code[1]}`, designation: code[2] || null };
+  if (CHAMBER_WORD.test(raw)) {
+    for (const [re, fam] of CHAMBER_SPELLED) {
+      if (re.test(raw)) return { family: `CH:${fam}`, designation: digitsOf(raw) };
+    }
+    const model = MODEL_CORE.exec(raw);
+    if (model) return { family: `CH:${model[1]}${model[2]}`, designation: null };
+    return { family: VAULT_WORD.test(raw) ? 'CH:VAULT' : 'CH:CHAMBER', designation: digitsOf(raw) };
+  }
+  return null;
+}
+
+/** One free structure within a typology family, carrying its model designation (if printed). */
+interface FamilyRow {
+  s: StructureFact;
+  d: string | null;
+}
+
+/**
+ * Pair free structures whose typologies denote the same physical unit.
+ *
+ * Within a family, two rules — both requiring the pairing to be UNAMBIGUOUS:
+ *   (i)  the same designation, present exactly once on each side; then
+ *   (ii) an unambiguous singleton: one candidate left on each side, and not two
+ *        CONFLICTING designations (truth "JF 4-1-1" never pairs with pred "JF 6-3-1").
+ */
+function matchTypologies(
+  pred: StructureFact[],
+  truth: StructureFact[],
+  usedPred: Set<StructureFact>,
+  usedTruth: Set<StructureFact>,
+  pairs: { p: StructureFact; t: StructureFact }[]
+): void {
+  const group = (list: StructureFact[], used: Set<StructureFact>): Map<string, FamilyRow[]> => {
+    const byFamily = new Map<string, FamilyRow[]>();
+    for (const s of list) {
+      if (used.has(s)) continue;
+      const ty = structureTypology(s.description);
+      if (!ty) continue;
+      const bucket = byFamily.get(ty.family);
+      if (bucket) bucket.push({ s, d: ty.designation });
+      else byFamily.set(ty.family, [{ s, d: ty.designation }]);
+    }
+    return byFamily;
+  };
+  const truthByFamily = group(truth, usedTruth);
+  const predByFamily = group(pred, usedPred);
+
+  for (const [family, ts] of truthByFamily) {
+    let ps: FamilyRow[] | undefined = predByFamily.get(family);
+    if (!ps) continue;
+    let remainingT: FamilyRow[] = ts;
+
+    // (i) same designation, unambiguous on both sides.
+    const once = (list: FamilyRow[], d: string): boolean => list.filter((x) => x.d === d).length === 1;
+    for (const t of ts) {
+      if (t.d == null || !once(remainingT, t.d) || !once(ps, t.d)) continue;
+      const p: FamilyRow = ps.find((x) => x.d === t.d)!;
+      usedPred.add(p.s); usedTruth.add(t.s); pairs.push({ p: p.s, t: t.s });
+      remainingT = remainingT.filter((x) => x !== t);
+      ps = ps.filter((x) => x !== p);
+    }
+
+    // (ii) unambiguous singleton, with no conflicting designation.
+    if (remainingT.length === 1 && ps.length === 1) {
+      const t = remainingT[0], p = ps[0];
+      if (t.d == null || p.d == null || t.d === p.d) {
+        usedPred.add(p.s); usedTruth.add(t.s); pairs.push({ p: p.s, t: t.s });
+      }
+    }
+  }
+}
+
 /**
  * Structure matching:
  * Phase 1: strict normalized label equality (exact match).
  * Phase 2: manhole family prefix relaxation (e.g. "MH 5" <-> "CBMH 5", "CBMH 10" <-> "MH 10").
  * Only applies when both structure labels belong to the manhole family and share the exact same
  * numeric identifier, matching the common drafter vs estimator convention mismatch.
+ * Phase 3a: qualifier-abbreviation equality ("DIVERSION MH 15" <-> "DIV.MH 15"), one pair per
+ * key and only when that key is unambiguous (exactly one free row on each side).
+ * Phase 3b: product/equipment typology (OGS units, chambers/vaults, doghouse MHs).
+ *
+ * Every phase is frozen once it has run: a later, weaker phase only ever consults rows that
+ * are still free, so it can never break a stronger pair to gain a count. Matching stays
+ * strictly one-to-one throughout.
  */
 export function matchStructures(pred: StructureFact[], truth: StructureFact[]) {
   const first = matchByKey<StructureFact>(pred, truth, (s) => normalizeLabel(s.description));
@@ -192,6 +375,35 @@ export function matchStructures(pred: StructureFact[], truth: StructureFact[]) {
       pairs.push({ p, t });
     }
   }
+
+  // Phase 3a: qualifier abbreviations. Unique-key only, so "CTRL MH" is not pinned to one
+  // of three predicted control manholes at random.
+  {
+    const keyed = (list: StructureFact[], used: Set<StructureFact>) => {
+      const byKey = new Map<string, StructureFact[]>();
+      for (const s of list) {
+        if (used.has(s)) continue;
+        const k = canonicalStructureLabel(s.description);
+        if (!k) continue;
+        const bucket = byKey.get(k);
+        if (bucket) bucket.push(s);
+        else byKey.set(k, [s]);
+      }
+      return byKey;
+    };
+    const truthByKey = keyed(truth, usedTruth);
+    const predByKey = keyed(pred, usedPred);
+    for (const [k, ts] of truthByKey) {
+      const ps = predByKey.get(k);
+      if (!ps || ts.length !== 1 || ps.length !== 1) continue;
+      usedPred.add(ps[0]);
+      usedTruth.add(ts[0]);
+      pairs.push({ p: ps[0], t: ts[0] });
+    }
+  }
+
+  // Phase 3b: product/equipment typology.
+  matchTypologies(pred, truth, usedPred, usedTruth, pairs);
 
   return { matched: pairs.length, pairs };
 }

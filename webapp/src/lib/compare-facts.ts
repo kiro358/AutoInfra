@@ -53,7 +53,7 @@ export interface FactsComparison {
 // column) and writes bare "MH 1" / "CBMH 2". Strip a leading storm/san qualifier when it
 // sits directly on a structure code + number, so the two match. The `\d` lookahead keeps
 // run/schedule IDs like "ST 1" / "SA 2" (storm/sanitary run labels) intact.
-const SYS_PREFIX = /^(?:STORM|SANITARY|STM|SAN|ST|SA)(?=(?:DDICB|DCBMH|CBMH|DICB|DCB|CB|MH|HS|OS)\d)/;
+const SYS_PREFIX = /^(?:STORM|SANITARY|STM|SAN|ST|SA)(?=(?:DDICB|DCBMH|CBMH|DICB|DCB|CB|MH|HS|HW|OS)\d)/;
 export function stripSystemPrefix(token: string): string {
   return token.replace(SYS_PREFIX, '');
 }
@@ -61,14 +61,17 @@ export function stripSystemPrefix(token: string): string {
 // Estimator note prefixes that qualify a structure without changing its identity:
 // "DIV.MH 2" is MH 2 on a diversion, "CTRL MH 5" is MH 5 used as a control. The
 // digit lookahead keeps them anchored to a real structure id.
-const QUALIFIER_PREFIX = /^(?:DIV|CTRL|CONTROL|STORMCEPTOR|JELLYFISH|OGS|OILGRITSEPARATOR)(?=(?:DDICB|DCBMH|CBMH|DICB|DCB|CB|MH|HS|OS|JF|EF)\d)/;
+const QUALIFIER_PREFIX = /^(?:DIV|CTRL|CONTROL|STORMCEPTOR|JELLYFISH|OGS|OILGRITSEPARATOR)(?=(?:DDICB|DCBMH|CBMH|DICB|DCB|CB|MH|HS|HW|OS|JF|EF)\d)/;
 
 // A structure id is (letters)(number)(optional letter suffix). Comparing the number
 // NUMERICALLY is what makes "MH01" and "MH 1" the same structure while keeping
 // "MH10" distinct — stripping zeros textually would merge them.
 const LABEL_PARTS = /^([A-Z]+)0*(\d+)([A-Z]*)$/;
 
-const NOTE_SUFFIX_RE = /[-\s/]+(?:DH|EXT\.?\s*DROP|DROP|OIL\s*GRIT|OGS|RIP\s*RAP|O\.?P\.?|REPL\.?|EX\.?|PROP\.?)$/i;
+// Estimator note suffixes written after a hyphen/space/slash. `[OS]\.?P\.?` covers the two
+// platform notes in one branch — O.P./OP (open platform) and S.P./SP (safety platform); the
+// drop-manhole note appears as "/EXT.DROP", " - EXT DROP", "/DROP" and "/INT.DROP".
+const NOTE_SUFFIX_RE = /[-\s/]+(?:DH|(?:EXT|INT)\.?\s*DROP|DROP|OIL\s*GRIT|OGS|RIP\s*RAP|[OS]\.?P\.?|REPL\.?|EX\.?|PROP\.?)$/i;
 
 export function normalizeLabel(label: string): string {
   const pre = (label || '')
@@ -167,6 +170,31 @@ export function manholeFamilyKey(norm: string): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * End-of-pipe outlet structures. The drafter uses the structure code ("HS 4"), the estimator
+ * spells it out ("HEADWALL 4") or abbreviates it ("HW 4") — one physical headwall. OUTFALL is
+ * deliberately NOT a member: at one outlet the headwall (the concrete structure) and the
+ * outfall (the pipe end) can be separate takeoff rows, so a shared number is not evidence.
+ */
+const HEADWALL_FAMILY_RE = /^(?:HEADWALLS?|HW|HS)(\d+[A-Z]?)$/;
+
+/**
+ * Families whose member codes are interchangeable spellings of ONE physical structure when the
+ * numeric id is identical. The returned key is namespaced by family, so "HW 1" can never pair
+ * with "MH 1" just because both carry the number 1.
+ */
+const STRUCTURE_FAMILIES: [string, RegExp][] = [
+  ['MH', MANHOLE_FAMILY_RE],
+  ['HW', HEADWALL_FAMILY_RE],
+];
+export function structureFamilyKey(norm: string): string | null {
+  for (const [family, re] of STRUCTURE_FAMILIES) {
+    const m = re.exec(norm);
+    if (m) return `${family}:${m[1]}`;
+  }
+  return null;
+}
+
 // ---- domain aliases (phase 3) ----
 //
 // The drafter names a structure the way it is drawn; the estimator names it the way it is
@@ -183,7 +211,10 @@ const ALIAS_PHRASES: [RegExp, string][] = [
   [/\bMANHOLES?\b/g, 'MH'],
   [/\bDOG\s*HOUSE\b/g, 'DH'],
   [/\bDOGHOUSE\b/g, 'DH'],
+  [/\bHEAD\s*WALLS?\b/g, 'HW'],
   [/\bDIVERSION\b/g, 'DIV'],
+  // Must precede the bare CONTROL rule below, which would otherwise chew the middle word.
+  [/\bOUTLET\s*CONTROL\s*STRUCTURES?\b/g, 'OCS'],
   [/\bCONTROL\b/g, 'CTRL'],
   [/\bSAFETY\s*PLATFORM\b/g, 'SP'],
   [/\bOPEN\s*PLATFORM\b/g, 'OP'],
@@ -229,6 +260,16 @@ const OGS_FAMILIES: [RegExp, string][] = [
   [/\b(?:OIL[\s-]*GRIT[\s-]*SEPARATOR|OGS)(?=\d|\b)/, 'OGS'],
 ];
 
+// Storage/infiltration tanks. The estimator abbreviates ("INF.TANK"), the drawing spells it
+// out ("INFILTRATION TANK"); one unit. Kept in its own family namespace because a tank is not
+// interchangeable with a valve or water-meter chamber.
+const TANK_FAMILIES: [RegExp, string][] = [
+  [/\b(?:INFILTRATION|INF)[.\s-]*TANKS?\b/, 'INF'],
+];
+
+// "CHAMBER" and "VAULT" are the same enclosure spoken two ways — the estimator writes
+// "VALVE CHAMBER 1" where the drawing says "VALVE VAULT 1" — so both words open the same
+// family lookup below and the CH:* family they resolve to is what pairs them.
 const CHAMBER_WORD = /\b(?:CHAMBERS?|VAULTS?)\b/;
 const VAULT_WORD = /\bVAULTS?\b/;
 // Estimator chamber codes, as a whole normalized id: VC 300 (valve chamber), DC 150 /
@@ -267,6 +308,10 @@ export function structureTypology(label: string): StructureTypology | null {
 
   for (const [re, fam] of OGS_FAMILIES) {
     if (re.test(raw)) return { family: `OGS:${fam}`, designation: digitsOf(raw.replace(re, ' ')) };
+  }
+
+  for (const [re, fam] of TANK_FAMILIES) {
+    if (re.test(raw)) return { family: `TK:${fam}`, designation: digitsOf(raw.replace(re, ' ')) };
   }
 
   const code = CHAMBER_CODE.exec(norm);
@@ -346,9 +391,10 @@ function matchTypologies(
 /**
  * Structure matching:
  * Phase 1: strict normalized label equality (exact match).
- * Phase 2: manhole family prefix relaxation (e.g. "MH 5" <-> "CBMH 5", "CBMH 10" <-> "MH 10").
- * Only applies when both structure labels belong to the manhole family and share the exact same
- * numeric identifier, matching the common drafter vs estimator convention mismatch.
+ * Phase 2: structure family prefix relaxation — manholes ("MH 5" <-> "CBMH 5") and outlet
+ * headwalls ("HW 1" <-> "HEADWALL 1" <-> "HS 1"). Only applies when both labels belong to the
+ * SAME family and share the exact same numeric identifier, matching the common drafter vs
+ * estimator convention mismatch; family keys are namespaced so "HW 1" never pairs with "MH 1".
  * Phase 3a: qualifier-abbreviation equality ("DIVERSION MH 15" <-> "DIV.MH 15"), one pair per
  * key and only when that key is unambiguous (exactly one free row on each side).
  * Phase 3b: product/equipment typology (OGS units, chambers/vaults, doghouse MHs).
@@ -366,9 +412,9 @@ export function matchStructures(pred: StructureFact[], truth: StructureFact[]) {
   for (const t of truth) {
     if (usedTruth.has(t)) continue;
     const tn = normalizeLabel(t.description);
-    const tk = manholeFamilyKey(tn);
+    const tk = structureFamilyKey(tn);
     if (!tk) continue;
-    const p = pred.find((q) => !usedPred.has(q) && manholeFamilyKey(normalizeLabel(q.description)) === tk);
+    const p = pred.find((q) => !usedPred.has(q) && structureFamilyKey(normalizeLabel(q.description)) === tk);
     if (p) {
       usedPred.add(p);
       usedTruth.add(t);

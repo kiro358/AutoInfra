@@ -488,3 +488,121 @@ describe('compareFacts — detection F1 excludes vacuous entity kinds', () => {
     expect(c.detectionF1).toBeCloseTo(0.5);
   });
 });
+
+describe('structure matching — outfalls/headwalls, drop manholes, chamber & tank aliases', () => {
+  const struct = (description: string) => ({
+    description,
+    topElevation: null,
+    lowInvert: null,
+    highInvert: null,
+    pipeOutDiameter: null,
+    structureType: 'MANHOLE',
+    depth: null,
+  });
+  const structEntity = (pred: ReturnType<typeof facts>, truth: ReturnType<typeof facts>) =>
+    compareFacts(pred, truth).entities.find((e) => e.kind === 'structures')!;
+
+  // ---- (1) outfalls & headwalls ----
+  it('pairs HW n with HEADWALL n (same numeric id, one headwall family)', () => {
+    const pred = facts({ structures: [struct('HEADWALL 1')] });
+    const truth = facts({ structures: [struct('HW 1')] });
+    expect(structEntity(pred, truth).matched).toBe(1);
+  });
+  it('pairs the HS structure code with a spelled headwall of the same id', () => {
+    const pred = facts({ structures: [struct('HEADWALL 6')] });
+    const truth = facts({ structures: [struct('HS 6')] });
+    expect(structEntity(pred, truth).matched).toBe(1);
+  });
+  it('pairs HS n against a rip-rap-noted HS n', () => {
+    const pred = facts({ structures: [struct('HS 4')] });
+    const truth = facts({ structures: [struct('HS 4/RIP RAP')] });
+    expect(structEntity(pred, truth).matched).toBe(1);
+  });
+  it('pairs OCS n with the spelled OUTLET CONTROL STRUCTURE n', () => {
+    const pred = facts({ structures: [struct('OUTLET CONTROL STRUCTURE 1')] });
+    const truth = facts({ structures: [struct('OCS 1')] });
+    expect(structEntity(pred, truth).matched).toBe(1);
+  });
+  it('does NOT pair headwalls with different numeric ids', () => {
+    const pred = facts({ structures: [struct('HEADWALL 2')] });
+    const truth = facts({ structures: [struct('HW 1')] });
+    expect(structEntity(pred, truth).matched).toBe(0);
+  });
+  it('does NOT pair a headwall with a manhole of the same id (families stay distinct)', () => {
+    const pred = facts({ structures: [struct('MH 1')] });
+    const truth = facts({ structures: [struct('HW 1')] });
+    expect(structEntity(pred, truth).matched).toBe(0);
+  });
+  it('keeps headwall matching one-to-one across several units', () => {
+    const pred = facts({ structures: [struct('HEADWALL 2'), struct('HEADWALL 1')] });
+    const truth = facts({ structures: [struct('HW 1'), struct('HS 2')] });
+    expect(structEntity(pred, truth).matched).toBe(2);
+  });
+  it('never breaks a phase-1 exact headwall match to gain a family pair', () => {
+    const pred = facts({ structures: [struct('HW 1'), struct('HEADWALL 1')] });
+    const truth = facts({ structures: [struct('HW 1')] });
+    const e = structEntity(pred, truth);
+    expect(e.matched).toBe(1);
+    expect(e.predCount).toBe(2);
+  });
+
+  // ---- (2) drop manhole suffixes ----
+  it('strips drop/platform note suffixes from structure labels', () => {
+    expect(normalizeLabel('MH 8/EXT.DROP')).toBe('MH8');
+    expect(normalizeLabel('MH 8/EXT DROP')).toBe('MH8');
+    expect(normalizeLabel('MH 11 - EXT.DROP')).toBe('MH11');
+    expect(normalizeLabel('MH 9N / DROP')).toBe('MH9N');
+    expect(normalizeLabel('MH 5/S.P.')).toBe('MH5');
+    expect(normalizeLabel('MH 5 - S.P.')).toBe('MH5');
+    expect(normalizeLabel('MH 6 - O.P.')).toBe('MH6');
+  });
+  it('pairs a drop manhole with its bare or differently-noted prediction', () => {
+    const pred = facts({ structures: [struct('MH 8'), struct('MH 11'), struct('MH 9N'), struct('MH 8N/DROP')] });
+    const truth = facts({
+      structures: [struct('MH 8/EXT.DROP'), struct('MH 11/EXT.DROP'), struct('MH 9N / DROP'), struct('MH 8N / DROP')],
+    });
+    expect(structEntity(pred, truth).matched).toBe(4);
+  });
+  it('does NOT let a stripped drop suffix merge different manhole ids', () => {
+    const pred = facts({ structures: [struct('MH 9')] });
+    const truth = facts({ structures: [struct('MH 8/EXT.DROP')] });
+    expect(structEntity(pred, truth).matched).toBe(0);
+  });
+
+  // ---- (3) chambers, vaults and tanks ----
+  it('pairs VALVE CHAMBER n with VALVE VAULT n on the shared designation', () => {
+    const pred = facts({ structures: [struct('VALVE VAULT 2'), struct('VALVE VAULT 1')] });
+    const truth = facts({ structures: [struct('VALVE CHAMBER 1'), struct('VALVE CHAMBER 2')] });
+    expect(structEntity(pred, truth).matched).toBe(2);
+  });
+  it('pairs the abbreviated INF.TANK with the spelled INFILTRATION TANK', () => {
+    const pred = facts({ structures: [struct('INFILTRATION TANK')] });
+    const truth = facts({ structures: [struct('INF.TANK')] });
+    expect(structEntity(pred, truth).matched).toBe(1);
+  });
+  it('pairs numbered infiltration tanks on their designation', () => {
+    const pred = facts({ structures: [struct('INFILTRATION TANK 2'), struct('INFILTRATION TANK 1')] });
+    const truth = facts({ structures: [struct('INF.TANK 1'), struct('INF. TANK 2')] });
+    expect(structEntity(pred, truth).matched).toBe(2);
+  });
+  it('pairs a service vault reported identically on both sides', () => {
+    const pred = facts({ structures: [struct('SERVICE VAULT')] });
+    const truth = facts({ structures: [struct('SERVICE VAULT')] });
+    expect(structEntity(pred, truth).matched).toBe(1);
+  });
+  it('REFUSES to pair two numbered valve chambers with one generic prediction', () => {
+    const pred = facts({ structures: [struct('VALVE CHAMBER')] });
+    const truth = facts({ structures: [struct('VALVE CHAMBER 1'), struct('VALVE CHAMBER 2')] });
+    expect(structEntity(pred, truth).matched).toBe(0);
+  });
+  it('REFUSES to pair two numbered infiltration tanks with one generic prediction', () => {
+    const pred = facts({ structures: [struct('INFILTRATION TANK')] });
+    const truth = facts({ structures: [struct('INF.TANK 1'), struct('INF.TANK 2')] });
+    expect(structEntity(pred, truth).matched).toBe(0);
+  });
+  it('does NOT pair a valve chamber with an unrelated water meter chamber', () => {
+    const pred = facts({ structures: [struct('WATER METER CHAMBER 1')] });
+    const truth = facts({ structures: [struct('VALVE CHAMBER 1')] });
+    expect(structEntity(pred, truth).matched).toBe(0);
+  });
+});

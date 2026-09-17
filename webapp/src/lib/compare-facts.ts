@@ -161,7 +161,7 @@ function sewerAttrMatch(p: SewerFact, t: SewerFact): boolean {
 
 // ---- structure matching ----
 
-const MANHOLE_FAMILY_RE = /^(?:MH|CBMH|DCBMH|DICBMH|STMH|SANMH|STMCBMH|SANCBMH)(\d+[A-Z]?)$/;
+const MANHOLE_FAMILY_RE = /^(?:MH|CBMH|DCBMH|DICBMH|STMH|SANMH|STMCBMH|SANCBMH|SAN|STM|ST|SA)(\d+[A-Z]?)$/;
 export function manholeFamilyKey(norm: string): string | null {
   const m = MANHOLE_FAMILY_RE.exec(norm);
   return m ? m[1] : null;

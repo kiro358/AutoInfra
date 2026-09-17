@@ -408,6 +408,56 @@ export function dropImplausibleCatchbasinGroups(
   return { catchbasins: kept, dropped };
 }
 
+// A plain surface catchbasin ("CB 3", "DCB 101", "DICB 301", "DDICB 5") is NOT a
+// structure in the estimator's schema. It is counted in the grouped `catchbasins`
+// quantity block, by type — truth has ZERO surface catchbasins in `structures`
+// across the whole golden corpus. Extraction nonetheless emits them as structure
+// rows, where every one is an unmatched false positive and pure precision loss.
+//
+// The boundary that MUST hold: a catchbasin MANHOLE (CBMH / DCBMH / DICBMH) is a
+// real structure and belongs in `structures` — truth carries 120 of them. So the
+// filter is deliberately double-guarded: `(?!MH)` stops the id regex mid-token, and
+// MANHOLE_TOKEN rejects the whole description if a manhole id appears ANYWHERE in it
+// (a real "CBMH 5 C/W CB LEAD" must not be dropped because of its trailing CB lead).
+const MANHOLE_TOKEN = /MH(?![A-Z])/;
+// `(?:^|[^A-Z])` is a left boundary that cannot be satisfied inside DCBMH/DICBMH, so
+// the CB of a manhole id can never start a match. The number is optional: a bare "CB"
+// or "P. CB PER T-705.010" is still a surface catchbasin, not a structure.
+const SURFACE_CB_ID = /(?:^|[^A-Z])(?:DDICB|DICB|DCB|CB)(?!MH)\s*\.?\s*#?\s*(?:\d+[A-Z]?)?(?![A-Z0-9])/;
+
+/**
+ * True when a structure description names a plain surface catchbasin, which the
+ * estimator routes to the grouped `catchbasins` count block rather than `structures`.
+ *
+ * False for catchbasin manholes (CBMH/DCBMH/DICBMH) and every other structure type.
+ */
+export function isSurfaceCatchbasin(description: string): boolean {
+  const d = (description || '').toUpperCase();
+  if (!d.trim()) return false;
+  if (MANHOLE_TOKEN.test(d)) return false;
+  return SURFACE_CB_ID.test(d);
+}
+
+/**
+ * Route surface catchbasins out of `structures`. They are NOT discarded information:
+ * the reader saw them on the drawing, and the caller is told so in a warning, because
+ * removing them from `structures` without a corresponding entry in the `catchbasins`
+ * block can leave the catchbasin count understated. We do not invent a quantity to
+ * compensate — a number nobody read is not a number we get to supply.
+ */
+export function dropSurfaceCatchbasinStructures(structures: StructureFact[]): {
+  structures: StructureFact[];
+  dropped: string[];
+} {
+  const dropped: string[] = [];
+  const kept = structures.filter((s) => {
+    if (!isSurfaceCatchbasin(s.description)) return true;
+    dropped.push(s.description);
+    return false;
+  });
+  return { structures: kept, dropped };
+}
+
 export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
   // 1. structures: merge by normalized label
   const byLabel = new Map<string, StructureFact[]>();
@@ -452,6 +502,12 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
     mergeCatchbasinGroups(facts.catchbasins) as TakeoffFacts['catchbasins'],
     note.structures.length + keptSewers.filter((s) => !s.isLineItem).length
   );
+  // Surface catchbasins are re-ROUTED, not junk, so this runs AFTER the ceiling above.
+  // They are real parts of the drainage network and must still count toward the budget
+  // that decides whether a catchbasin quantity is plausible — shrinking that budget by
+  // the very rows the catchbasin block is meant to hold would push it toward dropping
+  // the legitimate counts.
+  const surfaceCb = dropSurfaceCatchbasinStructures(note.structures);
 
   const warnings = [...facts.warnings];
   if (nonStruct.dropped.length > 0) {
@@ -466,6 +522,15 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
         `${note.dropped.slice(0, 8).join(' | ')}${note.dropped.length > 8 ? ' | …' : ''}`
     );
   }
+  if (surfaceCb.dropped.length > 0) {
+    warnings.push(
+      `Moved ${surfaceCb.dropped.length} surface catchbasin(s) out of the structure list — the estimator ` +
+        `counts these in the grouped catchbasin block, not as structures: ` +
+        `${surfaceCb.dropped.slice(0, 8).join(' | ')}${surfaceCb.dropped.length > 8 ? ' | …' : ''}. ` +
+        `They were read off the drawing but NOT added to any catchbasin quantity, so the catchbasin ` +
+        `count may be understated by up to ${surfaceCb.dropped.length}. Verify it against the drawing.`
+    );
+  }
   for (const d of cb.dropped) {
     warnings.push(
       `Dropped catchbasin group ${d.type} qty ${d.quantity} — implausible against a drainage network of ` +
@@ -476,7 +541,7 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
 
   return {
     ...facts,
-    structures: note.structures,
+    structures: surfaceCb.structures,
     sewers: keptSewers,
     // 3. catchbasins: merge duplicate label groups by type (see mergeCatchbasinGroups)
     catchbasins: cb.catchbasins,

@@ -6,6 +6,8 @@ import {
   isNonStructureFeature,
   dropNonStructureFeatures,
   dropImplausibleCatchbasinGroups,
+  isSurfaceCatchbasin,
+  dropSurfaceCatchbasinStructures,
 } from './reconcile';
 import { TakeoffFacts, SewerFact, StructureFact, WatermainFact } from './types';
 
@@ -575,5 +577,133 @@ describe('stitchSewerRuns — multi-tile deduplication', () => {
     const r = reconcileTakeoff(facts);
     expect(r.sewers).toHaveLength(2);
     expect(r.sewers.every((s) => s.isLineItem)).toBe(true);
+  });
+});
+
+describe('isSurfaceCatchbasin — surface catchbasins vs catchbasin MANHOLES', () => {
+  // THE boundary that matters. A CBMH/DCBMH/DICBMH is a real structure (truth carries
+  // 120 of them); a plain CB/DCB/DICB/DDICB belongs in the grouped catchbasin count
+  // block. Misclassifying the manhole family would destroy 120 real structure matches,
+  // so these cases are asserted explicitly and exhaustively.
+  const MANHOLES = [
+    'CBMH 1', 'CBMH 2', 'CBMH 110', 'CBMH11', 'CBMH 107A',
+    'DCBMH 5', 'DCBMH 1N', 'DCBMH', 'DCBMH 144',
+    'DICBMH 3', 'DDICBMH 2',
+    'CBMH33 (OGS3-EF04)', 'EX. CBMH 4',
+  ];
+  it.each(MANHOLES)('keeps catchbasin manhole %s as a structure', (d) => {
+    expect(isSurfaceCatchbasin(d)).toBe(false);
+  });
+
+  // A real manhole row that merely MENTIONS a catchbasin lead must survive: the
+  // manhole guard is checked against the whole description, not just its first token.
+  it.each([
+    'CBMH 5 C/W CB LEAD',
+    'CBMH 12 AND CB 3',
+    'MH 4 / CB 2 LEAD',
+  ])('keeps %s — a manhole id anywhere in the description wins', (d) => {
+    expect(isSurfaceCatchbasin(d)).toBe(false);
+  });
+
+  const SURFACE = [
+    'CB 3', 'CB 6', 'CB 7', 'CB 9', 'CB 4', 'CB 2', 'CB 110',
+    'DCB 101', 'DCB 102', 'DCB 103', 'DCB 5',
+    'DICB 301', 'DDICB 5',
+    'BIOSWALE INLET STRUCTURE (CB6)',   // descriptive variant, id in parentheses
+    'DBL/CB 5',                          // double catchbasin, slash-delimited
+    'P. DCB2 PER T-705.020',             // standard-drawing reference
+    'P. CB PER T-705.010',               // same, unnumbered
+    'CB',                                // bare token
+    'EX. CB 4',
+  ];
+  it.each(SURFACE)('routes surface catchbasin %s out of structures', (d) => {
+    expect(isSurfaceCatchbasin(d)).toBe(true);
+  });
+
+  const OTHER_STRUCTURES = [
+    'MH 1', 'STMH 10', 'SAMH 3',
+    'JELLYFISH UNIT', 'C100 CHAMBER', 'HEADWALL 1', 'VALVE CHAMBER 1',
+    'OGS 1', 'HS 2', 'OUTLET STRUCTURE', 'STORMTRAP DETENTION SYSTEM',
+  ];
+  it.each(OTHER_STRUCTURES)('leaves unrelated structure %s alone', (d) => {
+    expect(isSurfaceCatchbasin(d)).toBe(false);
+  });
+
+  it('ignores blank and whitespace-only descriptions', () => {
+    expect(isSurfaceCatchbasin('')).toBe(false);
+    expect(isSurfaceCatchbasin('   ')).toBe(false);
+    expect(isSurfaceCatchbasin(undefined as unknown as string)).toBe(false);
+  });
+
+  it('is case-insensitive in both directions', () => {
+    expect(isSurfaceCatchbasin('cb 3')).toBe(true);
+    expect(isSurfaceCatchbasin('cbmh 3')).toBe(false);
+  });
+
+  it('does not match a CB-prefixed token that is neither id nor manhole', () => {
+    expect(isSurfaceCatchbasin('CBX 4')).toBe(false);
+  });
+});
+
+describe('dropSurfaceCatchbasinStructures', () => {
+  it('splits surface catchbasins from real structures and reports what it moved', () => {
+    const r = dropSurfaceCatchbasinStructures([
+      struct({ description: 'CBMH 1' }),
+      struct({ description: 'CB 3' }),
+      struct({ description: 'DICB 301' }),
+      struct({ description: 'MH 7' }),
+      struct({ description: 'DCBMH 5' }),
+    ]);
+    expect(r.structures.map((s) => s.description)).toEqual(['CBMH 1', 'MH 7', 'DCBMH 5']);
+    expect(r.dropped).toEqual(['CB 3', 'DICB 301']);
+  });
+
+  it('is a no-op when nothing is a surface catchbasin', () => {
+    const input = [struct({ description: 'CBMH 1' }), struct({ description: 'MH 2' })];
+    const r = dropSurfaceCatchbasinStructures(input);
+    expect(r.structures).toHaveLength(2);
+    expect(r.dropped).toEqual([]);
+  });
+});
+
+describe('reconcileTakeoff — surface catchbasin routing', () => {
+  it('removes surface catchbasins from structures and warns that the count may be understated', () => {
+    const r = reconcileTakeoff(emptyFacts({
+      structures: [
+        struct({ description: 'CBMH 1' }),
+        struct({ description: 'CB 3' }),
+        struct({ description: 'BIOSWALE INLET STRUCTURE (CB6)' }),
+      ],
+    }));
+    expect(r.structures.map((s) => s.description)).toEqual(['CBMH 1']);
+    const w = r.warnings.find((x) => x.includes('surface catchbasin'));
+    expect(w).toBeDefined();
+    // Integrity: the rows were read, so the warning must say the count can be short
+    // and must name the rows rather than silently swallowing them.
+    expect(w).toContain('understated by up to 2');
+    expect(w).toContain('CB 3');
+  });
+
+  it('does not warn when there are no surface catchbasins', () => {
+    const r = reconcileTakeoff(emptyFacts({ structures: [struct({ description: 'CBMH 1' })] }));
+    expect(r.warnings.some((x) => x.includes('surface catchbasin'))).toBe(false);
+  });
+
+  // ORDERING GUARD: the catchbasin plausibility ceiling is measured against the
+  // drainage network. Surface catchbasins are part of that network, so removing them
+  // from `structures` must NOT shrink the budget — otherwise the filter would help
+  // delete the very catchbasin quantities it is routing work toward.
+  it('keeps surface catchbasins inside the network size used by the catchbasin ceiling', () => {
+    const structures = Array.from({ length: 10 }, (_, i) => struct({ description: `CB ${i + 1}` }));
+    const r = reconcileTakeoff(emptyFacts({
+      structures,
+      catchbasins: [{ type: 'SINGLE_CB', quantity: 10, wallThickness: null, depth: null }],
+    }));
+    expect(r.structures).toHaveLength(0);
+    // 10 network rows -> ceiling comfortably admits 10; the group must survive.
+    expect(r.catchbasins).toEqual([
+      { type: 'SINGLE_CB', quantity: 10, wallThickness: null, depth: null },
+    ]);
+    expect(r.warnings.some((x) => x.includes('implausible'))).toBe(false);
   });
 });

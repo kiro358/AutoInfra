@@ -146,7 +146,22 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
   const warnings: string[] = [];
 
   for (const tile of transcripts) {
-    for (const block of tile.blocks) {
+    // Tile-level sanity: filter out synthetic incrementing repeating sequences
+    // (e.g. tile transcribing 80 repeating CB lines with identical T/G & inverts)
+    const seenElevCount = new Map<string, number>();
+    const validBlocks = tile.blocks.filter((block) => {
+      const text = Array.isArray(block) ? block.join(' ') : String(block);
+      const m = text.match(/T\/?G\s*=\s*\d+\.\d+.*INV\s*=\s*\d+\.\d+/i);
+      if (m) {
+        const key = m[0].replace(/\s+/g, '');
+        const count = seenElevCount.get(key) || 0;
+        if (count >= 4) return false; // Synthetic repetition loop in tile
+        seenElevCount.set(key, count + 1);
+      }
+      return true;
+    });
+
+    for (const block of validBlocks) {
       const joined = joinBlockLines(block);
 
       // Step 4: schedule-table rows (contain " | ") are split on the delimiter

@@ -31,8 +31,8 @@ export interface ParsedElevation { type: 'TG' | 'INV'; direction: string | null;
 export interface ParsedWatermain { diameterMm: number; lengthM: number | null; material: string | null; existing: boolean; }
 
 const EX_RE = /(^|\s)EX\.?(\s|$)/i;
-// length + diameter core: "83.7m-375mmØ", "7.2m - 250mmØ", "45.0m - 250mm"
-const LEN_DIA_RE = /(\d+(?:\.\d+)?)\s*m\b\s*(?:-|–|of)?\s*(\d{2,4})\s*mm/i;
+// length + diameter core: "83.7m-375mmØ", "7.2m - 250mmØ", "45.0m - 250mm", "19.2m-250#", "10.5m-300Ø", "30.0m - 375 DIA"
+const LEN_DIA_RE = /(\d+(?:\.\d+)?)\s*m\b\s*(?:-|–|of)?\s*(\d{2,4})\s*(?:mm|#|Ø|DIA|DIAM)?(?:\b|[^a-zA-Z0-9])/i;
 const SLOPE_RE = /@\s*(\d+(?:\.\d+)?)\s*(%|‰)?/;
 const MATERIAL_RE = /\b(PVC|HDPE|CONC|CSP|(?:S?DR)\s*(\d{1,3}))\b/i;
 const WM_RE = /\b(WATERMAIN|WM)\b/i;

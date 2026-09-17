@@ -87,6 +87,36 @@ NEVER emit a bare "JELLYFISH UNIT", "STORM TANK", "INFILTRATION PIT" or "DETENTI
 model code is printed beside it. EACH distinct unit is its OWN row — a sheet showing JF4-1-1,
 JF6-3-1 and JF3-1-1 is THREE rows, not one.
 
+### OUTFALLS & HEADWALLS — COMMONLY MISSED, ALWAYS EXTRACT
+Every storm system ENDS at a discharge point, and that end structure is its own structure row.
+Look for stormwater outlet structures at discharge points / pond limits: HEADWALLs (HW 1, HEADWALL 1), Outlet Structures (HS 1, OS 1), Outlet Control Structures (OCS 1), and Flared End Sections.
+They get missed because they sit at the EDGE of the drawing — against a SWM pond, ditch, swale,
+creek bank or property line — and are drawn as a wall / wedge / trapezoid or a bare pipe end
+rather than the circle you look for when sweeping for manholes. Before you close the structure
+list, sweep the site perimeter and the pond/ditch limits specifically.
+- ONE row per outlet structure, using the EXACT printed label: "HW 1", "HW 2", "HS 1", "OS 1",
+  "OCS 1", "FLARED END SECTION", "FES 1". If only a generic note is printed, copy it verbatim.
+- Record whatever is printed on it: topElevation, lowInvert / highInvert, and the outlet pipe
+  size in pipeOutDiameter. Use null for anything not shown — do not compute or guess.
+- The pipe reaching it is a normal sewer run: label it to the outlet, e.g. "MH 8-HW 1" or
+  "CBMH 3-OCS 1" — NOT "-CONN.", which is only for ties into EXISTING structures.
+- Do NOT emit the pond, the rip-rap / stone erosion apron, or the outlet's energy dissipator
+  as separate structures. Only the outlet structure itself is a row.
+
+### SPECIAL FEATURE MANHOLES — RECORD THE FEATURE, KEEP THE LABEL
+Some manholes carry a construction feature the estimator builds differently. When the drawing
+shows one, KEEP the structure's normal label and record the feature in "description" (as a
+suffix) or in "structureType". Never drop the feature, and never split it into a second row.
+- DROP: an external/internal drop connection ("EXT DROP", "EXT. DROP", "INT DROP", "DROP MH"),
+  or inverts at one manhole that differ by more than 1 m — write "MH 5/EXT DROP".
+- DOGHOUSE: the manhole is built OVER an existing pipe ("DOGHOUSE MH", "DH", "D/H") — write
+  "MH 12/DH".
+- CONTROL / DIVERSION: the manhole holds a weir, orifice plate, flow control or diversion wall
+  ("CTRL MH", "CONTROL MH", "DIV MH", "c/w ORIFICE", "c/w WEIR") — write "CTRL MH 3" or
+  "DIV MH 2", and put the orifice/weir note in structureType when one is printed.
+Still ONE row per physical structure: a feature note is an ATTRIBUTE of a manhole, not another
+manhole, and it never justifies inventing a label you did not read.
+
 ## CATCHBASINS ("catchbasins.groups")
 Counted by type (SINGLE_CB, DOUBLE_CB, DITCH_INLET_CB, DOUBLE_DITCH_INLET_CB): quantity, wallThickness (in, or null), depth (m, or null).
 

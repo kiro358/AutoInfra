@@ -10,18 +10,68 @@ import { mergeCatchbasinGroups } from './extraction';
 
 const nonNullCount = (o: object) => Object.values(o).filter((v) => v !== null && v !== '').length;
 
+// Construction features the estimator builds differently: a drop connection, a
+// doghouse built over an existing pipe, an internal weir/orifice control, or a
+// discharge outlet. They reach us as a note ON the label ("MH 5/EXT DROP") or in
+// structureType — and normalizeLabel deliberately STRIPS those notes when grouping,
+// so the plain reading of the same manhole from a neighbouring tile lands in the
+// same group as the annotated one. That makes this merge the only place the feature
+// can survive: without it, whichever tile happens to sort first silently decides
+// whether the drop/doghouse/control note is kept or deleted.
+const SPECIAL_FEATURE =
+  /\b(?:(?:EXT|INT)\.?\s*DROP|DROP|DOGHOUSE|D\/?H|DIV(?:ERSION)?|CTRL|CONTROL|WEIR|ORIFICE|HEADWALL|OUTFALL|OUTLET|FLARED\s*END)\b/i;
+
+// '' is as empty as null here. A tile that read a structure's label but not its type
+// emits "" for structureType, which is NOT null and so used to block every later
+// tile's real value from ever filling the field.
+const isBlank = (v: unknown): boolean => v == null || (typeof v === 'string' && v.trim() === '');
+
+/** How much a structureType string tells the estimator. A feature note outranks any length. */
+const descriptiveness = (v: string): number => (SPECIAL_FEATURE.test(v) ? 1e6 : 0) + v.trim().length;
+
 function mergeStructureGroup(group: StructureFact[]): StructureFact {
   const out = { ...group[0] };
+
+  // Promote a description only to rescue a special-feature note the first reading
+  // lacks — never merely because another reading is longer, which would churn labels
+  // ("MH 1" -> "STMH 1") against the house convention for no information gained.
+  //
+  // Candidates are screened by the junk filters because those run AFTER this merge:
+  // promoting a spec note into the description would make the whole merged row — a
+  // REAL structure — get dropped as a note.
+  if (!SPECIAL_FEATURE.test(out.description || '')) {
+    const annotated = group.find(
+      (s) =>
+        SPECIAL_FEATURE.test(s.description || '') &&
+        !isSpecNoteDescription(s.description) &&
+        !isNonStructureFeature(s.description)
+    );
+    if (annotated) out.description = annotated.description;
+  }
+
   for (const s of group.slice(1)) {
+    // Fill every field the earlier readings left blank. Order is significance order:
+    // the first row wins any field both read, which is what keeps mergeTakeoffs'
+    // "primary wins" contract true for the exact text-layer path.
     for (const k of ['topElevation', 'lowInvert', 'highInvert', 'pipeOutDiameter', 'structureType', 'depth'] as const) {
-      if (out[k] == null && s[k] != null) (out as any)[k] = s[k];
+      if (isBlank(out[k]) && !isBlank(s[k])) (out as any)[k] = s[k];
+    }
+    // structureType is the one field where later beats earlier, because the readings
+    // are not competing values but different amounts of the same one: "DROP MH 1200Ø"
+    // and "MH" are both correct, and the fuller string is strictly more useful.
+    if (!isBlank(s.structureType) && descriptiveness(s.structureType!) > descriptiveness(out.structureType ?? '')) {
+      out.structureType = s.structureType;
     }
   }
   return out;
 }
 
-const ENDPOINT_TOKEN = /^(?:EX)?(?:DDICB|DCBMH|CBMH|DICB|DCB|CB|MH|HS|OS|JF|EF|ST|SA)\d|^CONN$/;
-const STRUCTURE_TOKEN = /^(?:EX)?(?:DDICB|DCBMH|CBMH|DICB|DCB|CB|MH|HS|OS|JF|EF|ST|SA)\d/;
+// HW (headwall), OCS (outlet control structure) and FES (flared end section) are the
+// terminal structures of a storm system. A run that discharges to one ("MH 8-HW 1") is
+// a normal two-endpoint run, but without these tokens it read as having only ONE
+// endpoint and so was excluded from endpoint-aware stitching and dedupe.
+const ENDPOINT_TOKEN = /^(?:EX)?(?:DDICB|DCBMH|CBMH|DICB|DCB|CB|MH|OCS|HS|HW|OS|FES|JF|EF|ST|SA)\d|^CONN$/;
+const STRUCTURE_TOKEN = /^(?:EX)?(?:DDICB|DCBMH|CBMH|DICB|DCB|CB|MH|OCS|HS|HW|OS|FES|JF|EF|ST|SA)\d/;
 const LABEL_PARTS = /^([A-Z]+)0*(\d+)([A-Z]*)$/;
 
 function normalizeEndpointToken(t: string): string {
@@ -348,7 +398,8 @@ const DIRECTIVE_PHRASE =
 // A real structure id somewhere in the text (code + number). Only relaxes the
 // prose-LENGTH test — an imperative or directive is a note regardless, because
 // "CORE 150mmØ PVC SAN INTO EX. SAN. MH.38A" names a manhole but is still an instruction.
-const HAS_STRUCTURE_ID = /\b(?:EX\.?\s*)?(?:DDICB|DICBMH|DCBMH|CBMH|DICB|DCB|CB|MH|HS|OS|JF|EF|TD|AD|STMH)\s*\.?\s*\d/i;
+const HAS_STRUCTURE_ID =
+  /\b(?:EX\.?\s*)?(?:DDICB|DICBMH|DCBMH|CBMH|DICB|DCB|CB|MH|OCS|HS|HW|OS|FES|JF|EF|TD|AD|STMH)\s*\.?\s*\d/i;
 /** Word count at which a description stops reading as a name and starts reading as prose. */
 const PROSE_WORDS = 7;
 

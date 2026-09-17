@@ -53,6 +53,49 @@ describe('modular-prompts', () => {
       expect(prompt).toContain('THREE rows, not one');
     });
 
+    it('names the outfall / headwall families vision reads past', () => {
+      const prompt = getSinglePassPrompt('Test Project', '');
+      expect(prompt).toContain('OUTFALLS & HEADWALLS');
+      // The label families themselves — a family the prompt never names is a family
+      // the model never sweeps for.
+      expect(prompt).toContain(
+        'Look for stormwater outlet structures at discharge points / pond limits: HEADWALLs (HW 1, HEADWALL 1), Outlet Structures (HS 1, OS 1), Outlet Control Structures (OCS 1), and Flared End Sections.'
+      );
+      // Why they are missed: they are drawn as perimeter linework, not as circles.
+      expect(prompt).toMatch(/wall \/ wedge \/ trapezoid|bare pipe end/);
+      expect(prompt).toContain('sweep the site perimeter');
+      // The run reaching an outlet is a real two-endpoint run, not a "-CONN." tie-in.
+      expect(prompt).toContain('MH 8-HW 1');
+      expect(prompt).toContain('NOT "-CONN."');
+      // Precision guard: the apron/pond around an outlet must not become extra rows.
+      expect(prompt).toMatch(/rip-rap/i);
+    });
+
+    it('asks for special manhole features without licensing extra rows', () => {
+      const prompt = getSinglePassPrompt('Test Project', '');
+      expect(prompt).toContain('SPECIAL FEATURE MANHOLES');
+      expect(prompt).toContain('EXT DROP');
+      expect(prompt).toContain('DOGHOUSE');
+      expect(prompt).toContain('CTRL MH');
+      expect(prompt).toContain('DIV MH');
+      // The >1m invert difference is the cue that a drop exists when nothing is labelled.
+      expect(prompt).toContain('differ by more than 1 m');
+      // The feature rides on the existing label; it is never a second structure.
+      expect(prompt).toContain('MH 5/EXT DROP');
+      expect(prompt).toContain('ONE row per physical structure');
+      expect(prompt).toContain('never split it into a second row');
+    });
+
+    it('keeps the new structure guidance free of pricing language', () => {
+      const prompt = getSinglePassPrompt('Test Project', '');
+      const section = prompt.slice(
+        prompt.indexOf('### OUTFALLS & HEADWALLS'),
+        prompt.indexOf('## CATCHBASINS'),
+      );
+      expect(section.length).toBeGreaterThan(0);
+      expect(section).not.toMatch(/\$|\bunit (?:price|rate|cost)\b|\bsupply cost\b/i);
+    });
+
     it('keeps the anti-repetition and stopping-criteria guards intact', () => {
       const prompt = getSinglePassPrompt('Test Project', '');
       expect(prompt).toContain('STOPPING CRITERIA');

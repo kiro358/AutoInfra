@@ -8,6 +8,7 @@ import {
   dropImplausibleCatchbasinGroups,
   isSurfaceCatchbasin,
   dropSurfaceCatchbasinStructures,
+  getEndpointSignature,
 } from './reconcile';
 import { TakeoffFacts, SewerFact, StructureFact, WatermainFact } from './types';
 
@@ -54,6 +55,99 @@ describe('reconcileTakeoff', () => {
     expect(mh1.lowInvert).toBe(221.4);
   });
 
+  // normalizeLabel strips the "/EXT DROP" note when grouping, so the annotated read and
+  // the plain read of the SAME manhole land in one group. The feature has to survive that
+  // merge or the tile ordering decides whether a drop connection gets built.
+  it('keeps a special-feature note when another tile read the bare label', () => {
+    for (const order of [0, 1]) {
+      const rows = [
+        struct({ description: 'MH 5/EXT DROP', topElevation: 240.1 }),
+        struct({ description: 'MH 5', lowInvert: 236.4 }),
+      ];
+      const r = reconcileTakeoff(emptyFacts({ structures: order ? rows.slice().reverse() : rows }));
+      expect(r.structures).toHaveLength(1);
+      expect(r.structures[0].description).toBe('MH 5/EXT DROP');
+      // and it is still a merge: both tiles' readings are on the surviving row
+      expect(r.structures[0].topElevation).toBe(240.1);
+      expect(r.structures[0].lowInvert).toBe(236.4);
+    }
+  });
+
+  it('keeps doghouse and control/diversion notes too', () => {
+    const r = reconcileTakeoff(
+      emptyFacts({
+        structures: [
+          struct({ description: 'MH 12' }),
+          struct({ description: 'MH 12/DH' }),
+          struct({ description: 'MH 3' }),
+          struct({ description: 'CTRL MH 3' }),
+        ],
+      })
+    );
+    expect(r.structures.map((s) => s.description).sort()).toEqual(['CTRL MH 3', 'MH 12/DH']);
+  });
+
+  // A tile that read the label but not the type emits "" — not null — which used to
+  // block every later tile's real value from ever landing in the field.
+  it('treats an empty-string structureType as missing, not as an answer', () => {
+    const r = reconcileTakeoff(
+      emptyFacts({
+        structures: [
+          struct({ description: 'MH 1', structureType: '  ' }),
+          struct({ description: 'MH 1', structureType: '1200Ø' }),
+        ],
+      })
+    );
+    expect(r.structures[0].structureType).toBe('1200Ø');
+  });
+
+  it('keeps the most descriptive structureType regardless of tile order', () => {
+    for (const order of [0, 1]) {
+      const rows = [
+        struct({ description: 'MH 7', structureType: 'MH' }),
+        struct({ description: 'MH 7', structureType: 'DROP MH 1200Ø' }),
+      ];
+      const r = reconcileTakeoff(emptyFacts({ structures: order ? rows.slice().reverse() : rows }));
+      expect(r.structures[0].structureType).toBe('DROP MH 1200Ø');
+    }
+  });
+
+  // Regression guard: only structureType is allowed to lose to a later row. Numeric
+  // conflicts must still resolve first-wins, which is what makes mergeTakeoffs' exact
+  // text-layer "primary wins" contract true.
+  it('still resolves conflicting elevations in favour of the first reading', () => {
+    const r = reconcileTakeoff(
+      emptyFacts({
+        structures: [
+          struct({ description: 'MH 2', topElevation: 100, lowInvert: 97, highInvert: 98, depth: 3, pipeOutDiameter: 300 }),
+          struct({ description: 'MH 2', topElevation: 999, lowInvert: 1, highInvert: 999, depth: 99, pipeOutDiameter: 1200 }),
+        ],
+      })
+    );
+    expect(r.structures[0]).toMatchObject({
+      topElevation: 100, lowInvert: 97, highInvert: 98, depth: 3, pipeOutDiameter: 300,
+    });
+  });
+
+  // Outfalls are the terminal structure of a storm system; the junk filters must not
+  // mistake them for headings, notes, or surface catchbasins.
+  it('keeps outfall / headwall / outlet structures', () => {
+    const r = reconcileTakeoff(
+      emptyFacts({
+        structures: [
+          struct({ description: 'HW 1', lowInvert: 219.8 }),
+          struct({ description: 'OCS 1', topElevation: 222.4 }),
+          struct({ description: 'HS 2' }),
+          struct({ description: 'FLARED END SECTION' }),
+          struct({ description: 'MH 1' }),
+        ],
+      })
+    );
+    expect(r.structures.map((s) => s.description).sort()).toEqual([
+      'FLARED END SECTION', 'HS 2', 'HW 1', 'MH 1', 'OCS 1',
+    ]);
+  });
+
   it('is idempotent', () => {
     const facts = emptyFacts({ sewers: [run({ runLabel: 'MH 1-MH 2', length: 10, pipeDiameter: 200 })] });
     expect(reconcileTakeoff(reconcileTakeoff(facts))).toEqual(reconcileTakeoff(facts));
@@ -65,6 +159,51 @@ describe('reconcileTakeoff', () => {
       catchbasins: [{ type: 'SINGLE_CB', quantity: 249, wallThickness: null, depth: null }],
     });
     expect(reconcileTakeoff(reconcileTakeoff(facts))).toEqual(reconcileTakeoff(facts));
+  });
+
+  it('is still idempotent with promoted feature notes and outfalls', () => {
+    const facts = emptyFacts({
+      structures: [
+        struct({ description: 'MH 5', structureType: 'MH' }),
+        struct({ description: 'MH 5/EXT DROP', structureType: 'DROP MH 1200Ø' }),
+        struct({ description: 'HW 1' }),
+      ],
+      sewers: [run({ runLabel: 'MH 5-HW 1', length: 14.2, pipeDiameter: 600 })],
+    });
+    expect(reconcileTakeoff(reconcileTakeoff(facts))).toEqual(reconcileTakeoff(facts));
+  });
+});
+
+describe('outfall endpoints in run labels', () => {
+  // Without HW/OCS/FES tokens a discharge run read as having only ONE endpoint, so it
+  // was excluded from endpoint-aware stitching and dedupe.
+  it('recognizes headwall and outlet-control endpoints', () => {
+    expect(getEndpointSignature('MH 8-HW 1')).toBe('HW1|MH8');
+    expect(getEndpointSignature('CBMH 3-OCS 1')).toBe('CBMH3|OCS1');
+    expect(getEndpointSignature('MH 2-FES 1')).toBe('FES1|MH2');
+  });
+
+  it('treats the outfall run as the same run read from either direction', () => {
+    expect(getEndpointSignature('HW 1-MH 8')).toBe(getEndpointSignature('MH 8-HW 1'));
+  });
+
+  it('dedupes a discharge run read from two overlapping tiles', () => {
+    const r = reconcileTakeoff(
+      emptyFacts({
+        sewers: [
+          run({ runLabel: 'MH 8-HW 1', length: 22.5, pipeDiameter: 600, slope: 0.5 }),
+          run({ runLabel: 'HW 1-MH 8', length: 22.5, pipeDiameter: 600 }),
+          run({ runLabel: 'MH 8-HW 2', length: 18.0, pipeDiameter: 450 }), // distinct outfall
+        ],
+      })
+    );
+    expect(r.sewers).toHaveLength(2);
+  });
+
+  it('does not treat an outfall id in a long note as a structure row', () => {
+    // HAS_STRUCTURE_ID only relaxes the prose-LENGTH test; an imperative is still a note.
+    expect(isSpecNoteDescription('CONNECT NEW 600mm STM TO EXISTING HW 1 AT POND')).toBe(true);
+    expect(isSpecNoteDescription('HW 1')).toBe(false);
   });
 });
 

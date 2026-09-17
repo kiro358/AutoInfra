@@ -74,6 +74,19 @@ IMPORTANT: Do NOT invent synthetic sequence numbers (e.g. MH 100, MH 101, MH 102
 - description (exact label; drop ST/STM/SAN prefixes: STMH 1 -> MH 1), topElevation, lowInvert, highInvert,
   pipeOutDiameter (mm), structureType, depth (m, if stated). Use null where not shown.
 
+### PROPRIETARY STORMWATER UNITS & CHAMBERS — KEEP THE MODEL DESIGNATION
+Treatment units (OGS / oil-grit separators, filters) and chamber systems are priced by MODEL code,
+not by brand. Copy the designation EXACTLY as printed — a bare brand or generic noun is unusable.
+- "PROPOSED JELLYFISH JF4-1-1 UNIT c/w OFFLINE" -> "JF 4-1-1"   NOT "JELLYFISH UNIT"
+- "HATCH JF2000 (JF6-3-1)" -> "JF 6-3-1"  — when a vault code AND a model code are both printed,
+  keep the PARENTHESISED model code.
+- "CULTEC C100HD CHAMBERS" -> "CULTEC C100HD"   NOT "STORM CHAMBERS"
+- "ADS STORMTECH MC-3500 CHAMBER" -> "MC-3500"; "STORMCEPTOR STC 4000" -> "STC 4000".
+  Other designations seen: SC-740, HF 4 (Hydrofilter), DCVC-200, DCVC-250.
+NEVER emit a bare "JELLYFISH UNIT", "STORM TANK", "INFILTRATION PIT" or "DETENTION TANK" when a
+model code is printed beside it. EACH distinct unit is its OWN row — a sheet showing JF4-1-1,
+JF6-3-1 and JF3-1-1 is THREE rows, not one.
+
 ## CATCHBASINS ("catchbasins.groups")
 Counted by type (SINGLE_CB, DOUBLE_CB, DITCH_INLET_CB, DOUBLE_DITCH_INLET_CB): quantity, wallThickness (in, or null), depth (m, or null).
 
@@ -225,6 +238,9 @@ Transcribe these annotation kinds (skip title blocks, legends, general notes, di
 - Structure labels: e.g. "STMH 1", "EX CBMH1035 (1200Ø)", "CB 10", "DCBMH 2"
 - Elevations: e.g. "T/G=224.95", "N INV=223.350"
 - Watermain callouts: e.g. "150mmØ PVC WM", "EX. 300 mmØ PVC WATERMAIN"
+- Proprietary stormwater unit / chamber callouts, INCLUDING the model designation and any
+  parenthesised code: e.g. "PROPOSED JELLYFISH JF4-1-1 UNIT c/w OFFLINE", "HATCH JF2000 (JF6-3-1)",
+  "CULTEC C100HD CHAMBER ROW", "ADS STORMTECH MC-3500 CHAMBER", "STC 4000", "DCVC-200"
 - Schedule-table rows (pipe/MH schedules): transcribe each row as one line, cells separated by " | "
 
 GROUPING: a "block" is the small cluster of lines that visually belong to ONE thing on the drawing — a structure label together with its T/G and INV lines, or one pipe callout (including its second line when the text wraps). Keep blocks separate; do not merge neighbouring structures.

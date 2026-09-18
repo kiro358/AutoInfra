@@ -590,3 +590,52 @@ describe('parseWatermainCallout — mainlines, services and leads', () => {
     expect(parseWatermainCallout('STORMWATER MANAGEMENT POND 300mm')).toBeNull();
   });
 });
+
+describe('parseRunCallout — leading length with the "m" unit omitted', () => {
+  // Drafters routinely drop the unit off the leading length: "44.1 - 200mmØ PVC ...".
+  // This shape dominates White Oak Woodbine, where it is ~690 of the unparsed lines.
+  it('parses a unit-less leading length when the diameter carries a unit', () => {
+    expect(parseRunCallout('44.1 - 200# PVC CL. 65.0 STM @ 0.30%')).toMatchObject({
+      length: 44.1, diameterMm: 200, system: 'STORM', material: 'PVC', slopePct: 0.3,
+    });
+    expect(parseRunCallout('75.0 - 750mm HDPE STM')).toMatchObject({
+      length: 75.0, diameterMm: 750, system: 'STORM', material: 'HDPE',
+    });
+  });
+
+  it('still requires a pipe signal, so aggregate specs are not runs', () => {
+    // "75-200mm CLEAR" is clear-stone bedding, not a 200mm pipe 75m long.
+    expect(parseRunCallout('75-200mm CLEAR')).toBeNull();
+    expect(parseRunCallout('19-50mm CRUSHED STONE')).toBeNull();
+  });
+
+  it('requires an explicit diameter unit, so a bare number pair is not a run', () => {
+    // Without this guard a job number reads as a 2026m run of 50mm pipe.
+    expect(parseRunCallout('2026 - 050 STM')).toBeNull();
+    expect(parseRunCallout('2026 - 050 STM @ 0.5%')).toBeNull();
+  });
+
+  it('does not change how a length WITH its unit is read', () => {
+    expect(parseRunCallout('83.7m-375mmØ SAN @ 0.02%')).toMatchObject({ length: 83.7, diameterMm: 375 });
+  });
+});
+
+describe('EX. prefix butted against the length (no space)', () => {
+  // "EX.110.0 - 450Ø ..." — the period runs straight into the digit, so the existing-marker
+  // regex must not demand whitespace after it. Mis-flagging these prices existing pipe as new.
+  it('marks a run existing when EX. abuts the length', () => {
+    expect(parseRunCallout('EX.110.0 - 450Ø CONC STM @ 1.25%')).toMatchObject({ existing: true });
+    expect(parseRunCallout('EX.61.0 - 200Ø PVC SAN @ 1.00%')).toMatchObject({ existing: true });
+    expect(parseRunCallout('EX.9.0-675Ø CONC')).toMatchObject({ existing: true });
+  });
+
+  it('still marks the spaced forms existing', () => {
+    expect(parseRunCallout('EX. 110.0 - 450Ø CONC STM @ 1.25%')).toMatchObject({ existing: true });
+    expect(parseRunCallout('EX 83.7m-375mmØ SAN @ 0.02%')).toMatchObject({ existing: true });
+  });
+
+  it('does not treat a proposed run as existing', () => {
+    expect(parseRunCallout('83.7m-375mmØ SAN @ 0.02%')).toMatchObject({ existing: false });
+    expect(parseRunCallout('44.1 - 200# PVC CL. 65.0 STM @ 0.30%')).toMatchObject({ existing: false });
+  });
+});

@@ -55,7 +55,11 @@ export interface ParsedWatermain {
 }
 
 // "EX", "EX.", "EXIST", "EXISTING" all mark an existing (not-to-be-built) feature.
-const EX_RE = /(^|\s)EX(?:IST(?:ING)?)?\.?(\s|$)/i;
+// The period may butt straight against the length ("EX.110.0 - 450Ø CONC STM"), so a digit
+// is accepted after it as well as whitespace — but ONLY after a period, so that "EX9" stays
+// unmatched. The trailing test is a lookahead: every caller uses .test(), nothing reads the
+// consumed group, and not consuming keeps "EX." adjacent to the number the parsers want.
+const EX_RE = /(^|\s)EX(?:IST(?:ING)?)?(?:\.(?=\d)|\.?(?=\s|$))/i;
 // length + diameter core: "83.7m-375mmØ", "7.2m - 250mmØ", "45.0m - 250mm", "19.2m-250#",
 // "10.5m-300Ø", "30.0m - 375 DIA", "50m of 200mm" (the "of" form is why `of` is an alternative
 // to the dash — the length and diameter stay tightly adjacent either way).
@@ -77,6 +81,13 @@ const WM_RE = /\b(?:WATERMAIN|WATER\s+MAIN|WM|W\/M)\b|\b(?:DOMESTIC|FIRE)\s+(?:W
 const SUBDRAIN_RE = /\bSUB[\s-]?DRAIN\b/i;
 // Shared pattern: diameter in millimetres (used by both watermain and subdrain parsers)
 const DIA_MM_RE = /(\d{2,4})\s*mm/i;
+
+// Leading length with the "m" unit dropped: "44.1 - 200# PVC CL. 65.0 STM @ 0.30%".
+// Nothing marks the first number as a length here, so this form is deliberately the
+// narrowest of the three: the two figures must be separated by a dash, the diameter must
+// carry an explicit unit, and the line must corroborate a pipe. Drop any one of those and
+// a job number ("2026 - 050 STM") or an aggregate spec ("75-200mm CLEAR") reads as a run.
+const LEN_DIA_NO_UNIT_RE = /(\d+(?:\.\d+)?)\s*(?:-|–)\s*(\d{2,4})\s*(?:mm|#|Ø|DIAM|DIA)/i;
 
 // --- diameter-first run forms -------------------------------------------------------------
 // "450mm PVC @ 0.5% (25.0m)", "300mm CONC CL III (12.5m)", "PVC 250mm STM @ 0.5% (40.0m)".
@@ -135,6 +146,11 @@ function buildRun(line: string, length: number, rawDiameter: number): ParsedRun 
   };
 }
 
+/** Does the line say "pipe" by any means other than its figures? */
+function corroboratesPipe(line: string): boolean {
+  return SLOPE_RE.test(line) || MATERIAL_RE.test(line) || CLASS_RE.test(line) || SYSTEM_RE.test(line);
+}
+
 export function parseRunCallout(line: string): ParsedRun | null {
   if (WM_RE.test(line)) return null; // watermain callouts share the mm form
   if (SUBDRAIN_RE.test(line)) return null; // subdrains share the mm form but are handled separately
@@ -149,15 +165,20 @@ export function parseRunCallout(line: string): ParsedRun | null {
   // states a length AND carries at least one corroborating pipe signal (slope, material,
   // strength class, or a system tag). Without that guard a structure callout such as
   // "CBMH 1 (1200Ø)" would be misread as a 1200mm pipe run.
+  // Form 1b: as Form 1 but with the "m" unit missing from the length. Requires the
+  // corroboration Form 1 gets for free from that unit (see LEN_DIA_NO_UNIT_RE).
+  const loose = LEN_DIA_NO_UNIT_RE.exec(line);
+  if (loose && corroboratesPipe(line)) {
+    return buildRun(line, parseFloat(loose[1]), parseInt(loose[2], 10));
+  }
+
   const dia = DIA_UNIT_RE.exec(line);
   if (!dia) return null;
   const parenLen = PAREN_LEN_RE.exec(line);
   const bareLen = parenLen ? null : BARE_LEN_RE.exec(line);
   const lengthText = parenLen ? parenLen[1] : bareLen ? bareLen[1] : null;
   if (lengthText === null) return null;
-  const corroborated = SLOPE_RE.test(line) || MATERIAL_RE.test(line) || CLASS_RE.test(line)
-    || SYSTEM_RE.test(line);
-  if (!corroborated) return null;
+  if (!corroboratesPipe(line)) return null;
   return buildRun(line, parseFloat(lengthText), parseInt(dia[1], 10));
 }
 

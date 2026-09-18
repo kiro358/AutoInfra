@@ -11,7 +11,7 @@
  */
 import {
   parseRunCallout, parseStructureLabel, parseElevation, parseWatermainCallout,
-  isDanglingRunHead, isRunContinuation, ParsedStructure,
+  isDanglingRunHead, isRunContinuation, ParsedStructure, ParsedRun,
 } from './callout-parser';
 import { reconcileTakeoff } from './reconcile';
 import { normalizeLabel } from './compare-facts';
@@ -34,21 +34,66 @@ interface Sink {
   watermain: WatermainFact[];
 }
 
-// Step 1: within a block, join a dangling run head with the very next line if
-// it's a continuation. Blocks carry the visual grouping already, so — unlike
-// text-takeoff's cross-page nearest-neighbour search — adjacency in the array
-// is enough.
+/**
+ * How many visual lines one wrapped callout may span. Crowded drawings wrap over
+ * three ("15.5m - 450mm" / "PVC STM" / "@ 0.30%"); beyond that a "join" is far more
+ * likely to be eating the next annotation than finishing this one.
+ */
+const MAX_WRAPPED_LINES = 3;
+/**
+ * Does folding one more continuation line in actually tell us something new? This is what
+ * stops a greedy join at the end of its callout instead of swallowing the NEXT pipe's tail:
+ * a second "@ 0.50%" adds no field the first one did not, because every parser regex is
+ * first-match-wins.
+ */
+function addsDetail(before: ParsedRun, after: ParsedRun): boolean {
+  return (before.slopePct === null && after.slopePct !== null)
+    || (before.material === null && after.material !== null)
+    || (before.typeClass === null && after.typeClass !== null)
+    || (before.system === 'UNKNOWN' && after.system !== 'UNKNOWN')
+    || (!before.insulated && after.insulated === true);
+}
+// Step 1: within a block, join a dangling run head with the continuation lines that
+// follow it. Blocks carry the visual grouping already, so — unlike text-takeoff's
+// cross-page nearest-neighbour search — adjacency in the array is enough.
+//
+// The join is greedy but only ever COMMITTED at a point where the merged text parses as a
+// run, and only while each extra line adds a field (see addsDetail). A head whose
+// continuations never produce a parseable run is left untouched, line by line, rather than
+// emitted as a merged string the grammar cannot read.
 function joinBlockLines(block: string[]): string[] {
   const lines: string[] = [];
   for (let i = 0; i < block.length; i++) {
-    const line = block[i];
-    const next = block[i + 1];
-    if (isDanglingRunHead(line) && next !== undefined && isRunContinuation(next)) {
-      lines.push(`${line} ${next}`);
-      i++; // consume the continuation line
-      continue;
+    const head = block[i];
+    if (isDanglingRunHead(head)) {
+      let accumulated = head;
+      let accumulatedRun = parseRunCallout(accumulated);
+      let bestIndex = -1;
+      let bestText = '';
+      for (let j = i + 1; j < block.length && j - i < MAX_WRAPPED_LINES; j++) {
+        if (!isRunContinuation(block[j])) break;
+        const candidate = `${accumulated} ${block[j]}`;
+        const candidateRun = parseRunCallout(candidate);
+        if (candidateRun === null) {
+          // Merging must never destroy a parse we already had; but a diameter-first head
+          // ("300mm PVC STM") does not parse until its length arrives, so keep building.
+          if (accumulatedRun !== null) break;
+          accumulated = candidate;
+          continue;
+        }
+        if (accumulatedRun !== null && !addsDetail(accumulatedRun, candidateRun)) break;
+        accumulated = candidate;
+        accumulatedRun = candidateRun;
+        bestIndex = j;
+        bestText = accumulated;
+      }
+      if (bestIndex !== -1) {
+        lines.push(bestText);
+        i = bestIndex; // consume every line folded into the callout
+        continue;
+      }
     }
-    lines.push(line);
+    lines.push(head);
   }
   return lines;
 }

@@ -48,6 +48,55 @@ describe('dangling run heads (callout split across two text lines)', () => {
     expect(r.length).toBe(87.4);
     expect(r.typeClass).toBe(35);
   });
+
+  it('detects the diameter-first head of a wrapped callout', () => {
+    expect(isDanglingRunHead('300mm PVC STM')).toBe(true);
+    expect(isDanglingRunHead('250mmØ PVC SAN')).toBe(true);
+    expect(isDanglingRunHead('525mm CONC STM')).toBe(true);
+    expect(isDanglingRunHead('300mm CL III')).toBe(true);
+  });
+  it('does not treat a complete or non-pipe line as a diameter-first head', () => {
+    // already whole — slope and length both on the line
+    expect(isDanglingRunHead('450mm PVC @ 0.5% (25.0m)')).toBe(false);
+    // structure callouts state a diameter too
+    expect(isDanglingRunHead('EX CBMH1035 (1200Ø)')).toBe(false);
+    expect(isDanglingRunHead('STMH 1')).toBe(false);
+    // a size with no pipe signal at all
+    expect(isDanglingRunHead('1200mm')).toBe(false);
+    // other systems own their grammar
+    expect(isDanglingRunHead('EX. 300 mmØ PVC WATERMAIN')).toBe(false);
+    expect(isDanglingRunHead('150mm PVC SUBDRAIN')).toBe(false);
+  });
+  it('detects slope/length tails that follow a diameter-first head', () => {
+    expect(isRunContinuation('@ 1.00% (25.0m)')).toBe(true);
+    expect(isRunContinuation('@ 0.50% - 45.0m')).toBe(true);
+    expect(isRunContinuation('@ 0.30%')).toBe(true);
+    expect(isRunContinuation('PVC STM')).toBe(true);
+    expect(isRunContinuation('STM')).toBe(true);
+    expect(isRunContinuation('INSULATED')).toBe(true);
+    expect(isRunContinuation('(25.0m)')).toBe(true);
+  });
+  it('never treats a structure, elevation or whole run as a tail', () => {
+    expect(isRunContinuation('SAN MH 5')).toBe(false);
+    expect(isRunContinuation('T/G=224.95')).toBe(false);
+    expect(isRunContinuation('45.0m - 250mm PVC STM @ 0.5%')).toBe(false);
+    expect(isRunContinuation('EX. 300 mmØ PVC WATERMAIN')).toBe(false);
+    expect(isRunContinuation('DRAWN BY: ML')).toBe(false);
+  });
+  it('parses the two- and three-line wrapped forms once joined', () => {
+    expect(parseRunCallout('300mm PVC STM @ 1.00% (25.0m)')).toMatchObject({
+      length: 25.0, diameterMm: 300, system: 'STORM', material: 'PVC', slopePct: 1.0,
+    });
+    expect(parseRunCallout('250mmØ PVC SAN @ 0.50% - 45.0m')).toMatchObject({
+      length: 45.0, diameterMm: 250, system: 'SAN', material: 'PVC', slopePct: 0.5,
+    });
+    expect(parseRunCallout('8.4m - 300mm PVC STM @ 1.00% INSULATED')).toMatchObject({
+      length: 8.4, diameterMm: 300, system: 'STORM', material: 'PVC', slopePct: 1.0, insulated: true,
+    });
+    expect(parseRunCallout('15.5m - 450mm PVC STM @ 0.30%')).toMatchObject({
+      length: 15.5, diameterMm: 450, system: 'STORM', material: 'PVC', slopePct: 0.3,
+    });
+  });
 });
 
 describe('parseStructureLabel', () => {

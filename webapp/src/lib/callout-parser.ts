@@ -88,6 +88,13 @@ const PAREN_LEN_RE = /\(\s*(\d+(?:\.\d+)?)\s*m\s*\)/i;
 // A bare length token. The (?!m) guard is what stops "450mm" being read as "450m" + "m".
 const BARE_LEN_RE = /(?:^|[\s(\-–])(\d+(?:\.\d+)?)\s*m\b(?!m)/i;
 
+// System tag. Shared by the run parser's corroboration test and the wrapped-callout
+// predicates below, so "is this line talking about a sewer" is decided in one place.
+const SYSTEM_RE = /\b(SAN|SANITARY|STM|STORM)\b/i;
+// The length half of a wrapped callout on a line of its own: "(25.0m)", "- 45.0m", "45.0m".
+// Anchored to the WHOLE line — a bare figure is far too common on a drawing to vacuum into
+// the preceding callout unless it is literally all the line says.
+const LENGTH_ONLY_RE = /^[\s(\-–]*\d+(?:\.\d+)?\s*m\s*\)?[.,]?$/i;
 // Standalone DR/SDR probe. MATERIAL_RE returns only its FIRST match, so on the very common
 // "250mm PVC DR35" the material is PVC and the DR rating never reaches group 2 — this finds
 // the rating wherever it sits on the line.
@@ -149,20 +156,63 @@ export function parseRunCallout(line: string): ParsedRun | null {
   const lengthText = parenLen ? parenLen[1] : bareLen ? bareLen[1] : null;
   if (lengthText === null) return null;
   const corroborated = SLOPE_RE.test(line) || MATERIAL_RE.test(line) || CLASS_RE.test(line)
-    || /\b(SAN|SANITARY|STM|STORM)\b/i.test(line);
+    || SYSTEM_RE.test(line);
   if (!corroborated) return null;
   return buildRun(line, parseFloat(lengthText), parseInt(dia[1], 10));
 }
 
-export function isDanglingRunHead(line: string): boolean {
-  return LEN_DIA_RE.test(line) && !SLOPE_RE.test(line) && !MATERIAL_RE.test(line) && !WM_RE.test(line);
+/**
+ * The diameter-first head of a wrapped callout: "300mm PVC STM", "250mmØ PVC SAN",
+ * "525mm CONC STM" — a size and a pipe signal, with the slope and/or the length still to
+ * come on the next visual line.
+ *
+ * Nothing anchors the diameter here (that is the whole point — the length is on the other
+ * line), so the test is deliberately narrow: the line must corroborate "pipe" with a
+ * material, strength class or system tag; must state neither a slope nor a length (with
+ * either it is a whole callout, not a head); and must not parse as a structure, because
+ * "CBMH 1 (1200Ø)" states a diameter too.
+ */
+function isDiameterFirstHead(line: string): boolean {
+  if (SUBDRAIN_RE.test(line)) return false; // priced separately; never folded into a run
+  if (!DIA_UNIT_RE.test(line)) return false;
+  if (SLOPE_RE.test(line)) return false;
+  if (PAREN_LEN_RE.test(line) || BARE_LEN_RE.test(line)) return false;
+  if (parseStructureLabel(line) !== null) return false;
+  return MATERIAL_RE.test(line) || CLASS_RE.test(line) || SYSTEM_RE.test(line);
 }
+/**
+ * Head half of a callout the drafter wrapped across visual lines. Two shapes occur:
+ *   a) length-first   — "45.0m - 250mmØ", the tail carrying the material/slope;
+ *   b) diameter-first — "300mm PVC STM", the tail carrying the slope and/or the length.
+ */
+export function isDanglingRunHead(line: string): boolean {
+  if (WM_RE.test(line)) return false;
+  if (LEN_DIA_RE.test(line)) return !SLOPE_RE.test(line) && !MATERIAL_RE.test(line);
+  return isDiameterFirstHead(line);
+}
+/**
+ * Tail half of a wrapped callout: the material/slope tail ("DR 35 @ 0.05%", "PVC STM"), the
+ * slope/length tail that follows a diameter-first head ("@ 1.00% (25.0m)", "@ 0.50% - 45.0m",
+ * "@ 0.30%"), or the bare qualifier drafters drop onto a third line ("INSULATED"). Callers
+ * join greedily, so one tail may be followed by another.
+ */
 export function isRunContinuation(line: string): boolean {
+  if (WM_RE.test(line)) return false;
   // A line that already parses as a complete run on its own is never a continuation of the
   // previous one — the diameter-first forms carry a slope/material and would otherwise be
   // vacuumed into the preceding dangling head.
-  return !LEN_DIA_RE.test(line) && (SLOPE_RE.test(line) || MATERIAL_RE.test(line)) && !WM_RE.test(line)
-    && parseElevation(line) === null && parseRunCallout(line) === null;
+  if (LEN_DIA_RE.test(line)) return false;
+  if (parseRunCallout(line) !== null) return false;
+  if (parseElevation(line) !== null) return false;
+  // A slope or a material is strong enough evidence of a pipe tail to stand on its own,
+  // and has been since this predicate existed — "...@ 0.5% TO MH 5" is a tail that happens
+  // to name a structure, and refusing it strands the head.
+  if (SLOPE_RE.test(line) || MATERIAL_RE.test(line)) return true;
+  // The weaker signals below (a bare system tag, a lone length, "INSULATED") match far too
+  // much to be trusted against a line that is really a structure of its own.
+  if (parseStructureLabel(line) !== null) return false;
+  return CLASS_RE.test(line) || SYSTEM_RE.test(line) || INSULATED_RE.test(line)
+    || LENGTH_ONLY_RE.test(line.trim());
 }
 
 // Longest-first so CBMH wins over CB, DCBMH over DCB, etc. STMH/SANMH normalize to MH

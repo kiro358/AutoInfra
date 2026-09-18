@@ -15,7 +15,7 @@ import { getSinglePassPrompt, getPageLocatorPrompt, getTranscriptionPrompt, getW
 import { renderTilesFlat, renderPageThumbnails, IMAGE_MIME } from './rasterize';
 import { normalizeLabel, runSignature } from './compare-facts';
 import { assembleTranscriptTakeoff } from './transcript-takeoff';
-import { mergeTakeoffs, dropSpecNoteStructures, dropImplausibleCatchbasinGroups } from './reconcile';
+import { mergeTakeoffs, dropSpecNoteStructures, dropImplausibleCatchbasinGroups, reconcileTakeoff } from './reconcile';
 import { extractPageText, isTextyPage } from './pdf-text';
 import { verifyStructureProvenance } from './provenance';
 import { assembleTextTakeoff } from './text-takeoff';
@@ -749,6 +749,9 @@ export async function extractFromPDF(
           ])).sort((a, b) => a - b)
         : [];
 
+      const BATCH_TILES = Number(process.env.BATCH_TILES) || 16;
+      const BATCH_CONCURRENCY = Number(process.env.BATCH_CONCURRENCY) || 3;
+
       // EXTRACTION_MODE: defaults to 'hybrid' (text-layer for TrueType pages, vision
       // transcribe + deterministic grammar for raster/SHX pages). Setting
       // EXTRACTION_MODE=single-pass restores the legacy monolithic vision path.
@@ -866,8 +869,6 @@ export async function extractFromPDF(
       // A single call over many tiles times out / truncates its JSON above ~32
       // tiles, so split into batches of <=BATCH_TILES and merge the parsed facts.
       // Batches are independent, so run up to BATCH_CONCURRENCY of them at once.
-      const BATCH_TILES = Number(process.env.BATCH_TILES) || 16;
-      const BATCH_CONCURRENCY = Number(process.env.BATCH_CONCURRENCY) || 3;
       const tileBatches: any[][] = [];
       for (let i = 0; i < tileParts.length; i += BATCH_TILES) tileBatches.push(tileParts.slice(i, i + BATCH_TILES));
       if (tileBatches.length === 0) tileBatches.push([]); // no tiles -> PDF fallback below

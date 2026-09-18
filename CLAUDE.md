@@ -180,13 +180,17 @@ that would be a global change justified by two projects, and it must be validate
 other 14 with `GOLDEN_REPEATS=3` before being accepted. Note `BATCH_TILES=6` raises LLM calls
 per project (24 tiles → 4 calls instead of 2), so it trades cost for completeness.
 
-**White Oak Woodbine is a distinct, unsolved failure — not truncation.** Raising the ceiling
-made it *worse*: at `MAX_OUTPUT_TOKENS=65536` it emitted **229k output tokens across 4 calls**
-(~57k each, pinned to the ceiling) and still parsed to zero entities. Generating 229k tokens
-for a 2-page drawing is pathological — it looks like a repetition/runaway loop, not a drawing
-the model cannot read. Smaller batches alone (`BATCH_TILES=6`, default ceiling) yielded 3
-entities against 89 in truth. Next diagnostic should capture the raw response text and
-`finishReason` rather than tuning budgets further.
+**White Oak Woodbine — SOLVED 2026-09-18: a repetition loop, not truncation, not grammar.**
+The repetition hypothesis was right. Its cached transcript is **2 tiles / 2,522 lines, of which
+the single callout `30.0 - 200# PVC CL. 65.0 STM @ 0.30%` repeats 685 times** — dedup leaves
+**3 distinct runs and 300 structures against 89 truth entities**, so precision collapses and
+F1 rounds to 0. This also explains the 229k output tokens across 4 calls for a 2-page drawing.
+
+Consequence: **no parser or prompt change can fix it.** Making all 687 of those lines parse
+moved the score 0.0% → 0.0%. It needs a fresh transcription plus a repetition guard (capture
+`finishReason`; abort a tile whose transcript repeats one line more than ~20x). Until then it
+is effectively unscoreable — consider a `truth-manifest.json` `exclude` so it stops dragging
+the corpus mean, and do not spend grammar effort on it.
 
 Run the eval on stable infra: local works for a small filtered set (streaming rides the
 laptop's flaky network), but the full set belongs on the throwaway GCP VM using **Vertex**

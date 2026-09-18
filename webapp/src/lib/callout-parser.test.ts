@@ -187,3 +187,357 @@ describe('grammar coverage (Phase 0)', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------------------
+// Grammar expansion: the common Ontario municipal callout variants that the original
+// grammar did not cover. Each block below mirrors one drawing convention, so a failure
+// here names the exact syntax that regressed.
+// ---------------------------------------------------------------------------------------
+
+describe('parseRunCallout — diameter-first forms with a trailing length', () => {
+  it('parses "<dia> <material> @ <slope> (<length>)"', () => {
+    expect(parseRunCallout('450mm PVC @ 0.5% (25.0m)')).toEqual({
+      length: 25, diameterMm: 450, system: 'UNKNOWN', material: 'PVC', typeClass: null,
+      slopePct: 0.5, existing: false,
+    });
+    expect(parseRunCallout('250mm PVC @ 1.0% (45m)')).toEqual({
+      length: 45, diameterMm: 250, system: 'UNKNOWN', material: 'PVC', typeClass: null,
+      slopePct: 1.0, existing: false,
+    });
+  });
+
+  it('parses a concrete class run with no slope stated', () => {
+    expect(parseRunCallout('300mm CONC CL III (12.5m)')).toEqual({
+      length: 12.5, diameterMm: 300, system: 'UNKNOWN', material: 'CONC', typeClass: 3,
+      slopePct: null, existing: false,
+    });
+  });
+
+  it('accepts a bare (unparenthesised) trailing length', () => {
+    const r = parseRunCallout('450mm PVC STM @ 0.5% 25.0m')!;
+    expect(r.length).toBe(25);
+    expect(r.diameterMm).toBe(450);
+    expect(r.system).toBe('STORM');
+  });
+
+  it('carries EX through the diameter-first path', () => {
+    expect(parseRunCallout('EX. 300mm CONC STM @ 1.0% (40.0m)')!.existing).toBe(true);
+  });
+
+  it('refuses a diameter-first line with no length at all', () => {
+    // Without a length there is nothing to price — emitting length 0 here would invent a run.
+    expect(parseRunCallout('450mm PVC')).toBeNull();
+    expect(parseRunCallout('450mm PVC @ 0.5%')).toBeNull();
+  });
+
+  it('refuses a diameter-first line with no corroborating pipe signal', () => {
+    // A bare size + distance with no slope, material, class or system tag is not a run.
+    expect(parseRunCallout('1200mm CLEARANCE (3.0m)')).toBeNull();
+  });
+
+  it('does not read a structure barrel diameter as a pipe run', () => {
+    // Regression guard for the diameter-first path: "(1200Ø)" is the manhole barrel.
+    expect(parseRunCallout('EX CBMH1035 (1200Ø)')).toBeNull();
+    expect(parseRunCallout('STMH 1 (1200Ø)')).toBeNull();
+  });
+});
+
+describe('parseRunCallout — material written ahead of the diameter', () => {
+  it('parses "<material> <dia> <system> @ <slope> (<length>)"', () => {
+    expect(parseRunCallout('PVC 250mm STM @ 0.5% (40.0m)')).toEqual({
+      length: 40, diameterMm: 250, system: 'STORM', material: 'PVC', typeClass: null,
+      slopePct: 0.5, existing: false,
+    });
+  });
+
+  it('parses the concrete variant with no system tag', () => {
+    expect(parseRunCallout('CONC 375mm @ 1.2% (15m)')).toEqual({
+      length: 15, diameterMm: 375, system: 'UNKNOWN', material: 'CONC', typeClass: null,
+      slopePct: 1.2, existing: false,
+    });
+  });
+});
+
+describe('parseRunCallout — length stated with "of"', () => {
+  it('parses "<length>m of <dia> <material> <system>"', () => {
+    expect(parseRunCallout('50m of 200mm PVC SAN')).toEqual({
+      length: 50, diameterMm: 200, system: 'SAN', material: 'PVC', typeClass: null,
+      slopePct: null, existing: false,
+    });
+    expect(parseRunCallout('25m of 300mm STM')).toEqual({
+      length: 25, diameterMm: 300, system: 'STORM', material: null, typeClass: null,
+      slopePct: null, existing: false,
+    });
+  });
+});
+
+describe('parseRunCallout — type/class designations', () => {
+  it('parses DR / SDR ratings with or without a separator', () => {
+    expect(parseRunCallout('45.0m - 250mm DR35 @ 0.5%')!.typeClass).toBe(35);
+    expect(parseRunCallout('45.0m - 250mm DR-28 @ 0.5%')!.typeClass).toBe(28);
+    expect(parseRunCallout('45.0m - 250mm DR 28 @ 0.5%')!.typeClass).toBe(28);
+    expect(parseRunCallout('45.0m - 250mm SDR35 @ 0.5%')!.typeClass).toBe(35);
+  });
+
+  it('keeps the DR rating when a pipe material is also named', () => {
+    // "PVC DR35" is the common spelling: PVC is the material, 35 the class. Before the
+    // standalone DR probe the first material match (PVC) hid the rating entirely.
+    const r = parseRunCallout('45.0m - 250mm PVC DR35 SAN @ 0.5%')!;
+    expect(r.material).toBe('PVC');
+    expect(r.typeClass).toBe(35);
+  });
+
+  it('parses roman concrete strength classes', () => {
+    expect(parseRunCallout('12.0m - 600mm CONC CL III @ 1.0%')!.typeClass).toBe(3);
+    expect(parseRunCallout('12.0m - 600mm CONC CL IV @ 1.0%')!.typeClass).toBe(4);
+    expect(parseRunCallout('12.0m - 600mm CONC CLASS 5 @ 1.0%')!.typeClass).toBe(5);
+  });
+
+  it('does not read a centreline station as a pipe class', () => {
+    // "CL 100+00" is a chainage note; the arabic class form is capped at two digits.
+    expect(parseRunCallout('12.0m - 600mm CONC @ 1.0% ALONG CL 100+00')!.typeClass).toBeNull();
+  });
+
+  it('recognises RCP as a material', () => {
+    expect(parseRunCallout('12.0m - 600mm RCP STM @ 1.0%')!.material).toBe('RCP');
+  });
+});
+
+describe('parseRunCallout — insulation', () => {
+  it('flags the insulated spellings', () => {
+    expect(parseRunCallout('30.0m - 200mmØ SAN @ 1.0% INS')!.insulated).toBe(true);
+    expect(parseRunCallout('30.0m - 200mmØ SAN @ 1.0% INS.')!.insulated).toBe(true);
+    expect(parseRunCallout('30.0m - 200mmØ SAN @ 1.0% P.INS')!.insulated).toBe(true);
+    expect(parseRunCallout('30.0m - 200mmØ SAN @ 1.0% POLY INS')!.insulated).toBe(true);
+    expect(parseRunCallout('30.0m - 200mmØ SAN @ 1.0% INSULATED')!.insulated).toBe(true);
+    expect(parseRunCallout('30.0m - 200mmØ SAN @ 1.0% C/W INSULATION')!.insulated).toBe(true);
+  });
+
+  it('leaves the flag unset on an ordinary run', () => {
+    expect(parseRunCallout('30.0m - 200mmØ SAN @ 1.0%')!.insulated).toBeUndefined();
+  });
+
+  it('does not fire on words that merely start with INS', () => {
+    expect(parseRunCallout('30.0m - 200mmØ SAN @ 1.0% INSPECTION PORT')!.insulated).toBeUndefined();
+  });
+});
+
+describe('parseStructureLabel — spelled-out structure names', () => {
+  it('parses multi-word vault and chamber names', () => {
+    expect(parseStructureLabel('DOUBLE CHECK VALVE VAULT')).toEqual({
+      label: 'DOUBLE CHECK VALVE VAULT', kind: 'VAULT', diameterMm: null, existing: false,
+    });
+    expect(parseStructureLabel('SERVICE VAULT')).toEqual({
+      label: 'SERVICE VAULT', kind: 'VAULT', diameterMm: null, existing: false,
+    });
+    expect(parseStructureLabel('VALVE CHAMBER 1')).toEqual({
+      label: 'VALVE CHAMBER 1', kind: 'CHAMBER', diameterMm: null, existing: false,
+    });
+  });
+
+  it('parses hyphenated spellings', () => {
+    expect(parseStructureLabel('DOUBLE-CHECK VALVE VAULT')!.label).toBe('DOUBLE CHECK VALVE VAULT');
+    expect(parseStructureLabel('HEAD-WALL 2')!.kind).toBe('HW');
+  });
+
+  it('parses tanks and flared end sections', () => {
+    expect(parseStructureLabel('INFILTRATION TANK')).toEqual({
+      label: 'INFILTRATION TANK', kind: 'TANK', diameterMm: null, existing: false,
+    });
+    expect(parseStructureLabel('FLARED END SECTION')).toEqual({
+      label: 'FLARED END SECTION', kind: 'FES', diameterMm: null, existing: false,
+    });
+    expect(parseStructureLabel('OUTLET CONTROL STRUCTURE 1')).toEqual({
+      label: 'OUTLET CONTROL STRUCTURE 1', kind: 'OCS', diameterMm: null, existing: false,
+    });
+  });
+
+  it('carries the existing/proposed prefix', () => {
+    expect(parseStructureLabel('EX. FLARED END SECTION')!.existing).toBe(true);
+    expect(parseStructureLabel('EXISTING SERVICE VAULT')!.existing).toBe(true);
+    expect(parseStructureLabel('PROPOSED INFILTRATION TANK 3')).toEqual({
+      label: 'INFILTRATION TANK 3', kind: 'TANK', diameterMm: null, existing: false,
+    });
+  });
+
+  it('picks up a leading or parenthesised barrel diameter', () => {
+    expect(parseStructureLabel('1200Ø VALVE CHAMBER 1')!.diameterMm).toBe(1200);
+    expect(parseStructureLabel('DOUBLE CHECK VALVE VAULT (1500Ø)')!.diameterMm).toBe(1500);
+  });
+
+  it('will not turn a note or legend row into a structure', () => {
+    // The spelled-out patterns are anchored to the whole line precisely so that prose
+    // mentioning a structure type does not fabricate one (see CLAUDE.md on fabrication).
+    expect(parseStructureLabel('FLARED END SECTION DETAIL')).toBeNull();
+    expect(parseStructureLabel('SEE INFILTRATION TANK NOTES ON DWG 5')).toBeNull();
+    expect(parseStructureLabel('CONNECT TO EXISTING SERVICE VAULT AT PROPERTY LINE')).toBeNull();
+  });
+});
+
+describe('parseStructureLabel — abbreviated headwall / outlet codes', () => {
+  it('parses the short codes with ids', () => {
+    expect(parseStructureLabel('HW 1')).toEqual({ label: 'HW 1', kind: 'HW', diameterMm: null, existing: false });
+    expect(parseStructureLabel('OCS 1')).toEqual({ label: 'OCS 1', kind: 'OCS', diameterMm: null, existing: false });
+    expect(parseStructureLabel('FES 2')).toEqual({ label: 'FES 2', kind: 'FES', diameterMm: null, existing: false });
+  });
+
+  it('parses the written-out headwall to the same kind', () => {
+    const hw = parseStructureLabel('HEADWALL 2')!;
+    expect(hw.kind).toBe('HW');
+    expect(hw.label).toBe('HEADWALL 2');
+  });
+
+  it('does not match a code without an id', () => {
+    expect(parseStructureLabel('HW')).toBeNull();
+    expect(parseStructureLabel('OCS')).toBeNull();
+  });
+
+  it('does not mistake HWL (high water level) for a headwall', () => {
+    expect(parseStructureLabel('HWL 250.00')).toBeNull();
+  });
+});
+
+describe('parseStructureLabel — SWM chamber model designations', () => {
+  it('parses the hyphenated and spaced model codes', () => {
+    expect(parseStructureLabel('MC-3500')).toEqual({ label: 'MC-3500', kind: 'CHAMBER', diameterMm: null, existing: false });
+    expect(parseStructureLabel('SC-740')).toEqual({ label: 'SC-740', kind: 'CHAMBER', diameterMm: null, existing: false });
+    expect(parseStructureLabel('STC 4000')).toEqual({ label: 'STC 4000', kind: 'CHAMBER', diameterMm: null, existing: false });
+    expect(parseStructureLabel('DCVC-200')).toEqual({ label: 'DCVC-200', kind: 'CHAMBER', diameterMm: null, existing: false });
+  });
+
+  it('parses the heavy-duty C-series code, whose HD suffix is unambiguous', () => {
+    expect(parseStructureLabel('C100HD')!.label).toBe('C100HD');
+    expect(parseStructureLabel('C100HD')!.kind).toBe('CHAMBER');
+  });
+
+  it('parses a bare C-series code only when brand- or CHAMBER-qualified', () => {
+    // Measured on the golden set: a bare "C###" is overwhelmingly a civil SHEET NUMBER
+    // (C401, C501) or a material spec (ASTM C33, AWWA C900). Accepting it unqualified
+    // fabricated structures on four projects, so it needs a disambiguator.
+    expect(parseStructureLabel('C100')).toBeNull();
+    expect(parseStructureLabel('C401')).toBeNull();
+    expect(parseStructureLabel('C100 CHAMBER')).toEqual({ label: 'C100', kind: 'CHAMBER', diameterMm: null, existing: false });
+    expect(parseStructureLabel('CULTEC C100HD CHAMBERS')!.label).toBe('C100HD');
+    expect(parseStructureLabel('CULTEC C100')!.label).toBe('C100');
+  });
+
+  it('does not mint a chamber from a sheet reference or a material spec', () => {
+    expect(parseStructureLabel('STONE PER DETAIL ON C501.')).toBeNull();
+    expect(parseStructureLabel('accordance with ASTM C33 No. 8, high')).toBeNull();
+    expect(parseStructureLabel('PIPE TO AWWA. C900 & C905')).toBeNull();
+    expect(parseStructureLabel('SEE DRAWING C002 FOR GRADING')).toBeNull();
+  });
+
+  it('requires the multi-letter model codes to stand alone or be brand-qualified', () => {
+    // "DRAWING OF MC-3500 UNIT" is a detail reference on the sheet, not a unit being built.
+    expect(parseStructureLabel('DRAWING OF MC-3500 UNIT')).toBeNull();
+    expect(parseStructureLabel('MC-3500 CHAMBER')!.label).toBe('MC-3500');
+    expect(parseStructureLabel('EX. STC 6000')).toEqual({ label: 'STC 6000', kind: 'CHAMBER', diameterMm: null, existing: true });
+  });
+
+  it('parses hyphenated Jellyfish ids and still rejects Jellyfish model codes', () => {
+    // The model allowlist deliberately excludes JF, so the Bradford pins below still hold.
+    expect(parseStructureLabel('JF 4-1-1')!.label).toBe('JF 4-1-1');
+    expect(parseStructureLabel('JF 6-3-1')!.kind).toBe('JF');
+    expect(parseStructureLabel('JF1000')).toBeNull();
+    expect(parseStructureLabel('JF2000')).toBeNull();
+  });
+
+  it('does not treat an ordinary structure code as a model', () => {
+    expect(parseStructureLabel('CB 10')!.kind).toBe('CB');
+    expect(parseStructureLabel('DCB 3')!.kind).toBe('DCB');
+  });
+});
+
+describe('parseElevation — invert equations', () => {
+  it('parses plain and directional inverts', () => {
+    expect(parseElevation('INV 258.46')).toEqual({ type: 'INV', direction: null, value: 258.46 });
+    expect(parseElevation('N INV=223.35')).toEqual({ type: 'INV', direction: 'N', value: 223.35 });
+    expect(parseElevation('SW INV = 310.60')).toEqual({ type: 'INV', direction: 'SW', value: 310.6 });
+    expect(parseElevation('BOTTOM INV 258.30')).toEqual({ type: 'INV', direction: 'BOTTOM', value: 258.3 });
+    expect(parseElevation('OUT INV 150.20')).toEqual({ type: 'INV', direction: 'OUT', value: 150.2 });
+  });
+
+  it('accepts the direction on either side of the keyword', () => {
+    expect(parseElevation('INV OUT = 150.20')).toEqual({ type: 'INV', direction: 'OUT', value: 150.2 });
+    expect(parseElevation('INV. IN 250.30')).toEqual({ type: 'INV', direction: 'IN', value: 250.3 });
+  });
+
+  it('normalizes spelled-out directions to their compass letters', () => {
+    expect(parseElevation('NORTH INV 223.35')!.direction).toBe('N');
+    expect(parseElevation('INVERT WEST 223.35')!.direction).toBe('W');
+    expect(parseElevation('OUTLET INV 223.35')!.direction).toBe('OUT');
+  });
+});
+
+describe('parseElevation — top of grate equations', () => {
+  it('parses the T/G spellings', () => {
+    expect(parseElevation('T/G=224.95')).toEqual({ type: 'TG', direction: null, value: 224.95 });
+    expect(parseElevation('T/G. = 193.45')).toEqual({ type: 'TG', direction: null, value: 193.45 });
+    expect(parseElevation('T.G. 193.45')).toEqual({ type: 'TG', direction: null, value: 193.45 });
+    expect(parseElevation('TG 193.45')).toEqual({ type: 'TG', direction: null, value: 193.45 });
+  });
+
+  it('parses the TOP / RIM / GRATE synonyms', () => {
+    expect(parseElevation('TOP 260.15')).toEqual({ type: 'TG', direction: null, value: 260.15 });
+    expect(parseElevation('RIM 250.00')).toEqual({ type: 'TG', direction: null, value: 250 });
+    expect(parseElevation('GRATE 180.50')).toEqual({ type: 'TG', direction: null, value: 180.5 });
+    expect(parseElevation('TOP OF GRATE = 224.95')).toEqual({ type: 'TG', direction: null, value: 224.95 });
+  });
+
+  it('still rejects text that is not an elevation equation', () => {
+    expect(parseElevation('224.95')).toBeNull();
+    expect(parseElevation('IN 250.00')).toBeNull();
+    expect(parseElevation('MH 101')).toBeNull();
+    expect(parseElevation('83.7m-375mmØ SAN @ 0.02%')).toBeNull();
+    expect(parseElevation('TOP OF PIPE TO BE 250.00 MIN')).toBeNull();
+  });
+});
+
+describe('parseWatermainCallout — mainlines, services and leads', () => {
+  it('parses the plain mainline forms', () => {
+    expect(parseWatermainCallout('150mm PVC WM')).toEqual({
+      diameterMm: 150, lengthM: null, material: 'PVC', existing: false,
+    });
+    expect(parseWatermainCallout('200mm DR-18 WATERMAIN')).toEqual({
+      diameterMm: 200, lengthM: null, material: 'DR-18', existing: false,
+    });
+    expect(parseWatermainCallout('200mm WATER MAIN')!.diameterMm).toBe(200);
+  });
+
+  it('parses domestic and fire services', () => {
+    expect(parseWatermainCallout('100mm DOMESTIC WATER')).toEqual({
+      diameterMm: 100, lengthM: null, material: null, existing: false, service: 'DOMESTIC',
+    });
+    expect(parseWatermainCallout('150mm FIRE SERVICE')).toEqual({
+      diameterMm: 150, lengthM: null, material: null, existing: false, service: 'FIRE',
+    });
+  });
+
+  it('parses hydrant leads, including the parenthesised diameter form', () => {
+    expect(parseWatermainCallout('HYDRANT LEAD (150mm)')).toEqual({
+      diameterMm: 150, lengthM: null, material: null, existing: false, service: 'HYDRANT_LEAD',
+    });
+    expect(parseWatermainCallout('HYD LEAD (150mm)')!.service).toBe('HYDRANT_LEAD');
+    expect(parseWatermainCallout('6.0m - 150mm PVC HYDRANT LEAD')).toEqual({
+      diameterMm: 150, lengthM: 6, material: 'PVC', existing: false, service: 'HYDRANT_LEAD',
+    });
+  });
+
+  it('flags insulated watermain', () => {
+    expect(parseWatermainCallout('150mm PVC WM P.INS')!.insulated).toBe(true);
+    expect(parseWatermainCallout('150mm PVC WM')!.insulated).toBeUndefined();
+  });
+
+  it('keeps the new watermain forms out of the sewer-run parser', () => {
+    expect(parseRunCallout('150mm FIRE SERVICE')).toBeNull();
+    expect(parseRunCallout('100mm DOMESTIC WATER')).toBeNull();
+    expect(parseRunCallout('HYDRANT LEAD (150mm)')).toBeNull();
+  });
+
+  it('does not treat a stormwater quality unit as watermain', () => {
+    // Guard on the widened keyword set: WM_RE must never key off a bare "WATER".
+    expect(parseWatermainCallout('600mm WATER QUALITY UNIT')).toBeNull();
+    expect(parseWatermainCallout('STORMWATER MANAGEMENT POND 300mm')).toBeNull();
+  });
+});

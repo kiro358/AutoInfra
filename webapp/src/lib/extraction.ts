@@ -749,8 +749,13 @@ export async function extractFromPDF(
           ])).sort((a, b) => a - b)
         : [];
 
+      // EXTRACTION_MODE: defaults to 'hybrid' (text-layer for TrueType pages, vision
+      // transcribe + deterministic grammar for raster/SHX pages). Setting
+      // EXTRACTION_MODE=single-pass restores the legacy monolithic vision path.
+      const mode = process.env.EXTRACTION_MODE || 'hybrid';
+
       // EXTRACTION_MODE=vector: full CAD vector geometry and topology graph extraction ($0 LLM cost).
-      if (process.env.EXTRACTION_MODE === 'vector') {
+      if (mode === 'vector') {
         const facts = await extractVectorTakeoff(pdfBuffer, unionPages, projectName);
         facts.locatorIndex = locatorIndex;
         facts.cost = cost;
@@ -758,33 +763,64 @@ export async function extractFromPDF(
         return facts;
       }
 
-      // EXTRACTION_MODE=transcribe: vision transcribes verbatim, code (Task 8's
-      // assembleTranscriptTakeoff) does ALL the interpretation. Additive branch —
-      // any other/unset EXTRACTION_MODE falls through to the unchanged default path.
-      if (process.env.EXTRACTION_MODE === 'transcribe') {
+      // EXTRACTION_MODE=transcribe: vision transcribes verbatim, deterministic code
+      // does ALL the interpretation ($0 offline iteration).
+      if (mode === 'transcribe') {
         const transcript = await transcribeTiles(unionPages);
-        const facts = assembleTranscriptTakeoff(transcript, projectName);
+        let facts = assembleTranscriptTakeoff(transcript, projectName);
+
+        // Two-pass watermain extraction: if no watermain runs were transcribed,
+        // run a focused second pass specifically querying watermain linework/services.
+        if (facts.watermain.length === 0 && (unionPages.length > 0 || pdfBuffer)) {
+          await runSecondPassWatermain(facts, {
+            projectName,
+            sourceHash,
+            tileBatches: [],
+            pdfBuffer,
+            preparePdfPart,
+            ai,
+            cost,
+            batchConcurrency: BATCH_CONCURRENCY,
+          });
+          facts = reconcileTakeoff(facts);
+        }
+
         facts.transcript = transcript;
         facts.locatorIndex = locatorIndex;
         facts.cost = cost;
-        console.log(`      [extraction.ts] cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);
+        console.log(`      [extraction.ts] transcribe: cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);
         return facts;
       }
 
-      // EXTRACTION_MODE=hybrid: text-layer pages are read exactly (zero LLM cost,
-      // zero tiles rendered for them); only the non-texty (raster/SHX/scanned)
-      // pages go through the transcribe path. Text layer wins on conflicts (primary).
-      if (process.env.EXTRACTION_MODE === 'hybrid') {
+      // EXTRACTION_MODE=hybrid (default): text-layer pages are read exactly ($0 LLM cost);
+      // only non-texty pages go through the transcribe path. Text layer wins on conflicts.
+      if (mode === 'hybrid') {
         const pageTexts = await extractPageText(pdfBuffer, unionPages);
         const textyPages = pageTexts.filter(isTextyPage);
         const textyPageNums = new Set(textyPages.map((p) => p.page));
         const rasterPageNums = unionPages.filter((p) => !textyPageNums.has(p));
 
         const textFacts = assembleTextTakeoff(textyPages, projectName);
-        const transcript = await transcribeTiles(rasterPageNums);
-        const transcriptFacts = assembleTranscriptTakeoff(transcript, projectName);
+        const transcript = rasterPageNums.length > 0 ? await transcribeTiles(rasterPageNums) : [];
+        const transcriptFacts = transcript.length > 0 ? assembleTranscriptTakeoff(transcript, projectName) : null;
 
-        const facts = mergeTakeoffs(textFacts, transcriptFacts);
+        let facts = transcriptFacts ? mergeTakeoffs(textFacts, transcriptFacts) : textFacts;
+
+        // Two-pass watermain extraction if still 0 watermain runs
+        if (facts.watermain.length === 0 && (unionPages.length > 0 || pdfBuffer)) {
+          await runSecondPassWatermain(facts, {
+            projectName,
+            sourceHash,
+            tileBatches: [],
+            pdfBuffer,
+            preparePdfPart,
+            ai,
+            cost,
+            batchConcurrency: BATCH_CONCURRENCY,
+          });
+          facts = reconcileTakeoff(facts);
+        }
+
         if (transcript.length > 0) facts.transcript = transcript;
         facts.locatorIndex = locatorIndex;
         facts.cost = cost;

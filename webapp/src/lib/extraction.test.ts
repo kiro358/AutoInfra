@@ -18,6 +18,8 @@ import {
   parseWatermainFacts,
   applySecondPassWatermain,
   runSecondPassWatermain,
+  sanitizeTranscriptTiles,
+  contiguousRuns,
 } from './extraction';
 
 describe('parseFacts structure/catchbasin categorization', () => {
@@ -672,3 +674,72 @@ describe('two-pass watermain extraction', () => {
   });
 });
 
+
+describe('contiguousRuns', () => {
+  it('groups ascending indices into contiguous runs', () => {
+    expect(contiguousRuns([3, 4, 5, 9, 10])).toEqual([[3, 4, 5], [9, 10]]);
+  });
+  it('sorts, dedupes, and handles the empty case', () => {
+    expect(contiguousRuns([])).toEqual([]);
+    expect(contiguousRuns([7, 5, 6, 5])).toEqual([[5, 6, 7]]);
+  });
+});
+
+describe('sanitizeTranscriptTiles', () => {
+  const tile = (n: number, blocks: string[][]) => ({ tile: n, blocks });
+
+  it('keeps an ordinary tile untouched', () => {
+    const raw = [tile(1, [['STMH 4', 'T/G=224.95'], ['30.0m-250mmØ STM @ 0.5%']])];
+    const out = sanitizeTranscriptTiles(raw, 0, 1);
+    expect(out.tiles).toEqual(raw);
+    expect(out.degenerate).toEqual([]);
+    expect(out.missing).toEqual([]);
+  });
+
+  // Bradford tile 18: the SAME block emitted 639 times in a row.
+  it('empties a tile caught by the identical-run rule', () => {
+    const blocks = Array.from({ length: 200 }, () => ['D/T 0.1', '224.09', '223.86']);
+    const out = sanitizeTranscriptTiles([tile(18, blocks)], 17, 1);
+    expect(out.degenerate).toEqual([18]);
+    expect(out.tiles[0].blocks).toEqual([]);
+    expect(out.missing).toEqual([]); // it came back, it was just useless
+  });
+
+  // Bradford tile 2: EX CBMH1036 -> 668, every block textually DISTINCT, identical
+  // elevations. Dedup cannot touch this; only the array-length rule catches it.
+  it('empties a counter loop whose blocks are all distinct', () => {
+    const blocks = Array.from({ length: 369 }, (_, i) => [
+      `EX CBMH${1036 - i} (1200Ø)`, 'T/G=223.43', 'N INV=222.680', 'S INV=222.680',
+    ]);
+    const out = sanitizeTranscriptTiles([tile(2, blocks)], 0, 2);
+    expect(out.degenerate).toEqual([2]);
+    expect(out.tiles.find((t) => t.tile === 2)!.blocks).toEqual([]);
+  });
+
+  // Ecole batch 1: tiles 1-16 requested, only 1,2,3 came back before the token
+  // budget ran out. The other 13 are the RECALL loss worth recovering.
+  it('reports tiles that were requested but never returned', () => {
+    const raw = [tile(1, [['A']]), tile(2, [['B']]), tile(3, [['C']])];
+    const out = sanitizeTranscriptTiles(raw, 0, 16);
+    expect(out.missing).toEqual([4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+    expect(contiguousRuns(out.missing)).toEqual([[4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]]);
+  });
+
+  it('honours the tile offset when deciding what is missing', () => {
+    const out = sanitizeTranscriptTiles([tile(17, [['A']])], 16, 16);
+    expect(out.missing[0]).toBe(18);
+    expect(out.missing[out.missing.length - 1]).toBe(32);
+  });
+
+  it('drops non-array blocks and coerces lines to strings (pre-refactor contract)', () => {
+    const raw = [{ tile: 1, blocks: [['MH 1', 224.95], 'not-a-block', null, [300]] }];
+    const out = sanitizeTranscriptTiles(raw as any, 0, 1);
+    expect(out.tiles[0].blocks).toEqual([['MH 1', '224.95'], ['300']]);
+  });
+
+  it('ignores malformed tile entries rather than throwing', () => {
+    const out = sanitizeTranscriptTiles([null, { tile: 'x' }, { tile: 2 }] as any, 0, 2);
+    expect(out.tiles.map((t) => t.tile)).toEqual([2]);
+    expect(out.missing).toEqual([1]);
+  });
+});

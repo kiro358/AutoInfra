@@ -667,13 +667,17 @@ export async function extractFromPDF(
       for (let i = 0; i < tileParts.length; i += BATCH_TILES) tileBatches.push(tileParts.slice(i, i + BATCH_TILES));
       if (tileBatches.length === 0) return [];
 
-      const batchResults = await mapLimit(tileBatches, BATCH_CONCURRENCY, async (batch, bi) => {
-        const tileOffset = bi * BATCH_TILES;
+      // One transcription call: prompt -> stream -> parsed object. Shared by the first
+      // pass and the single retry round below so the retry cannot drift from the
+      // original request.
+      const transcribeCall = async (
+        batch: any[], tileOffset: number, cacheKey: string, label: string
+      ): Promise<any> => {
         const prompt = getTranscriptionPrompt(batch.length, tileOffset);
 
         let text = '{}';
         try {
-          text = await getCachedOrCallLLM(`${sourceHash}_transcribe_b${bi}of${tileBatches.length}`, prompt, 'transcribe', async () => {
+          text = await getCachedOrCallLLM(cacheKey, prompt, 'transcribe', async () => {
             // Same streaming pattern as the single-pass batch loop below: large
             // tiled inference takes many seconds, and a non-streaming request
             // leaves the socket idle long enough to be dropped (UND_ERR_SOCKET).
@@ -706,28 +710,54 @@ export async function extractFromPDF(
             });
           }, projectName);
         } catch (e: any) {
-          console.error(`      [extraction.ts] Transcribe batch ${bi + 1}/${tileBatches.length} failed: ${e.message}`);
+          console.error(`      [extraction.ts] Transcribe ${label} failed: ${e.message}`);
         }
 
-        let parsed: any = {};
         try {
-          parsed = tryParseJSONWithRepair(text);
+          return tryParseJSONWithRepair(text);
         } catch (e: any) {
-          console.error(`      [extraction.ts] Transcribe batch ${bi + 1} parse failed: ${e.message}`);
-          return [] as TileTranscript[];
+          console.error(`      [extraction.ts] Transcribe ${label} parse failed: ${e.message}`);
+          return {};
         }
+      };
 
-        const out: TileTranscript[] = [];
-        const rawTiles = Array.isArray(parsed.tiles) ? parsed.tiles : [];
-        for (const t of rawTiles) {
-          if (typeof t?.tile !== 'number' || !Array.isArray(t?.blocks)) {
-            console.warn(`      [extraction.ts] Skipping malformed transcript tile in batch ${bi + 1}: ${JSON.stringify(t).slice(0, 200)}`);
-            continue;
+      const batchResults = await mapLimit(tileBatches, BATCH_CONCURRENCY, async (batch, bi) => {
+        const tileOffset = bi * BATCH_TILES;
+        const label = `batch ${bi + 1}/${tileBatches.length}`;
+        const parsed = await transcribeCall(
+          batch, tileOffset, `${sourceHash}_transcribe_b${bi}of${tileBatches.length}`, label
+        );
+
+        const first = sanitizeTranscriptTiles(parsed?.tiles, tileOffset, batch.length);
+        for (const n of first.degenerate) {
+          console.warn(`      [extraction.ts] ${label}: tile ${n} DISCARDED — decode repetition loop, not a read of the drawing.`);
+        }
+        if (first.missing.length === 0) return first.tiles;
+
+        // A looping tile burns the batch's entire output budget, so every LATER tile
+        // is truncated out of the response and repairTruncatedJson returns a valid
+        // object without them (Bradford lost 52 of 60 tiles this way). Those tiles are
+        // innocent — re-issue them ONCE, with the offender no longer in the request so
+        // it cannot loop again. One round only: a retry that still comes back short is
+        // reported, not retried, so a pathological sheet cannot fan out calls.
+        console.warn(`      [extraction.ts] ${label}: ${first.missing.length} tile(s) absent from the response — re-issuing once.`);
+        const out = [...first.tiles];
+        for (const run of contiguousRuns(first.missing)) {
+          const parts = run.map((n) => tileParts[n - 1]).filter(Boolean);
+          if (parts.length === 0) continue;
+          const retryOffset = run[0] - 1;
+          const retryLabel = `${label} retry ${run[0]}-${run[run.length - 1]}`;
+          const rp = await transcribeCall(
+            parts, retryOffset, `${sourceHash}_transcribe_b${bi}r${run[0]}`, retryLabel
+          );
+          const again = sanitizeTranscriptTiles(rp?.tiles, retryOffset, parts.length);
+          for (const n of again.degenerate) {
+            console.warn(`      [extraction.ts] ${retryLabel}: tile ${n} DISCARDED — decode repetition loop.`);
           }
-          const blocks = t.blocks
-            .filter((b: any) => Array.isArray(b))
-            .map((b: any[]) => b.map((line) => String(line)));
-          out.push({ tile: t.tile, blocks });
+          if (again.missing.length > 0) {
+            console.warn(`      [extraction.ts] ${retryLabel}: STILL missing ${again.missing.length} tile(s) after one retry — giving up on them.`);
+          }
+          out.push(...again.tiles);
         }
         return out;
       });
@@ -1243,6 +1273,84 @@ export function findDegenerateRepetition(parsed: any): DegenerateRepetition | nu
   }
 
   return null;
+}
+
+/**
+ * Split tile indices into ascending contiguous runs. Truncation always drops a
+ * SUFFIX of a batch (the model emits tiles in order until the budget runs out),
+ * so in practice this returns a single run — but a run is what the retry needs
+ * either way, because getTranscriptionPrompt numbers tiles
+ * offset+1..offset+count, making [start..end] exactly {offset: start-1}.
+ */
+export function contiguousRuns(indices: number[]): number[][] {
+  const sorted = [...new Set(indices)].sort((a, b) => a - b);
+  const runs: number[][] = [];
+  for (const i of sorted) {
+    const last = runs[runs.length - 1];
+    if (last && i === last[last.length - 1] + 1) last.push(i);
+    else runs.push([i]);
+  }
+  return runs;
+}
+
+export interface SanitizedTranscript {
+  tiles: TileTranscript[];
+  /** Tiles returned but discarded as a decode loop. Never retried — they would loop again. */
+  degenerate: number[];
+  /** Tiles requested but absent from the response: the collateral of a loop, worth retrying. */
+  missing: number[];
+}
+
+/**
+ * Apply findDegenerateRepetition to a TRANSCRIBE batch response, and report what
+ * the response failed to contain.
+ *
+ * findDegenerateRepetition scans a parsed object's top-level arrays. A transcribe
+ * response is `{ tiles: [{ tile, blocks: [...] }] }`, so its only top-level array
+ * is `tiles` — at most BATCH_TILES long, with every element distinct. The guard
+ * therefore returned null on every degenerate transcript ever produced: the loops
+ * live one level down, inside `blocks`. Handing it `{ blocks }` per tile makes it
+ * fire correctly on all of them (measured on the 2026-09-18 cache: Bradford t18
+ * run=639 and t51 run=2021 via the identical-run rule; Bradford t2 len=369,
+ * Ecole t3 862, t17 880, Stevenson t14 314 via the array-length rule).
+ *
+ * `missing` matters more than `degenerate`. A looping tile eats the batch's whole
+ * maxOutputTokens, so every LATER tile in that batch is truncated away and
+ * repairTruncatedJson quietly returns a valid object without them — Bradford lost
+ * 52 of 60 tiles that way. Dropping the bad blocks is worth ~0.3pp; re-issuing the
+ * innocent tiles is where the recall is.
+ */
+export function sanitizeTranscriptTiles(
+  rawTiles: any[],
+  tileOffset: number,
+  batchLen: number
+): SanitizedTranscript {
+  const tiles: TileTranscript[] = [];
+  const degenerate: number[] = [];
+  const seen = new Set<number>();
+  for (const raw of Array.isArray(rawTiles) ? rawTiles : []) {
+    if (!raw || typeof raw !== 'object') continue;
+    const n = Number((raw as any).tile);
+    if (!Number.isFinite(n)) continue;
+    // Same normalisation the inline tile loop did before this was extracted:
+    // drop non-array blocks and coerce every line to a string, so the grammar
+    // downstream can rely on string[][] . Done BEFORE the degeneracy check so the
+    // guard scans exactly what would have been kept.
+    const blocks: string[][] = (Array.isArray((raw as any).blocks) ? (raw as any).blocks : [])
+      .filter((b: any) => Array.isArray(b))
+      .map((b: any[]) => b.map((line) => String(line)));
+    seen.add(n);
+    const hit = findDegenerateRepetition({ blocks });
+    if (hit) {
+      degenerate.push(n);
+      tiles.push({ tile: n, blocks: [] });
+      continue;
+    }
+    tiles.push({ tile: n, blocks });
+  }
+  const missing: number[] = [];
+  for (let i = tileOffset + 1; i <= tileOffset + batchLen; i++) if (!seen.has(i)) missing.push(i);
+  return { tiles, degenerate, missing };
 }
 
 /**

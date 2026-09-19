@@ -49,8 +49,14 @@ const lc = (f: string) => f.toLowerCase();
 const hasWord = (text: string, kw: string) =>
   new RegExp('(?:^|[^a-z0-9])' + kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:[^a-z0-9]|$)', 'i').test(text);
 
-const isCivilPath = (f: string) =>
-  PDF_CIVIL_HINTS.some((c) => hasWord(lc(f), c)) || CIVIL_SHEET_PATTERN.test(path.basename(f));
+/**
+ * Civil signals read from the FILENAME only. Deliberately not the full path —
+ * see the narrowing step in selectDrawingPdfs for why a folder name must not
+ * decide that a file is a drawing.
+ */
+const isCivilName = (f: string) =>
+  PDF_CIVIL_HINTS.some((c) => hasWord(lc(path.basename(f)), c)) ||
+  CIVIL_SHEET_PATTERN.test(path.basename(f));
 
 /**
  * Choose the civil drawing PDFs from a list of relative paths.
@@ -69,7 +75,15 @@ export function selectDrawingPdfs(relPaths: string[]): string[] {
     CIVIL_SHEET_PATTERN.test(base(f)) ||
     !PDF_SOFT_EXCLUDE.some((b) => base(f).includes(b))
   );
-  const civil = keep.filter((f) => isCivilPath(f));
+  // Civil evidence in the FILENAME may narrow the set; civil evidence that exists
+  // only in a FOLDER name may not. A folder is shared by everything inside it, so
+  // one unrelated document sitting in a civil-sounding folder would otherwise
+  // become the only "civil" file and discard the real drawings — which is exactly
+  // how a tender acknowledgment checklist in ".../Site Services & Rough Grading/"
+  // became the sole selection for 2026-018 Gerrard, scoring a hard 0%. Path-level
+  // evidence still does its other job above, where a STRONG civil word anywhere in
+  // the path rescues a file from the SOFT excludes — that only ever keeps more.
+  const civil = keep.filter((f) => isCivilName(f));
   const chosen = civil.length > 0 ? civil : keep;
   const ranked = rankBySheetCode(chosen);
 

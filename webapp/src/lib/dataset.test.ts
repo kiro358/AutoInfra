@@ -34,6 +34,20 @@ describe('selectDrawingPdfs', () => {
     const out = selectDrawingPdfs(['Drawings/Civil/C101 Servicing Plan.pdf', 'Drawings/Arch/A100 Cover Sheet.pdf']);
     expect(out).toEqual(['Drawings/Civil/C101 Servicing Plan.pdf']);
   });
+
+  it('does not let a civil FOLDER name discard drawings (Gerrard bug)', () => {
+    // 2026-018: a tender acknowledgment checklist sat in a folder called
+    // "Site Services & Rough Grading", so the folder's civil words made it the
+    // ONLY "civil" file — and `civil.length > 0 ? civil : keep` then discarded
+    // the actual servicing drawing, whose filename carries no civil word at all.
+    // Path-level evidence may RANK, but it must never be the thing that narrows.
+    const out = selectDrawingPdfs([
+      'Tender 4 Submission (Site Services & Rough Grading) - Topsite/Appendix G-Topsite.pdf',
+      '2535 GERRARD STREET EAST TORONTO.pdf',
+      '2535 Gerrard St E - Cupolex SWM Drawings 2026-02-04.pdf',
+    ]);
+    expect(out).toContain('2535 GERRARD STREET EAST TORONTO.pdf');
+  });
 });
 
 // Verbatim basenames from 2026-009 55 ERIC T. SMITH WAY,AURORA.

@@ -89,7 +89,7 @@ webapp/                       Next.js app (everything lives here)
     text-takeoff.ts           assembleTextTakeoff(pages) — text-layer PageText[] -> TakeoffFacts
     transcript-takeoff.ts     assembleTranscriptTakeoff(transcripts) — vision TileTranscript[] -> TakeoffFacts
     reconcile.ts              reconcileTakeoff/mergeTakeoffs — one entity per physical thing, any path
-    golden-set.ts             ⭐ GOLDEN_PROJECTS/FOCUS_SET — canonical 16-project golden set
+    golden-set.ts             ⭐ GOLDEN_PROJECTS/FOCUS_SET — canonical 26-project golden set (FOCUS_SET = 8)
     *.test.ts                 vitest unit tests (geometry, costing, facts metric, spreadsheet)
   src/scripts/                eval CLIs (see below)
   empty_templates/            the real .xlsx templates (SHORT / LONG)
@@ -111,7 +111,7 @@ npm test                        # vitest unit suite (no dataset required)
 # Golden-set eval (needs existing_projects_training_data/ present).
 # Two-tier + variance-aware — single-run noise is large, so ALWAYS use repeats to tell
 # a real change from noise, and iterate on the focus set before the full regression run.
-npm run evaluate:golden                                   # full 16-project set, 1 run
+npm run evaluate:golden                                   # full 26-project set, 1 run
 
 # Fast FOCUS loop (the current problem projects) with variance bands:
 GOLDEN_FOCUS=true  GOLDEN_REPEATS=3 npm run evaluate:golden
@@ -146,51 +146,133 @@ npm run assemble:transcripts   # re-runs assembleTranscriptTakeoff+reconcileTake
 interchangeable: **detF1 over runs that returned a takeoff** (the model's accuracy) and
 **detF1 counting failed runs as zero** (what a user actually gets). A run that returns *no*
 entities at all is classified separately by `perf-summary.ts` so it can never be averaged in
-silently. As of **2026-09-08** (`npm run score:offline`): **50.2% mean detF1 over 15 scored
-projects**, **47.1% counting the 1 remaining empty run as zero**, field accuracy 46.2%.
-Per entity: sewerRuns R42.2/P51.6/F1 46.4 · structures R43.7/P38.2/F1 40.8 ·
-catchbasins R60.8/P77.0/F1 68.0 · watermain R26.5/P75.0/F1 39.1.
+silently. As of **2026-09-19** (`npm run score:offline`, whole cache freshly written by the
+2026-09-18 hybrid-default run): **40.1% mean detF1 over 25 scored projects**, **38.6%
+counting the 1 empty run as zero**, field accuracy 45.1%.
 
-That is up from 48.1% / 36.0% (2026-09-06). **The entire +11.1pp came from re-running the
-four "empty" projects live on Vertex — no extraction-code change was involved.** The cached
-predictions were simply two months stale and predated the Phase 0 fixes.
+```
+ENTITY          recall  precision      F1   truth   pred
+sewerRuns       40.5%      65.5%   50.1%     605    374
+structures      52.5%      20.8%   29.8%     379    956   <- pred 2.5x truth
+catchbasins     45.2%      11.6%   18.4%     241    942   <- pred 3.9x truth
+watermainRuns    1.6%      25.0%    2.9%      64      4    <- fixed, see below
+by drawing size: <41 entities 45.2%  vs  >=41 entities 35.4%
+```
 
-**Mixed provenance warning:** 3 of those 16 rows are fresh (2026-09-08 Vertex) and 13 are
-still the July cache. Do NOT read the per-entity table as a clean measurement of HEAD — it is
-a blend. A full `GOLDEN_REPEATS=3` run is still owed before any of these become a baseline.
+**The corpus precision numbers are a TRAP for prioritisation.** Structures and catchbasins are
+not over-predicted across the corpus — they are over-predicted by a handful of projects with
+degenerate transcripts. 792 of the 956 structures come from three projects (White Oak 300,
+Stevenson 306, Panattoni 186) and 810 of the 942 catchbasin units come from Panattoni alone.
+Because the headline metric is a **mean of per-project F1**, deleting all of that junk is worth
+almost nothing — measured, not guessed, 2026-09-19: a filter that removed **74% of all
+predicted structures (966 → 251)** moved the mean **+0.3pp** (44.3 → 44.6). Never prioritise
+off an aggregate precision row; check how many projects it actually lives in first.
 
-**Empty-run triage, resolved 2026-09-08 (live Vertex, `ENABLE_EVAL_CACHE=false`):**
+**The 50.2% previously recorded here was never HEAD.** It was a re-score of the *July*
+single-pass cache, which has since been overwritten by a real hybrid run. Switching hybrid on
+by default cost ~10pp. Treat any number in this file as stale unless the prediction mtimes
+back it — check them (`stat` the `predicted_facts.json` files) before quoting one.
+
+**Empty-run triage, 2026-09-08 (historical — superseded by the 2026-09-18 run below):**
 
 | project | was | now | cause |
 |---|---|---|---|
 | Georgian Dr | 0% | **76%** | stale cache only; recovers on default config |
 | Eric Smith Way | 0% | **64%** | wrong-drawing bug; `chooseDrawingPdfs` now picks the `SS` sheet |
 | Milton #13 | 0% | **37.5%** | output truncation — needs `BATCH_TILES=6 MAX_OUTPUT_TOKENS=65536` |
-| White Oak Woodbine | 0% | **0%** | unresolved, see below |
+| White Oak Woodbine | 0% | **0%** | repetition loop, see below |
 
 **`evaluate-golden`'s "likely transport failure" label is MISLEADING — do not trust it.**
-All four had `facts.cost` showing real LLM calls and real token spend (White Oak: 2 calls,
-94k tokens; Milton: 2 calls, 49k). They ran, cost money, and returned zero entities. The
-message predates `facts.cost` telemetry; check `cost.llmCalls` before believing it.
+Those runs had `facts.cost` showing real LLM calls and real token spend. They ran, cost money,
+and returned zero entities. The message predates `facts.cost` telemetry; check `cost.llmCalls`
+before believing it.
 
 **Milton #13 needs non-default knobs.** At the defaults (`BATCH_TILES=16`,
 `MAX_OUTPUT_TOKENS=32768`) it still returns nothing; with `BATCH_TILES=6` +
 `MAX_OUTPUT_TOKENS=65536` it scores 37.5%. **The defaults were deliberately NOT changed** —
 that would be a global change justified by two projects, and it must be validated against the
-other 14 with `GOLDEN_REPEATS=3` before being accepted. Note `BATCH_TILES=6` raises LLM calls
+rest of the set with `GOLDEN_REPEATS=3` before being accepted. Note `BATCH_TILES=6` raises LLM calls
 per project (24 tiles → 4 calls instead of 2), so it trades cost for completeness.
 
-**White Oak Woodbine — SOLVED 2026-09-18: a repetition loop, not truncation, not grammar.**
-The repetition hypothesis was right. Its cached transcript is **2 tiles / 2,522 lines, of which
-the single callout `30.0 - 200# PVC CL. 65.0 STM @ 0.30%` repeats 685 times** — dedup leaves
-**3 distinct runs and 300 structures against 89 truth entities**, so precision collapses and
-F1 rounds to 0. This also explains the 229k output tokens across 4 calls for a 2-page drawing.
+### Repetition loops are the #1 systemic defect (diagnosed 2026-09-19)
 
-Consequence: **no parser or prompt change can fix it.** Making all 687 of those lines parse
-moved the score 0.0% → 0.0%. It needs a fresh transcription plus a repetition guard (capture
-`finishReason`; abort a tile whose transcript repeats one line more than ~20x). Until then it
-is effectively unscoreable — consider a `truth-manifest.json` `exclude` so it stops dragging
-the corpus mean, and do not spend grammar effort on it.
+White Oak was NOT a one-off. Blocks-per-tile across the fresh cache:
+
+```
+Bradford  tile 2: 369   tile 18: 651   tile 33: 526   tile 51: 2029
+Ecole     tile 3: 862   tile 17: 880
+Stevenson tile 14: 314        White Oak: one callout x685
+```
+
+Two variants, one cause (decoder degeneracy):
+
+- **Literal repeat** — Bradford tile 18 emits `["D/T 0.1","224.09","223.86"]` **x639**;
+  Ecole tile 3 emits `["EX CB"]` x430. Exact-text dedup catches these.
+- **Counter loop** — Bradford tile 2 emits `EX CBMH1036 → EX CBMH668`, one per block, **all
+  with identical `T/G=223.43 / INV=222.680`**, truncating mid-block at the token cap. Every
+  block is textually DISTINCT, so dedup cannot touch it. This is why 3 projects contribute
+  792 of the corpus's 956 predicted structures (White Oak 300, Stevenson 306, Panattoni 186).
+
+**The second-order damage is larger than the first.** A repeating tile eats the batch's whole
+`maxOutputTokens`, and every later tile in that same `BATCH_TILES`-sized batch is truncated
+away. `repairTruncatedJson` then silently salvages the complete prefix, so the run looks
+clean. Reconstructed from returned tile indices:
+
+```
+Ecole  batch 1 (tiles 1-16):  returns 1,2,3 — tile 3 blows up — tiles 4-16 LOST
+       batch 2 (tiles 17-32): returns 17    — tile 17 blows up — tiles 18-32 LOST
+       batch 3 (tiles 33-40): returns ALL 8 — no repetition — complete
+Bradford: 60 tiles sent, 8 returned — 87% lost
+```
+
+Ecole's clean third batch is the control. This one defect explains both the precision collapse
+(fabricated structures) AND the recall collapse (`sw 0/21`, `sw 4/19`) on the bottom projects.
+
+**The RECALL half is the prize; the precision half is not.** Deleting the fabricated rows
+post-hoc is worth +0.3pp (measured — see the rejected 4th filter). Recovering the 52/60 tiles
+Bradford threw away is where the points are, and that can only be done by stopping the loop
+during transcription and re-issuing the tile. Do not settle for a post-hoc cleanup.
+
+Fixing it needs a live Vertex run: capture `finishReason`, and guard on BOTH variants — a
+repeated-line count AND a near-duplicate check (identical block shape with only an integer
+differing). A literal-repeat guard alone will not catch Bradford.
+
+**This invalidates the old claim that `EXTRACTION_MODE=transcribe` prevents label
+fabrication** ("the grammar can only emit labels that appear in a transcript"). It does — but
+the transcript itself now fabricates the sequence, so the guarantee buys nothing. See the
+Structure fabrication bullet under "Where the levers are".
+
+**Do not spend grammar effort on White Oak.** Making all 687 of its repeated lines parse moved
+0.0% → 0.0%; its problem is recall (truth 31 structures / 58 sewers, pred 0 sewers), not
+parsing. It needs re-transcription.
+
+### `chooseDrawingPdfs` can select a document that is not a drawing (Gerrard, 0%)
+
+`selectDrawingPdfs` does `const chosen = civil.length > 0 ? civil : keep` — **one weak hit
+collapses the candidate set and the `keep` fallback never fires.** `isCivilPath` matches the
+FULL PATH, so a parent folder named `Site Services & Rough Grading` made a *tender
+acknowledgment checklist* ("PLANS (Please acknowledge the following documents have been
+reviewed…)") the single chosen file for Gerrard Shelter. The run behaved correctly on garbage:
+locator picked pages 1-3, 12 tiles rendered, model returned `blocks: []` for all 12, 7,845
+tokens spent. Meanwhile `2535 GERRARD STREET EAST TORONTO.pdf` — **5 scanned pages at
+1650x2550 px, a real drawing set** — was discarded because its filename carries no hint word.
+**FIXED 2026-09-19** (`dataset.ts`): the narrowing step now uses `isCivilName` (FILENAME only)
+instead of `isCivilPath` (full path). Path-level evidence keeps its other job — a STRONG civil
+word anywhere in the path still rescues a file from the SOFT excludes, which only ever keeps
+more. Blast radius measured across all 26 golden projects before shipping: **exactly 1 changed**
+(Gerrard, 1 checklist → 6 files including the real drawing); Georgian Dr, Wigmore Park and Eric
+Smith Way are byte-identical. Page 2 of `2535 GERRARD STREET EAST TORONTO.pdf` was rendered and
+confirmed to be a real Burnside/Entuitive **Public Utility Plan** with storm/sanitary/watermain
+callouts, so the fallback target is genuinely the right sheet. **The accuracy gain is NOT yet
+measured** — Gerrard's cached prediction was made from the checklist, so it needs a live run.
+
+**Rejected candidate — do NOT add `appendix` to `PDF_HARD_EXCLUDE`.** It looks right next to
+`addendum` / `tender form` / `schedule of values`, and it does fix Gerrard. Measured across the
+golden set it **breaks two healthy projects**: Georgian Dr (75.8%) keeps its drawings in
+`Appendix 1.00 AMCAI Civil Plan Set.pdf`, and Wigmore Park (69.5%) in
+`Part 3 - Appendix A - … IFT Drawings.pdf` — which would be left with **zero** candidate PDFs.
+In this corpus an "Appendix" routinely IS the drawing set. Always diff the chosen set across all
+26 projects before touching these heuristics; they are shared and the failure is silent.
 
 Run the eval on stable infra: local works for a small filtered set (streaming rides the
 laptop's flaky network), but the full set belongs on the throwaway GCP VM using **Vertex**
@@ -239,13 +321,35 @@ is empirical: validate the facts metric on the dataset and A/B single-pass vs ag
   them. Three output-side filters were measured and **rejected**: long-contiguous-run (45%
   of REAL structures are in one too — `MH 100..109` is real), missing-data, and
   sewer-endpoint corroboration (kills 115 bogus but loses 26 real, +1.3pp). Don't retry
-  them. `provenance.ts` is the approach that works — verify the label against evidence —
+  them. **A 4th was measured and rejected 2026-09-19**: a degenerate-block filter keyed on
+  shape (label digits masked + identical non-label lines), which is a genuinely different
+  signal from the rejected long-run filter — real `MH 100..109` runs differ in their
+  elevations and so never group. It works exactly as designed (966 → 251 predicted
+  structures at threshold 20) and still only bought **+0.3pp**, while costing 8 real
+  structures and −7.8pp on Eric Smith Way. Output-side structure filtering is a dead end;
+  the fabrication has to be stopped at the decoder. `provenance.ts` is the approach that works — verify the label against evidence —
   but see its header: it must be fed **only the located pages**. Fed the whole document it
   REGRESSES (F1 40.5%→38.7%, 13 real structures deleted on Ultimate Drive), because
   detail/spec sheets are often the only texty ones and their labels aren't this site's.
   Structure labels are in the text layer for just **1 of 12** golden projects (Bradford),
-  so this only ever fires there; the general fix is `EXTRACTION_MODE=transcribe`, where the
-  grammar can only emit labels that appear in a transcript.
+  so this only ever fires there. **`EXTRACTION_MODE=transcribe` is NOT the general fix
+  (disproved 2026-09-19).** The grammar can indeed only emit labels present in a transcript —
+  but the transcript now fabricates them itself (Bradford tile 2: `EX CBMH1036 → 668`, all
+  with identical elevations). The guarantee holds and buys nothing. The real fix is upstream,
+  at the decoder — see "Repetition loops are the #1 systemic defect".
+- **Watermain** (`transcript-takeoff.ts`): **FIXED 2026-09-19, +4.6pp golden mean.** The
+  assembler emitted a main only `if (!wm.existing && wm.lengthM != null)`, and `lengthM` comes
+  from an inline `NN m` that real watermain callouts essentially never carry — length is
+  scaled off the linework. 20 of 27 proposed mains died on that gate holding a perfectly good
+  diameter and material. `text-takeoff.ts` already had the fix and the comment explaining it;
+  the two assemblers had simply drifted. Corpus watermain went R4.5→**R20.9**, and precision
+  went UP 60.0→**73.7** (`reconcileTakeoff::aggregateWatermainByDiameter` collapses the extra
+  rows per size, so nothing inflates). 7 projects up, 0 regressions.
+  **Still recall-limited:** 88 of 151 watermain transcript lines never parse at all —
+  `parseWatermainCallout` requires a diameter, so `EX FIRE HYDRANT` and
+  `CONNECT TO EX. 150mmØ WM WITH TEE` fall out. That is the next watermain lever, also $0.
+  **When changing either assembler, change both** — they share `callout-parser.ts` and must
+  agree on emission policy.
 - **Pricing**: `costing-rules.ts::DEFAULT_COSTING`. This is the ONLY place dollars live.
   Do NOT put pricing back into the extraction path.
 - **Template cells**: `constants.ts::INPUT_CELLS` is the intended source of truth;

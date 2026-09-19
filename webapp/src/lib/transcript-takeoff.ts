@@ -167,10 +167,18 @@ function processLines(lines: string[], out: Sink, warnings: string[]): boolean {
     const wm = parseWatermainCallout(line);
     if (wm) {
       matched = true;
-      if (!wm.existing && wm.lengthM != null) {
+      // Emit even with no stated length. Most drawings label the main
+      // ("200mmØ PVC WATERMAIN") and leave the length implied by the drawn
+      // line, so requiring a length dropped the pipe entirely — scoring a
+      // correct read as a miss. Detection and measurement are separate
+      // failures; matchWatermain phase 3 pairs on diameter alone, and
+      // reconcileTakeoff sums the sizes, so an unmeasured callout that sits
+      // alongside a measured one of the same diameter contributes nothing.
+      // Same rule as assembleTextTakeoff — keep the two assemblers in step.
+      if (!wm.existing) {
         out.watermain.push({
           sizeAndType: `${wm.diameterMm}mm${wm.material ? ` ${wm.material}` : ''}`,
-          length: wm.lengthM,
+          length: wm.lengthM ?? 0,
           pipeDiameter: wm.diameterMm,
           ocSc: 1.1,
           avgCover: 1.8,

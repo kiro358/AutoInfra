@@ -74,4 +74,30 @@ describe('assembleTranscriptTakeoff', () => {
     expect(facts.sewers).toHaveLength(0);
     expect(facts.warnings.some((w) => w.includes('83.7m-375mmØ SAN @ 0.02%'))).toBe(true);
   });
+
+  describe('watermain detection without a stated length', () => {
+    it('emits a proposed main whose callout carries no length', () => {
+      const facts = assembleTranscriptTakeoff([
+        { tile: 1, blocks: [
+          ['200mmØ PVC WATERMAIN'],
+          ['EX. 300 mmØ PVC WATERMAIN'], // existing — excluded
+        ]},
+      ], 'T');
+      expect(facts.watermain).toHaveLength(1);
+      expect(facts.watermain[0].pipeDiameter).toBe(200);
+      expect(facts.watermain[0].length).toBe(0);
+    });
+
+    it('prefers a stated length over an unmeasured duplicate of the same size', () => {
+      const facts = assembleTranscriptTakeoff([
+        { tile: 1, blocks: [
+          ['150mmØ PVC WATERMAIN'],
+          ['124.0m - 150mmØ PVC WM'],
+        ]},
+      ], 'T');
+      expect(facts.watermain).toHaveLength(1);
+      expect(facts.watermain[0].length).toBe(124);
+    });
+  });
+
 });

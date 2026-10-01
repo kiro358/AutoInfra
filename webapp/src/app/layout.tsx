@@ -1,12 +1,19 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { Navbar } from "@/components/layout/Navbar";
 import { Footer } from "@/components/layout/Footer";
 
 export const metadata: Metadata = {
-  title: "AutoInfra | Civil Engineering Estimation AI",
-  description: "AI-powered site servicing estimation from civil engineering drawings. Upload PDF drawings and get populated cost estimation spreadsheets instantly.",
-  keywords: "civil engineering, estimation, AI, site servicing, manholes, sewers, watermain, cost estimation",
+  title: "AutoInfra — Site Servicing Takeoff",
+  description: "Turn Ontario civil servicing drawings into a priced storm, sanitary and watermain takeoff — with an Excel workbook and quote — in minutes.",
+  keywords: "civil engineering, estimation, takeoff, site servicing, manholes, sewers, watermain, Ontario, OPSD",
+};
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
+    { media: "(prefers-color-scheme: dark)", color: "#111318" },
+  ],
 };
 
 export default function RootLayout({
@@ -16,9 +23,9 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className="min-h-screen flex flex-col bg-canvas text-primary antialiased">
+      <body className="min-h-screen flex flex-col">
         <Navbar />
-        <main className="flex-1">
+        <main className="flex-1 relative">
           {children}
         </main>
         <Footer />

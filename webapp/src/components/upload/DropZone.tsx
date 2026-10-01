@@ -134,7 +134,7 @@ export const DropZone: React.FC<DropZoneProps> = ({
   const activeModeDetails = EXTRACTION_MODES.find((m) => m.id === selectedMode) || EXTRACTION_MODES[0];
 
   return (
-    <div className={`space-y-4 ${className}`.trim()}>
+    <div className={`space-y-3 ${className}`.trim()}>
       {/* Hidden File Input */}
       <input
         ref={fileInputRef}
@@ -147,23 +147,20 @@ export const DropZone: React.FC<DropZoneProps> = ({
         aria-hidden="true"
       />
 
-      {/* Error Alert Banner */}
       {activeError && (
-        <div
-          role="alert"
-          className="flex items-start justify-between gap-3 p-3.5 rounded-[var(--radius-md)] border border-[var(--alarm-border)] bg-[var(--alarm-bg)] text-[var(--alarm)] transition-all animate-fadeIn"
-        >
-          <div className="flex items-start gap-2.5 min-w-0">
-            <AlertIcon size={16} className="shrink-0 mt-0.5" />
-            <div className="text-xs font-medium leading-relaxed">
-              {activeError}
+        <div role="alert" className="alert alert-error animate-fadeIn text-left">
+          <AlertIcon size={18} className="alert-icon shrink-0 mt-px" />
+          <div className="min-w-0 flex-1">
+            <div className="alert-title">
+              {localError ? 'That file can’t be used' : 'We couldn’t process that drawing set'}
             </div>
+            <div className="alert-body mt-0.5">{activeError}</div>
           </div>
           {localError && (
             <button
               type="button"
               onClick={() => setLocalError(null)}
-              className="text-[var(--alarm)] hover:opacity-80 p-0.5 rounded transition-opacity"
+              className="btn btn-ghost btn-sm btn-icon -mr-1 -mt-1"
               aria-label="Dismiss error"
             >
               <CloseIcon size={14} />
@@ -172,165 +169,150 @@ export const DropZone: React.FC<DropZoneProps> = ({
         </div>
       )}
 
-      {/* Main Drag-and-Drop Area */}
-      {!selectedFile ? (
-        <div
-          onDragEnter={handleDragEnter}
-          onDragLeave={handleDragLeave}
-          onDragOver={handleDragOver}
-          onDrop={handleDrop}
-          onClick={() => !disabled && !isUploading && fileInputRef.current?.click()}
-          className={`
-            relative flex flex-col items-center justify-center p-8 sm:p-12 rounded-[var(--radius-lg)] border-2 border-dashed text-center transition-all duration-200 cursor-pointer select-none group
-            ${
-              disabled || isUploading
-                ? 'opacity-50 cursor-not-allowed pointer-events-none border-[var(--border-subtle)] bg-[var(--bg-surface)]'
-                : isDragging
-                ? 'border-[var(--water)] bg-[var(--water-bg)] shadow-[0_0_24px_rgba(0,180,216,0.15)] ring-2 ring-[var(--water)]/30 scale-[1.005]'
-                : 'border-[var(--border-active)] bg-[var(--bg-surface)] hover:border-[var(--water)] hover:bg-[var(--bg-elevated)] hover:shadow-md'
-            }
-          `.trim()}
-        >
-          {/* CAD Hairline Crosshair Corner Accents */}
-          <div className="absolute top-2 left-2 w-2 h-2 border-t border-l border-[var(--border-strong)] pointer-events-none opacity-40 group-hover:opacity-100 transition-opacity" />
-          <div className="absolute top-2 right-2 w-2 h-2 border-t border-r border-[var(--border-strong)] pointer-events-none opacity-40 group-hover:opacity-100 transition-opacity" />
-          <div className="absolute bottom-2 left-2 w-2 h-2 border-b border-l border-[var(--border-strong)] pointer-events-none opacity-40 group-hover:opacity-100 transition-opacity" />
-          <div className="absolute bottom-2 right-2 w-2 h-2 border-b border-r border-[var(--border-strong)] pointer-events-none opacity-40 group-hover:opacity-100 transition-opacity" />
-
-          {/* Upload Icon Container */}
+      <div className="card card-elevated">
+        {!selectedFile ? (
           <div
-            className={`
-              w-14 h-14 rounded-[var(--radius-md)] flex items-center justify-center mb-4 border transition-transform duration-200
-              ${
-                isDragging
-                  ? 'border-[var(--water)] bg-[var(--water-bg)] text-[var(--water)] scale-110'
-                  : 'border-[var(--border-subtle)] bg-[var(--bg-elevated)] text-[var(--text-secondary)] group-hover:border-[var(--water-border)] group-hover:text-[var(--water)] group-hover:-translate-y-0.5'
+            role="button"
+            tabIndex={disabled || isUploading ? -1 : 0}
+            aria-label="Upload a drawing set PDF"
+            onDragEnter={handleDragEnter}
+            onDragLeave={handleDragLeave}
+            onDragOver={handleDragOver}
+            onDrop={handleDrop}
+            onClick={() => !disabled && !isUploading && fileInputRef.current?.click()}
+            onKeyDown={(e) => {
+              if ((e.key === 'Enter' || e.key === ' ') && !disabled && !isUploading) {
+                e.preventDefault();
+                fileInputRef.current?.click();
               }
-            `.trim()}
+            }}
+            className="p-2.5 outline-none group"
           >
-            <UploadIcon size={24} />
-          </div>
-
-          {/* Instruction Text */}
-          <div className="space-y-1 max-w-sm">
-            <h3 className="text-sm font-semibold text-[var(--text-primary)] tracking-tight">
-              {isDragging ? 'Drop engineering drawing PDF here' : 'Upload Civil Engineering Drawing Set'}
-            </h3>
-            <p className="text-xs text-[var(--text-secondary)] leading-relaxed">
-              Drag and drop your municipal servicing plan (PDF), or click to browse local files.
-            </p>
-          </div>
-
-          {/* Badges / Supported Specs */}
-          <div className="flex items-center gap-2 mt-4 flex-wrap justify-center">
-            <Badge variant="storm" size="sm">
-              Storm Sewer
-            </Badge>
-            <Badge variant="sanitary" size="sm">
-              Sanitary Sewer
-            </Badge>
-            <Badge variant="water" size="sm">
-              Watermain
-            </Badge>
-            <Badge variant="muted" size="sm">
-              PDF Vector / Raster
-            </Badge>
-          </div>
-        </div>
-      ) : (
-        /* Selected File Preview Card */
-        <div className="p-4 rounded-[var(--radius-lg)] border border-[var(--border-subtle)] bg-[var(--bg-surface)] shadow-sm space-y-4 animate-fadeIn">
-          <div className="flex items-center justify-between gap-3 p-3 rounded-[var(--radius-md)] border border-[var(--border-subtle)] bg-[var(--bg-elevated)]">
-            <div className="flex items-center gap-3 min-w-0">
-              <div className="w-10 h-10 rounded-[var(--radius-sm)] flex items-center justify-center shrink-0 border border-[var(--storm-border)] bg-[var(--storm-bg)] text-[var(--storm)]">
-                <FileTextIcon size={20} />
+            <div
+              className={`
+                relative flex flex-col items-center justify-center text-center px-6 py-12 sm:py-14
+                rounded-[var(--radius-md)] border-[1.5px] border-dashed cursor-pointer select-none
+                transition-all duration-200
+                ${
+                  disabled || isUploading
+                    ? 'opacity-50 cursor-not-allowed border-line'
+                    : isDragging
+                    ? 'border-[var(--accent)] bg-[var(--accent-bg)]'
+                    : 'border-[var(--border-active)] bg-elevated group-hover:border-[var(--accent-border)] group-hover:bg-[var(--accent-bg)] group-focus-visible:border-[var(--accent)]'
+                }
+              `}
+            >
+              <div
+                className={`
+                  grid place-items-center size-12 mb-4 rounded-[12px] border bg-surface shadow-[var(--shadow-sm)]
+                  transition-transform duration-200
+                  ${
+                    isDragging
+                      ? 'border-[var(--accent-border)] text-[var(--accent)] -translate-y-0.5'
+                      : 'border-line text-secondary group-hover:text-[var(--accent)] group-hover:-translate-y-0.5'
+                  }
+                `}
+              >
+                <UploadIcon size={22} />
               </div>
-              <div className="min-w-0 space-y-0.5">
-                <div className="text-xs font-semibold text-[var(--text-primary)] truncate font-mono">
-                  {selectedFile.name}
-                </div>
-                <div className="flex items-center gap-2 text-[11px] text-[var(--text-muted)] font-mono">
-                  <span>{formatFileSize(selectedFile.size)}</span>
-                  <span>•</span>
-                  <span className="text-[var(--storm)] font-sans">Ready for analysis</span>
-                </div>
+
+              <h3 className="text-[15px] font-semibold text-primary">
+                {isDragging ? 'Drop to upload' : 'Drop your drawing set here'}
+              </h3>
+              <p className="mt-1 text-[13px] text-secondary">
+                or <span className="font-medium text-[var(--accent)]">browse your files</span> — PDF, vector or scanned
+              </p>
+
+              <div className="flex items-center gap-1.5 mt-5 flex-wrap justify-center">
+                <Badge variant="storm" size="sm">Storm</Badge>
+                <Badge variant="sanitary" size="sm">Sanitary</Badge>
+                <Badge variant="water" size="sm">Watermain</Badge>
+                <Badge variant="structures" size="sm">Structures</Badge>
               </div>
             </div>
+          </div>
+        ) : (
+          <div className="p-5 space-y-4 animate-fadeIn">
+            <div className="flex items-center justify-between gap-3 p-3 rounded-[var(--radius-md)] border border-line bg-elevated">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="grid place-items-center size-10 shrink-0 rounded-[8px] bg-[var(--alarm-bg)] text-[var(--alarm)]">
+                  <FileTextIcon size={20} />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-[13.5px] font-medium text-primary truncate" title={selectedFile.name}>
+                    {selectedFile.name}
+                  </div>
+                  <div className="flex items-center gap-2 text-[12px] text-muted">
+                    <span className="font-mono">{formatFileSize(selectedFile.size)}</span>
+                    <span className="dot-sep" />
+                    <span className="text-[var(--success)]">Ready to process</span>
+                  </div>
+                </div>
+              </div>
 
-            <div className="flex items-center gap-2 shrink-0">
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={handleRemoveFile}
                 disabled={isUploading || disabled}
-                className="text-[var(--text-muted)] hover:text-[var(--alarm)] hover:bg-[var(--alarm-bg)]"
+                icon={<TrashIcon size={14} />}
                 aria-label="Remove selected drawing file"
               >
-                <TrashIcon size={14} className="mr-1" />
-                Remove
+                <span className="hidden sm:inline">Remove</span>
               </Button>
             </div>
-          </div>
 
-          {/* Active Mode Summary Chip */}
-          <div className="flex items-center justify-between px-1 text-xs">
-            <span className="text-[var(--text-secondary)]">Pipeline Configuration:</span>
-            <div className="flex items-center gap-1.5">
-              <span className="font-medium text-[var(--text-primary)]">{activeModeDetails.name}</span>
+            <Button
+              variant="primary"
+              size="lg"
+              onClick={handleProcess}
+              loading={isUploading}
+              disabled={disabled}
+              className="w-full"
+              icon={<SparklesIcon size={17} />}
+            >
+              {isUploading ? 'Extracting quantities…' : 'Run takeoff'}
+            </Button>
+          </div>
+        )}
+
+        {/* Extraction engine disclosure */}
+        <div className="border-t border-line">
+          <button
+            type="button"
+            onClick={() => setShowConfig((prev) => !prev)}
+            disabled={disabled || isUploading}
+            aria-expanded={showConfig}
+            className="w-full flex items-center justify-between gap-3 px-5 py-3 text-left text-[13px] text-secondary hover:text-primary hover:bg-hover transition-colors"
+          >
+            <span className="flex items-center gap-2 min-w-0">
+              <SettingsIcon size={14} className="text-muted shrink-0" />
+              <span className="shrink-0">Extraction engine</span>
+              <span className="text-muted truncate hidden sm:inline">· {activeModeDetails.name}</span>
+            </span>
+            <span className="flex items-center gap-2 shrink-0">
               <Badge variant={activeModeDetails.badgeVariant} size="sm">
                 {activeModeDetails.badge}
               </Badge>
+              {showConfig ? <ChevronUpIcon size={14} /> : <ChevronDownIcon size={14} />}
+            </span>
+          </button>
+
+          {showConfig && (
+            <div className="px-5 pb-5 pt-1 animate-fadeIn">
+              <DrawingConfig
+                selectedMode={selectedMode}
+                onModeChange={(mode) => {
+                  setSelectedMode(mode);
+                  if (selectedFile && onFileSelected) {
+                    onFileSelected(selectedFile, mode);
+                  }
+                }}
+                disabled={disabled || isUploading}
+              />
             </div>
-          </div>
-
-          {/* Action Trigger Button */}
-          <Button
-            variant="storm"
-            size="lg"
-            onClick={handleProcess}
-            loading={isUploading}
-            disabled={disabled}
-            className="w-full font-semibold tracking-wide shadow-md"
-          >
-            {!isUploading && <SparklesIcon size={18} className="mr-2" />}
-            {isUploading ? 'Extracting Linework & Quantities…' : 'Process Drawing Set'}
-          </Button>
+          )}
         </div>
-      )}
-
-      {/* Collapsible Advanced Configuration Drawer */}
-      <div className="border border-[var(--border-subtle)] rounded-[var(--radius-md)] bg-[var(--bg-surface)] overflow-hidden">
-        <button
-          type="button"
-          onClick={() => setShowConfig((prev) => !prev)}
-          disabled={disabled || isUploading}
-          aria-expanded={showConfig}
-          className="w-full flex items-center justify-between px-3.5 py-2.5 text-left text-xs font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors select-none"
-        >
-          <div className="flex items-center gap-2">
-            <SettingsIcon size={14} className="text-[var(--text-muted)]" />
-            <span>Advanced Pipeline Settings</span>
-            <Badge variant="muted" size="sm">
-              {activeModeDetails.badge}
-            </Badge>
-          </div>
-          {showConfig ? <ChevronUpIcon size={14} /> : <ChevronDownIcon size={14} />}
-        </button>
-
-        {showConfig && (
-          <div className="p-3.5 border-t border-[var(--border-subtle)] bg-[var(--bg-canvas)] animate-fadeIn">
-            <DrawingConfig
-              selectedMode={selectedMode}
-              onModeChange={(mode) => {
-                setSelectedMode(mode);
-                if (selectedFile && onFileSelected) {
-                  onFileSelected(selectedFile, mode);
-                }
-              }}
-              disabled={disabled || isUploading}
-            />
-          </div>
-        )}
       </div>
     </div>
   );

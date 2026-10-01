@@ -1,9 +1,8 @@
 'use client';
 
 import React from 'react';
-import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
-import { FileSpreadsheetIcon, FileTextIcon, RefreshIcon } from '@/components/ui/Icons';
+import { CheckIcon, FileSpreadsheetIcon, FileTextIcon, RefreshIcon } from '@/components/ui/Icons';
 
 export interface TakeoffHeaderProps {
   projectId: string;
@@ -39,29 +38,25 @@ export const TakeoffHeader: React.FC<TakeoffHeaderProps> = ({
   return (
     <header className="results-header" aria-label="Takeoff Header">
       <div className="results-header-info">
-        <div className="flex items-center gap-2 flex-wrap">
-          <h1 className="results-title">
-            {projectName || 'Site Servicing Takeoff'}
-          </h1>
-          <Badge variant="storm" size="sm" className="font-mono">
-            ID: {projectId.slice(0, 10)}
-          </Badge>
-        </div>
+        <span className="results-eyebrow">
+          <CheckIcon size={14} strokeWidth={2.5} />
+          Takeoff complete
+        </span>
+        <h1 className="results-title">{projectName || 'Site Servicing Takeoff'}</h1>
         <div className="results-meta">
           <span>Processed {formattedDate}</span>
-          <span className="dot-sep">•</span>
-          <span>Ontario Provincial Standards (OPS)</span>
+          <span className="dot-sep" />
+          <span className="font-mono text-[12px]" title={projectId}>
+            {projectId.slice(0, 10)}
+          </span>
+          <span className="dot-sep" />
+          <span>OPSS / OPSD rates</span>
         </div>
       </div>
 
       <div className="results-actions">
-        <Button
-          variant="primary"
-          icon={<FileSpreadsheetIcon size={16} />}
-          onClick={onDownloadXlsx}
-          loading={isDownloadingXlsx}
-        >
-          Download Excel (.xlsx)
+        <Button variant="ghost" icon={<RefreshIcon size={15} />} onClick={onReset}>
+          New takeoff
         </Button>
         <Button
           variant="secondary"
@@ -69,14 +64,15 @@ export const TakeoffHeader: React.FC<TakeoffHeaderProps> = ({
           onClick={onDownloadQuote}
           loading={isDownloadingQuote}
         >
-          Export Quote (.pdf)
+          Quote PDF
         </Button>
         <Button
-          variant="outline"
-          icon={<RefreshIcon size={15} />}
-          onClick={onReset}
+          variant="primary"
+          icon={<FileSpreadsheetIcon size={16} />}
+          onClick={onDownloadXlsx}
+          loading={isDownloadingXlsx}
         >
-          New Takeoff
+          Download Excel
         </Button>
       </div>
     </header>

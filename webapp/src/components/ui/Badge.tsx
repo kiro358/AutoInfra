@@ -10,6 +10,7 @@ export type BadgeVariant =
   | 'muted'
   | 'warning'
   | 'info'
+  | 'accent'
   | 'default';
 
 export type BadgeSize = 'sm' | 'md' | 'lg';
@@ -35,7 +36,7 @@ export const Badge: React.FC<BadgeProps> = ({
   ...props
 }) => {
   const variantClass = variant === 'default' ? 'badge-muted' : `badge-${variant}`;
-  const sizeClass = size === 'sm' ? 'text-[10px] py-0.5 px-1.5' : size === 'lg' ? 'text-xs py-1 px-3' : '';
+  const sizeClass = size === 'sm' ? 'badge-sm' : size === 'lg' ? 'badge-lg' : '';
 
   return (
     <span

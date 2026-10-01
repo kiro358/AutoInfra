@@ -191,11 +191,10 @@ export const ProcessingStages: React.FC<ProcessingStagesProps> = ({
     <Card
       variant="elevated"
       className={`proc-card ${className}`.trim()}
-      title="Takeoff Pipeline"
-      subtitle="Extraction in progress"
+      title="Running takeoff"
       headerBadge={
-        <Badge variant="info" size="sm" dot>
-          Running
+        <Badge variant="accent" size="sm" dot>
+          In progress
         </Badge>
       }
       action={
@@ -216,7 +215,7 @@ export const ProcessingStages: React.FC<ProcessingStagesProps> = ({
           {modeMeta.label}
         </Badge>
         <span className="proc-meta-sep font-mono">
-          {completedCount}/{TOTAL_STAGES} stages
+          {completedCount}/{TOTAL_STAGES} steps done
         </span>
       </div>
 
@@ -241,7 +240,7 @@ export const ProcessingStages: React.FC<ProcessingStagesProps> = ({
             </g>
             <circle className="proc-radar-core" cx="60" cy="60" r="3.5" />
           </svg>
-          <span className="proc-radar-caption font-mono">SCAN</span>
+          <span className="proc-radar-caption font-mono">SCANNING</span>
         </div>
 
         {/* Animated stage timeline */}
@@ -257,9 +256,9 @@ export const ProcessingStages: React.FC<ProcessingStagesProps> = ({
                 <div className="proc-stage-rail" aria-hidden="true">
                   <span className="proc-stage-node">
                     {status === 'complete' ? (
-                      <CheckIcon size={11} strokeWidth={3} />
+                      <CheckIcon size={13} strokeWidth={3} />
                     ) : status === 'active' ? (
-                      <SpinnerIcon size={11} className="animate-spin" />
+                      <SpinnerIcon size={13} className="animate-spin" />
                     ) : (
                       <span className="proc-stage-dot" />
                     )}
@@ -269,26 +268,13 @@ export const ProcessingStages: React.FC<ProcessingStagesProps> = ({
 
                 <div className="proc-stage-body">
                   <div className="proc-stage-head">
-                    <span className="proc-stage-index font-mono">
-                      {String(stage.id).padStart(2, '0')}
-                    </span>
                     <span className="proc-stage-icon" aria-hidden="true">
                       {stage.icon}
                     </span>
                     <span className="proc-stage-name font-condensed">{stage.name}</span>
-                    {status === 'complete' && (
-                      <Badge variant="success" size="sm" icon={<CheckIcon size={9} strokeWidth={3} />}>
-                        Done
-                      </Badge>
-                    )}
                     {status === 'active' && (
-                      <Badge variant={stage.accent} size="sm" dot>
+                      <Badge variant="accent" size="sm" dot>
                         Working
-                      </Badge>
-                    )}
-                    {status === 'pending' && (
-                      <Badge variant="muted" size="sm">
-                        Queued
                       </Badge>
                     )}
                   </div>
@@ -317,8 +303,8 @@ export const ProcessingStages: React.FC<ProcessingStagesProps> = ({
 
       <p className="proc-status font-mono" role="status" aria-live="polite">
         {runningStage
-          ? `STAGE ${activeStage}/${TOTAL_STAGES} — ${runningStage.name}`
-          : `COMPLETE — ${TOTAL_STAGES}/${TOTAL_STAGES} stages finished`}
+          ? `Step ${activeStage} of ${TOTAL_STAGES} — ${runningStage.name}`
+          : `Finishing up — ${TOTAL_STAGES}/${TOTAL_STAGES} steps complete`}
       </p>
     </Card>
   );

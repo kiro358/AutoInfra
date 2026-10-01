@@ -21,7 +21,7 @@ export async function getPdfjs(): Promise<any> {
         // @ts-expect-error — the worker entry ships without type declarations
         import('pdfjs-dist/legacy/build/pdf.worker.mjs'),
       ]);
-      (globalThis as any).pdfjsWorker ??= worker;
+      (globalThis as { pdfjsWorker?: unknown }).pdfjsWorker ??= worker;
       return lib;
     })().catch((err) => {
       pdfjsPromise = null; // allow a retry instead of caching the failure forever

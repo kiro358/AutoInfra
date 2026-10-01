@@ -232,12 +232,12 @@ export default function SettingsPage() {
 
     return (
       <div key={group.groupTitle} className="mb-5 last:mb-0">
-        <div className="flex items-center gap-2 mb-2 pb-1 border-b border-[var(--border-subtle)]">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-[var(--text-secondary)] font-mono">
+        <div className="flex items-center gap-2 mb-2 pb-2 border-b border-[var(--border-subtle)]">
+          <span className="text-[12.5px] font-semibold text-[var(--text-secondary)]">
             {group.groupTitle}
           </span>
         </div>
-        <div className="space-y-1.5">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1">
           {group.fields.map((field) => {
             const rawVal = sectionData[field.key];
             const numVal = typeof rawVal === 'number' ? rawVal : 0;
@@ -249,15 +249,12 @@ export default function SettingsPage() {
               >
                 <div className="flex flex-col min-w-0 pr-2 mb-1.5 sm:mb-0">
                   <div className="flex items-center gap-2">
-                    <span className="text-xs font-medium text-[var(--text-primary)]">
+                    <span className="text-[13px] font-medium text-[var(--text-primary)]" title={field.key}>
                       {field.label}
-                    </span>
-                    <span className="font-mono text-[10px] text-[var(--text-muted)] group-hover:text-[var(--text-secondary)] transition-colors">
-                      {field.key}
                     </span>
                   </div>
                   {field.description && (
-                    <span className="text-[11px] text-[var(--text-muted)] line-clamp-1">
+                    <span className="text-[12px] text-[var(--text-muted)] line-clamp-1">
                       {field.description}
                     </span>
                   )}
@@ -272,7 +269,7 @@ export default function SettingsPage() {
                       onChange={(e) =>
                         updateParam(sectionKey, field.key, parseFloat(e.target.value) || 0)
                       }
-                      className="w-24 sm:w-28 px-2.5 py-1 text-right font-mono text-xs bg-[var(--bg-canvas)] border border-[var(--border-subtle)] rounded-[var(--radius-sm)] text-[var(--text-primary)] focus:border-[var(--border-focus)] focus:bg-[var(--bg-surface)] focus:outline-none transition-colors"
+                      className="input input-sm w-24 sm:w-28 text-right font-mono"
                     />
                     <span className="ml-1.5 text-[11px] font-mono text-[var(--text-muted)] w-12 text-left truncate">
                       {field.unit}
@@ -288,7 +285,7 @@ export default function SettingsPage() {
   };
 
   return (
-    <div className="container-cad py-6 space-y-6">
+    <div className="container-cad pt-8 pb-16 space-y-6">
       {/* Breadcrumb & Navigation */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2 text-xs text-[var(--text-muted)]">
@@ -414,7 +411,7 @@ export default function SettingsPage() {
       </div>
 
       {/* Domain Rate Cards Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 gap-6">
         {/* Domain 1: Manholes & Structures */}
         {(activeTab === 'all' || activeTab === 'structures') && (
           <div className={activeTab === 'structures' ? 'lg:col-span-3' : ''}>
@@ -434,7 +431,6 @@ export default function SettingsPage() {
                   OPSD 700 / 400
                 </Badge>
               }
-              subtitle="Concrete, risers, castings &amp; labor"
               className="border-t-2 border-t-[var(--structures)]"
             >
               {isHydrated ? (
@@ -469,7 +465,6 @@ export default function SettingsPage() {
                   Storm &amp; Sanitary
                 </Badge>
               }
-              subtitle="Bedding, crew, stones &amp; PVC pipes"
               className="border-t-2 border-t-[var(--storm)]"
             >
               {isHydrated ? (
@@ -504,7 +499,6 @@ export default function SettingsPage() {
                   Pressure Distribution
                 </Badge>
               }
-              subtitle="Cover depth, C900 PVC &amp; thrust blocks"
               className="border-t-2 border-t-[var(--water)]"
             >
               {isHydrated ? (

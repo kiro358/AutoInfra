@@ -1,11 +1,9 @@
 'use client';
 
 import React from 'react';
-import { Badge } from '@/components/ui/Badge';
 import {
   ActivityIcon,
   DollarIcon,
-  LayersIcon,
   ManholeIcon,
   PipeIcon,
   WaterIcon,
@@ -50,21 +48,21 @@ export const TakeoffTabs: React.FC<TakeoffTabsProps> = ({
     },
     {
       id: 'storm',
-      label: 'Storm Sewers',
+      label: 'Storm',
       icon: <PipeIcon size={16} />,
       badgeCount: counts.stormRuns,
       badgeVariant: 'storm',
     },
     {
       id: 'sanitary',
-      label: 'Sanitary Sewers',
+      label: 'Sanitary',
       icon: <PipeIcon size={16} />,
       badgeCount: counts.sanitaryRuns,
       badgeVariant: 'sanitary',
     },
     {
       id: 'structures',
-      label: 'Structures & MHs',
+      label: 'Structures',
       icon: <ManholeIcon size={16} />,
       badgeCount: counts.structures,
       badgeVariant: 'structures',
@@ -78,7 +76,7 @@ export const TakeoffTabs: React.FC<TakeoffTabsProps> = ({
     },
     {
       id: 'telemetry',
-      label: 'Telemetry & Facts',
+      label: 'Telemetry',
       icon: <ActivityIcon size={16} />,
     },
   ];
@@ -100,13 +98,7 @@ export const TakeoffTabs: React.FC<TakeoffTabsProps> = ({
               <span className="tab-icon">{tab.icon}</span>
               <span className="tab-label">{tab.label}</span>
               {tab.badgeCount !== undefined && tab.badgeCount > 0 && (
-                <Badge
-                  variant={tab.badgeVariant || 'muted'}
-                  size="sm"
-                  className="font-mono text-xs"
-                >
-                  {tab.badgeCount}
-                </Badge>
+                <span className="tab-count">{tab.badgeCount}</span>
               )}
             </button>
           );

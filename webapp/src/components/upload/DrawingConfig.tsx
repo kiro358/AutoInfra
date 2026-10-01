@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { Badge, BadgeVariant } from '@/components/ui/Badge';
-import { CpuIcon, EyeIcon, LayersIcon, RulerIcon, SparklesIcon, CheckIcon } from '@/components/ui/Icons';
+import { EyeIcon, LayersIcon, RulerIcon, SparklesIcon } from '@/components/ui/Icons';
 
 export type ExtractionMode = 'default' | 'transcribe' | 'hybrid' | 'vector';
 
@@ -85,98 +85,65 @@ export const DrawingConfig: React.FC<DrawingConfigProps> = ({
 
   return (
     <div
-      className={`space-y-2.5 ${className}`.trim()}
+      className={`grid grid-cols-1 md:grid-cols-2 gap-2.5 ${className}`.trim()}
       role="radiogroup"
-      aria-label="Extraction Engine Pipeline Configuration"
+      aria-label="Extraction engine"
     >
-      <div className="flex items-center justify-between px-0.5">
-        <span className="text-[11px] font-mono uppercase tracking-wider text-[var(--text-muted)]">
-          Extraction Engine Pipeline
-        </span>
-        <span className="text-[11px] font-mono text-[var(--text-muted)]">
-          {EXTRACTION_MODES.length} Modes Available
-        </span>
-      </div>
+      {EXTRACTION_MODES.map((option) => {
+        const isSelected = selectedMode === option.id;
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-        {EXTRACTION_MODES.map((option) => {
-          const isSelected = selectedMode === option.id;
+        return (
+          <div
+            key={option.id}
+            role="radio"
+            aria-checked={isSelected}
+            tabIndex={disabled ? -1 : isSelected ? 0 : -1}
+            onClick={() => !disabled && onModeChange(option.id)}
+            onKeyDown={(e) => handleKeyDown(e, option.id)}
+            className={`
+              group relative flex gap-3 p-3.5 rounded-[var(--radius-md)] border text-left cursor-pointer select-none outline-none
+              transition-all duration-150 focus-visible:shadow-[var(--ring)]
+              ${
+                disabled
+                  ? 'opacity-50 cursor-not-allowed pointer-events-none border-line bg-surface'
+                  : isSelected
+                  ? 'border-[var(--accent)] bg-[var(--accent-bg)] shadow-[0_0_0_1px_var(--accent)]'
+                  : 'border-line bg-surface hover:border-[var(--border-active)] hover:bg-hover'
+              }
+            `}
+          >
+            <span className="grid place-items-center size-8 shrink-0 rounded-[8px] border border-line bg-surface">
+              {option.icon}
+            </span>
 
-          return (
-            <div
-              key={option.id}
-              role="radio"
-              aria-checked={isSelected}
-              tabIndex={disabled ? -1 : isSelected ? 0 : -1}
-              onClick={() => !disabled && onModeChange(option.id)}
-              onKeyDown={(e) => handleKeyDown(e, option.id)}
-              className={`
-                group relative flex flex-col justify-between p-3.5 rounded-[var(--radius-md)] border text-left transition-all duration-150 cursor-pointer select-none outline-none
-                ${
-                  disabled
-                    ? 'opacity-50 cursor-not-allowed pointer-events-none border-[var(--border-subtle)] bg-[var(--bg-surface)]'
-                    : isSelected
-                    ? 'border-[var(--water)] bg-[var(--bg-elevated)] ring-1 ring-[var(--water)]/40 shadow-sm'
-                    : 'border-[var(--border-subtle)] bg-[var(--bg-surface)] hover:border-[var(--border-active)] hover:bg-[var(--bg-hover)]'
-                }
-              `.trim()}
-            >
-              <div className="flex items-start justify-between gap-2.5 mb-2">
-                <div className="flex items-center gap-2 min-w-0">
-                  <div
-                    className={`
-                      w-7 h-7 rounded-[var(--radius-sm)] flex items-center justify-center shrink-0 border transition-colors
-                      ${
-                        isSelected
-                          ? 'border-[var(--water-border)] bg-[var(--water-bg)]'
-                          : 'border-[var(--border-subtle)] bg-[var(--bg-elevated)] group-hover:border-[var(--border-active)]'
-                      }
-                    `.trim()}
-                  >
-                    {option.icon}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-xs font-semibold text-[var(--text-primary)] font-sans leading-tight">
-                        {option.name}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-1.5 shrink-0">
-                  <Badge variant={option.badgeVariant} size="sm">
-                    {option.badge}
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[13px] font-semibold text-primary leading-tight">
+                  {option.name}
+                </span>
+                {option.recommended && (
+                  <Badge variant="accent" size="sm">
+                    Recommended
                   </Badge>
-                  {option.recommended && (
-                    <Badge variant="storm" size="sm" dot>
-                      Recommended
-                    </Badge>
-                  )}
-                  {/* Radio Indicator */}
-                  <div
-                    className={`
-                      w-4 h-4 rounded-full border flex items-center justify-center ml-1 transition-colors
-                      ${
-                        isSelected
-                          ? 'border-[var(--water)] bg-[var(--water)]'
-                          : 'border-[var(--border-active)] bg-transparent group-hover:border-[var(--border-strong)]'
-                      }
-                    `.trim()}
-                    aria-hidden="true"
-                  >
-                    {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
-                  </div>
-                </div>
+                )}
               </div>
-
-              <p className="text-[11px] text-[var(--text-secondary)] leading-relaxed font-sans pl-9">
+              <p className="mt-1 text-[12.5px] leading-relaxed text-secondary">
                 {option.description}
               </p>
             </div>
-          );
-        })}
-      </div>
+
+            <span
+              className={`
+                mt-0.5 grid place-items-center size-4 shrink-0 rounded-full border transition-colors
+                ${isSelected ? 'border-[var(--accent)] bg-[var(--accent)]' : 'border-[var(--border-strong)]'}
+              `}
+              aria-hidden="true"
+            >
+              {isSelected && <span className="size-1.5 rounded-full bg-white" />}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 };

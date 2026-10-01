@@ -1,7 +1,6 @@
 'use client';
 
 import React from 'react';
-import { Card } from '@/components/ui/Card';
 import { DollarIcon, LayersIcon, ManholeIcon, PipeIcon } from '@/components/ui/Icons';
 import { formatCurrency, formatMeters, formatNumber } from '@/lib/formatters';
 
@@ -18,67 +17,49 @@ export const TakeoffSummaryBar: React.FC<TakeoffSummaryBarProps> = ({
   structureCount,
   valveCount,
 }) => {
+  const tiles = [
+    {
+      tone: 'is-accent',
+      label: 'Total estimate',
+      value: formatCurrency(totalCost),
+      sub: 'All trades combined',
+      icon: <DollarIcon size={16} />,
+    },
+    {
+      tone: 'is-storm',
+      label: 'Linear pipework',
+      value: formatMeters(totalPipeLength),
+      sub: 'Storm, sanitary & watermain',
+      icon: <PipeIcon size={16} />,
+    },
+    {
+      tone: 'is-structures',
+      label: 'Structures',
+      value: formatNumber(structureCount, 0),
+      sub: 'Maintenance holes & catchbasins',
+      icon: <ManholeIcon size={16} />,
+    },
+    {
+      tone: 'is-water',
+      label: 'Appurtenances',
+      value: formatNumber(valveCount, 0),
+      sub: 'Valves, hydrants & specials',
+      icon: <LayersIcon size={16} />,
+    },
+  ];
+
   return (
     <div className="studio-kpi-grid" aria-label="Takeoff Key Metrics">
-      <Card variant="interactive" className="kpi-card is-storm">
-        <div className="flex items-center justify-between mb-2">
-          <span className="kpi-label">Total Estimate</span>
-          <span className="p-1.5 rounded bg-storm/10 text-storm">
-            <DollarIcon size={18} />
-          </span>
+      {tiles.map((t) => (
+        <div key={t.label} className={`kpi-card ${t.tone}`}>
+          <div className="kpi-head">
+            <span className="kpi-label">{t.label}</span>
+            <span className="kpi-icon">{t.icon}</span>
+          </div>
+          <div className="kpi-value">{t.value}</div>
+          <div className="kpi-sub">{t.sub}</div>
         </div>
-        <div className="kpi-val text-storm font-mono">
-          {formatCurrency(totalCost)}
-        </div>
-        <div className="kpi-sub font-mono">
-          Grand total across all trades
-        </div>
-      </Card>
-
-      <Card variant="interactive" className="kpi-card is-sanitary">
-        <div className="flex items-center justify-between mb-2">
-          <span className="kpi-label">Linear Pipework</span>
-          <span className="p-1.5 rounded bg-sanitary/10 text-sanitary">
-            <PipeIcon size={18} />
-          </span>
-        </div>
-        <div className="kpi-val text-sanitary font-mono">
-          {formatMeters(totalPipeLength)}
-        </div>
-        <div className="kpi-sub font-mono">
-          Storm, sanitary &amp; watermain mains
-        </div>
-      </Card>
-
-      <Card variant="interactive" className="kpi-card is-structures">
-        <div className="flex items-center justify-between mb-2">
-          <span className="kpi-label">Structures &amp; Inlets</span>
-          <span className="p-1.5 rounded bg-structures/10 text-structures">
-            <ManholeIcon size={18} />
-          </span>
-        </div>
-        <div className="kpi-val text-structures font-mono">
-          {formatNumber(structureCount, 0)}
-        </div>
-        <div className="kpi-sub font-mono">
-          Maintenance holes, CBs &amp; inlets
-        </div>
-      </Card>
-
-      <Card variant="interactive" className="kpi-card is-water">
-        <div className="flex items-center justify-between mb-2">
-          <span className="kpi-label">Appurtenances</span>
-          <span className="p-1.5 rounded bg-water/10 text-water">
-            <LayersIcon size={18} />
-          </span>
-        </div>
-        <div className="kpi-val text-water font-mono">
-          {formatNumber(valveCount, 0)}
-        </div>
-        <div className="kpi-sub font-mono">
-          Valves, hydrants &amp; special fittings
-        </div>
-      </Card>
+      ))}
     </div>
   );
 };

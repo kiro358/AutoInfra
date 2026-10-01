@@ -123,9 +123,9 @@ export function DataTable<T extends Record<string, any>>({
   }, [data, query, effectiveSearchFields, currentSortField, currentSortDirection]);
 
   return (
-    <div className={`flex flex-col gap-2 ${className}`.trim()}>
+    <div className={`data-table-shell flex flex-col ${className}`.trim()}>
       {(searchable || toolbarActions) && (
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
+        <div className="data-table-toolbar flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2">
           {searchable && (
             <div className="relative flex-1 max-w-sm">
               <SearchIcon
@@ -137,7 +137,7 @@ export function DataTable<T extends Record<string, any>>({
                 value={query}
                 onChange={(e) => handleSearchChange(e.target.value)}
                 placeholder={searchPlaceholder}
-                className="input input-sm pl-8 pr-7 w-full text-xs font-mono"
+                className="input input-sm pl-8 pr-7 w-full"
               />
               {query && (
                 <button

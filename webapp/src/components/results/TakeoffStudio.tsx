@@ -185,7 +185,7 @@ export const TakeoffStudio: React.FC<TakeoffStudioProps> = ({ result, onReset })
         counts={counts}
       />
 
-      <div className="studio-view-container" role="region" aria-label="Takeoff details">
+      <div className="studio-view-container" id="takeoff-panel" role="tabpanel" aria-labelledby={`takeoff-tab-${activeTab}`}>
         {activeTab === 'summary' && (
           <CostLedgerView extraction={extraction} />
         )}

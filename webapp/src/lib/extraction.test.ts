@@ -743,3 +743,35 @@ describe('sanitizeTranscriptTiles', () => {
     expect(out.missing).toEqual([1]);
   });
 });
+
+describe('parseFacts — untrusted LLM JSON', () => {
+  it('turns non-numeric values into null, never NaN', async () => {
+    const { parseFacts, num } = await import('./extraction');
+    expect(num('n/a')).toBeNull();
+    expect(num('1,234.5')).toBe(1234.5);
+    expect(num(Infinity)).toBeNull();
+    const facts = parseFacts(
+      {
+        manholes: [{ description: 'MH 1', topElevation: 'n/a', lowInvert: '177.2' }],
+        sewers: [{ runLabel: 'MH 1 - MH 2', length: 'unknown', slope: 'TBD', pipeDiameter: '300' }],
+        warnings: ['ok', 42],
+      },
+      'P'
+    );
+    expect(facts.structures[0].topElevation).toBeNull();
+    expect(facts.structures[0].lowInvert).toBe(177.2);
+    expect(facts.sewers[0].length).toBeNull();
+    expect(facts.sewers[0].slope).toBeNull();
+    expect(facts.sewers[0].pipeDiameter).toBe(300);
+    expect(facts.warnings).toEqual(['ok']);
+  });
+
+  it('tolerates wrong container types instead of crashing', async () => {
+    const { parseFacts } = await import('./extraction');
+    const facts = parseFacts({ manholes: 'none', sewers: {}, watermain: null }, 'P');
+    expect(facts.structures).toEqual([]);
+    expect(facts.sewers).toEqual([]);
+    expect(facts.watermain).toEqual([]);
+    expect(parseFacts(null, 'P').projectName).toBe('P');
+  });
+});

@@ -263,10 +263,26 @@ export function isNonMainlineSewer(label: string): boolean {
   return NON_MAINLINE_SEWER.test(String(label || ''));
 }
 
+/** A finite number, or null — never NaN/Infinity (LLM fields are untrusted). */
+export function num(x: unknown): number | null {
+  if (x == null || x === '') return null;
+  const n = typeof x === 'number' ? x : Number(String(x).replace(/,/g, '').trim());
+  return Number.isFinite(n) ? n : null;
+}
+
+/** The value if it is an array, else []. */
+function arr(x: unknown): any[] {
+  return Array.isArray(x) ? x : [];
+}
+
 export function parseFacts(raw: any, projectName: string): TakeoffFacts {
+  // LLM output is untrusted JSON: a non-array where an array belongs, or a value
+  // like "n/a" that Number() turns into NaN, must not reach costing. NaN used to
+  // pass the old `!= null` check and flow into every downstream dollar figure.
+  raw = raw && typeof raw === 'object' ? raw : {};
   // Drop non-structure callouts, then split real structures from plain catchbasins the model
   // mis-listed as structures (reclassified into the CB block below).
-  const candidateStructs = (raw.manholes || []).filter((m: any) => !isNonStructure(String(m.description || '')));
+  const candidateStructs = arr(raw.manholes).filter((m: any) => !isNonStructure(String(m.description || '')));
   const realStructs = candidateStructs.filter((m: any) => !plainCatchbasinType(String(m.description || '')));
 
   // Merge the model's explicit CB groups with CBs reclassified from the structure list. Prefer
@@ -278,9 +294,9 @@ export function parseFacts(raw: any, projectName: string): TakeoffFacts {
     if (t) cbFromStructs[t] = (cbFromStructs[t] || 0) + 1;
   }
   const groupByType: Record<string, CatchbasinGroupFact> = {};
-  for (const g of (raw.catchbasins?.groups || [])) {
+  for (const g of arr(raw.catchbasins?.groups)) {
     const t = String(g.type || 'SINGLE_CB') as CatchbasinGroupFact['type'];
-    groupByType[t] = { type: t, quantity: Number(g.quantity) || 0, wallThickness: g.wallThickness != null ? Number(g.wallThickness) : null, depth: g.depth != null ? Number(g.depth) : null };
+    groupByType[t] = { type: t, quantity: Number(g.quantity) || 0, wallThickness: num(g.wallThickness), depth: num(g.depth) };
   }
   for (const [t, cnt] of Object.entries(cbFromStructs)) {
     if (!groupByType[t]) groupByType[t] = { type: t as CatchbasinGroupFact['type'], quantity: cnt, wallThickness: null, depth: null };
@@ -293,41 +309,41 @@ export function parseFacts(raw: any, projectName: string): TakeoffFacts {
     date: raw.date || new Date().toISOString().split('T')[0],
     structures: realStructs.map((m: any) => ({
       description: String(m.description || ''),
-      topElevation: m.topElevation != null ? Number(m.topElevation) : null,
-      lowInvert: m.lowInvert != null ? Number(m.lowInvert) : null,
-      highInvert: m.highInvert != null ? Number(m.highInvert) : null,
-      pipeOutDiameter: m.pipeOutDiameter != null ? Number(m.pipeOutDiameter) : null,
+      topElevation: num(m.topElevation),
+      lowInvert: num(m.lowInvert),
+      highInvert: num(m.highInvert),
+      pipeOutDiameter: num(m.pipeOutDiameter),
       structureType: m.structureType ? String(m.structureType) : null,
-      depth: m.depth != null ? Number(m.depth) : null,
+      depth: num(m.depth),
     })),
     catchbasins: Object.values(groupByType),
-    sewers: (raw.sewers || []).filter((s: any) => !isNonMainlineSewer(String(s.runLabel || ''))).map((s: Record<string, unknown>) => ({
+    sewers: arr(raw.sewers).filter((s: any) => !isNonMainlineSewer(String(s.runLabel || ''))).map((s: Record<string, unknown>) => ({
       runLabel: String(s.runLabel || ''),
       isLineItem: Boolean(s.isLineItem),
       lineItemType: s.lineItemType ? String(s.lineItemType) : undefined,
-      length: s.length != null ? Number(s.length) : null,
-      pipeDiameter: s.pipeDiameter != null ? snapToPipeDiameter(Number(s.pipeDiameter)) : null,
-      typeClass: s.typeClass != null ? Number(s.typeClass) : null,
-      slope: s.slope != null ? normalizeSlope(Number(s.slope)) : null,
-      depth: s.depth != null ? Number(s.depth) : null,
+      length: num(s.length),
+      pipeDiameter: num(s.pipeDiameter) != null ? snapToPipeDiameter(num(s.pipeDiameter) as number) : null,
+      typeClass: num(s.typeClass),
+      slope: num(s.slope) != null ? normalizeSlope(num(s.slope) as number) : null,
+      depth: num(s.depth),
     })),
-    watermain: (raw.watermain || []).map((w: Record<string, unknown>) => ({
+    watermain: arr(raw.watermain).map((w: Record<string, unknown>) => ({
       sizeAndType: String(w.sizeAndType || ''),
       length: Number(w.length) || 0,
       pipeDiameter: snapToPipeDiameter(Number(w.pipeDiameter) || 0),
       ocSc: Number(w.ocSc) || 1.1,
       avgCover: Number(w.avgCover) || 1.8,
     })),
-    watermainSpecials: (raw.watermainSpecials || []).map((sp: Record<string, unknown>) => ({
+    watermainSpecials: arr(raw.watermainSpecials).map((sp: Record<string, unknown>) => ({
       specialName: String(sp.specialName || ''),
       quantity: Number(sp.quantity) || 0,
     })),
-    watermainValves: (raw.watermainValves || []).map((v: Record<string, unknown>) => ({
+    watermainValves: arr(raw.watermainValves).map((v: Record<string, unknown>) => ({
       valveSize: String(v.valveSize || ''),
       quantity: Number(v.quantity) || 0,
     })),
     confidence: Number(raw.confidence) || 0.5,
-    warnings: raw.warnings || [],
+    warnings: arr(raw.warnings).filter((w: unknown): w is string => typeof w === 'string'),
   };
 }
 

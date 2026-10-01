@@ -64,6 +64,20 @@ describe('JobStore', () => {
   });
 });
 
+describe('JobStore deadline', () => {
+  it('fails a job that overruns, and ignores its late result', async () => {
+    const store = new JobStore<number>({ maxConcurrent: 1, maxActive: 5, ttlMs: 60_000, deadlineMs: 20 });
+    const d = deferred<number>();
+    const id = store.start('slow.pdf', () => d.promise);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(store.get(id)).toMatchObject({ status: 'failed' });
+    expect(store.get(id)?.error).toMatch(/took longer than/);
+    d.resolve(1);
+    await tick();
+    expect(store.get(id)).toMatchObject({ status: 'failed', result: undefined });
+  });
+});
+
 describe('describeError', () => {
   it('turns infrastructure errors into actionable messages', () => {
     expect(describeError(new Error('429 RESOURCE_EXHAUSTED'))).toMatch(/rate-limited/);

@@ -81,16 +81,35 @@ export const TakeoffTabs: React.FC<TakeoffTabsProps> = ({
     },
   ];
 
+  // WAI-ARIA tabs: arrows/Home/End move between tabs (only the active tab is in
+  // the Tab order, so without this keyboard users could never leave Cost Ledger).
+  const onKeyDown = (e: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let next: number | null = null;
+    if (e.key === 'ArrowRight') next = (index + 1) % tabs.length;
+    else if (e.key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = tabs.length - 1;
+    if (next == null) return;
+    e.preventDefault();
+    onSelectTab(tabs[next].id);
+    const list = e.currentTarget.parentElement;
+    (list?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next])?.focus();
+  };
+
   return (
     <nav className="studio-tabs-bar" aria-label="Takeoff Navigation Tabs">
       <div className="studio-tabs-list" role="tablist">
-        {tabs.map((tab) => {
+        {tabs.map((tab, index) => {
           const isActive = activeTab === tab.id;
           return (
             <button
               key={tab.id}
+              type="button"
               role="tab"
+              id={`takeoff-tab-${tab.id}`}
+              aria-controls="takeoff-panel"
               aria-selected={isActive}
+              onKeyDown={(e) => onKeyDown(e, index)}
               tabIndex={isActive ? 0 : -1}
               className={`studio-tab-btn ${isActive ? 'is-active' : ''}`}
               onClick={() => onSelectTab(tab.id)}

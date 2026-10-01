@@ -56,6 +56,13 @@ export class JobStore<R = unknown> {
       maxActive: number;
       /** How long finished jobs (and their results) are kept for polling. */
       ttlMs: number;
+      /**
+       * Wall-clock limit for one job. Past it the job is reported failed so the
+       * user isn't left polling a hung model call (retries can stack to ~37 min).
+       * The work itself can't be cancelled, so it keeps its concurrency slot
+       * until it really finishes, and its late result is discarded.
+       */
+      deadlineMs?: number;
       now?: () => number;
     }
   ) {}
@@ -128,16 +135,33 @@ export class JobStore<R = unknown> {
       .then(async () => {
         job.status = 'running';
         setStage('extracting');
+        const timer = this.opts.deadlineMs
+          ? setTimeout(() => {
+              if (job.status !== 'running') return;
+              job.status = 'failed';
+              job.error = `This takeoff took longer than ${Math.round(
+                (this.opts.deadlineMs as number) / 60_000
+              )} minutes and was stopped. Try again, or upload only the servicing sheets.`;
+              job.updatedAt = this.now();
+              console.error(`[jobs] ${job.id} (${fileName}) exceeded its deadline.`);
+            }, this.opts.deadlineMs)
+          : null;
         try {
-          job.result = await work(setStage, job.id);
-          job.status = 'completed';
-          setStage('done');
+          const result = await work(setStage, job.id);
+          if (job.status === 'running') {
+            job.result = result;
+            job.status = 'completed';
+            setStage('done');
+          }
         } catch (err) {
-          job.status = 'failed';
-          job.error = describeError(err);
-          job.updatedAt = this.now();
+          if (job.status === 'running') {
+            job.status = 'failed';
+            job.error = describeError(err);
+            job.updatedAt = this.now();
+          }
           console.error(`[jobs] ${job.id} (${fileName}) failed:`, err);
         } finally {
+          if (timer) clearTimeout(timer);
           this.release();
         }
       });
@@ -203,4 +227,5 @@ export const jobStore: JobStore =
     maxConcurrent: envInt('MAX_CONCURRENT_JOBS', 1), // ~0.75 GB peak per job
     maxActive: envInt('MAX_ACTIVE_JOBS', 10),
     ttlMs: envInt('JOB_TTL_MINUTES', 60) * 60_000,
+    deadlineMs: envInt('JOB_DEADLINE_MINUTES', 40) * 60_000,
   }));

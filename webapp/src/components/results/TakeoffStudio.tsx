@@ -12,6 +12,7 @@ import {
   StructuresView,
   TelemetryView,
   WatermainView,
+  takeoffHeadline,
   toManholeRows,
   toSewerRunRows,
   toWatermainPipeRows,
@@ -113,10 +114,8 @@ export const TakeoffStudio: React.FC<TakeoffStudioProps> = ({ result, onReset })
     return pipeCost + valveCost;
   }, [watermainPipeRows, watermainValveRows]);
 
-  const grandTotalCost = totalStormCost + totalSanitaryCost + totalStructuresCost + totalWatermainCost;
+  const headline = useMemo(() => takeoffHeadline(extraction), [extraction]);
   const grandTotalPipeLength = totalStormLength + totalSanitaryLength + totalWatermainLength;
-  const structureCount = structureRows.length;
-  const valveCount = watermainValveRows.length;
 
   const counts = useMemo(
     () => ({
@@ -171,10 +170,10 @@ export const TakeoffStudio: React.FC<TakeoffStudioProps> = ({ result, onReset })
       />
 
       <TakeoffSummaryBar
-        totalCost={grandTotalCost}
+        totalCost={headline.totalCost}
         totalPipeLength={grandTotalPipeLength}
-        structureCount={structureCount}
-        valveCount={valveCount}
+        structureCount={headline.structureCount}
+        valveCount={headline.appurtenanceCount}
       />
 
       <TakeoffTabs

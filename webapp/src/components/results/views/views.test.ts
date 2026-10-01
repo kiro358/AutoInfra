@@ -37,6 +37,7 @@ import {
   buildLedgerLines,
   catchbasinLaborRate,
   grandTotal,
+  takeoffHeadline,
   ledgerColumns,
   tradeTotals,
 } from './CostLedgerView';
@@ -665,5 +666,37 @@ describe('serializeFacts', () => {
     const json = serializeFacts(extraction());
     expect(json.split('\n')[1].startsWith('  "')).toBe(true);
     expect(JSON.parse(json).jobNumber).toBe('24-114');
+  });
+});
+
+describe('takeoffHeadline', () => {
+  it('total estimate equals the ledger grand total, catchbasins included', () => {
+    const ex = extraction();
+    const headline = takeoffHeadline(ex);
+    expect(headline.totalCost).toBe(grandTotal(buildLedgerLines(ex)));
+    // 6 single CBs at (500 grate + 700 labour) + 300 materials = 7,500 must be in it.
+    const withoutCbs = takeoffHeadline(extraction({ catchbasins: undefined }));
+    expect(headline.totalCost - withoutCbs.totalCost).toBe(7500);
+  });
+
+  it('counts structure and appurtenance units, not table rows', () => {
+    const headline = takeoffHeadline(extraction());
+    expect(headline.structureCount).toBe(1 + 6); // 1 manhole + 6 catchbasins
+    expect(headline.appurtenanceCount).toBe(4 + 2); // 4 valves + 2 hydrants
+  });
+
+  it('is all zeros for an empty takeoff', () => {
+    expect(
+      takeoffHeadline(
+        extraction({
+          manholes: [],
+          catchbasins: undefined,
+          sewers: [],
+          watermain: [],
+          watermainValves: [],
+          watermainSpecials: [],
+        })
+      )
+    ).toEqual({ totalCost: 0, structureCount: 0, appurtenanceCount: 0 });
   });
 });

@@ -196,6 +196,35 @@ export function grandTotal(lines: LedgerLine[]): number {
   return lines.reduce((acc, line) => acc + line.cost, 0);
 }
 
+export interface TakeoffHeadline {
+  /** Same figure as the ledger's grand total — the two must never disagree. */
+  totalCost: number;
+  /** Maintenance holes plus every catchbasin unit. */
+  structureCount: number;
+  /** Valve and special (hydrant, fitting…) units, not table rows. */
+  appurtenanceCount: number;
+}
+
+/**
+ * Figures for the results header tiles. Derived from `buildLedgerLines` so the
+ * "Total estimate" tile always equals the Cost Ledger grand total — summing the
+ * per-tab totals instead silently dropped catchbasins.
+ */
+export function takeoffHeadline(extraction: ExtractionResult): TakeoffHeadline {
+  const catchbasinUnits = (extraction.catchbasins?.groups ?? []).reduce(
+    (acc, group) => acc + (group.quantity ?? 0),
+    0
+  );
+  const units = (items: ReadonlyArray<{ quantity?: number | null }> | null | undefined) =>
+    (items ?? []).reduce((acc, item) => acc + (item.quantity ?? 0), 0);
+
+  return {
+    totalCost: grandTotal(buildLedgerLines(extraction)),
+    structureCount: (extraction.manholes ?? []).length + catchbasinUnits,
+    appurtenanceCount: units(extraction.watermainValves) + units(extraction.watermainSpecials),
+  };
+}
+
 export function ledgerColumns(): Column<LedgerLine>[] {
   return [
     {

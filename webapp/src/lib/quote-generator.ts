@@ -16,6 +16,7 @@ export async function generateQuote(
 
       doc.on('data', (chunk: Buffer) => chunks.push(chunk));
       doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
 
       // ---- Header ----
       doc.fontSize(20).font('Helvetica-Bold').text('TOPSITE CONTRACTING LIMITED', { align: 'center' });
@@ -44,8 +45,13 @@ export async function generateQuote(
       const manholeTotal = estimateManholeTotal(extraction, params) + catchbasinTotal;
       const watermainTotal = estimateWatermainTotal(extraction, params);
       const subtotal = sewerTotal + manholeTotal + watermainTotal;
-      const markup = params.sewers.marginFactor - 1;
-      const grandTotal = overrides?.totalOverride ?? subtotal * (1 + markup);
+      // Each section is marked up by ITS OWN margin factor (the template has one per sheet).
+      const marked = quoteMarkup(
+        { sewers: sewerTotal, manholes: manholeTotal, watermain: watermainTotal },
+        params
+      );
+      const markupAmount = marked - subtotal;
+      const grandTotal = overrides?.totalOverride ?? marked;
 
       // Table header
       const tableTop = doc.y;
@@ -63,15 +69,18 @@ export async function generateQuote(
       // Rows
       doc.font('Helvetica').fontSize(9);
       const totalSewerLen = extraction.sewers.reduce((s, r) => s + (r.isLineItem ? 0 : (r.length ?? 0)), 0);
-      const totalWmLen = extraction.watermain.reduce((s, r) => s + r.length, 0);
+      const totalWmLen = extraction.watermain.reduce((s, r) => s + (r.length > 0 ? r.length : 0), 0);
+      // A main whose length is not on the drawing is NOT a $0 main — say so.
+      const wmLenTbd = extraction.watermain.some((r) => !(r.length > 0));
+      const wmQty = `${formatLength(totalWmLen)} m${wmLenTbd ? ' + length TBD' : ''}`;
 
       const totalMhCount = extraction.manholes.filter(mh => mh.description.toUpperCase() !== 'SANITARY' && mh.depth !== null).length;
       const totalCbCount = extraction.catchbasins?.groups.reduce((s, g) => s + (g.quantity || 0), 0) || 0;
       const totalStructures = totalMhCount + totalCbCount;
 
-      addQuoteRow(doc, col1, col2, col3, col4, '1', `${totalSewerLen} m`, 'Sewer Installation', formatCurrency(sewerTotal));
+      addQuoteRow(doc, col1, col2, col3, col4, '1', `${formatLength(totalSewerLen)} m`, 'Sewer Installation', formatCurrency(sewerTotal));
       addQuoteRow(doc, col1, col2, col3, col4, '2', `${totalStructures} ea`, 'Manholes & Catchbasins', formatCurrency(manholeTotal));
-      addQuoteRow(doc, col1, col2, col3, col4, '3', `${totalWmLen} m`, 'Watermain Installation', formatCurrency(watermainTotal));
+      addQuoteRow(doc, col1, col2, col3, col4, '3', wmQty, wmLenTbd ? 'Watermain Installation (excl. TBD lengths)' : 'Watermain Installation', formatCurrency(watermainTotal));
 
       doc.moveDown(0.5);
       doc.moveTo(50, doc.y).lineTo(562, doc.y).stroke();
@@ -83,8 +92,8 @@ export async function generateQuote(
       doc.text(formatCurrency(subtotal), col4, doc.y - doc.currentLineHeight(), { width: 92, align: 'right' });
       doc.moveDown(0.3);
 
-      doc.text(`MARKUP (${(markup * 100).toFixed(0)}%)`, col3, doc.y);
-      doc.text(formatCurrency(subtotal * markup), col4, doc.y - doc.currentLineHeight(), { width: 92, align: 'right' });
+      doc.text(markupLabel(params), col3, doc.y);
+      doc.text(formatCurrency(markupAmount), col4, doc.y - doc.currentLineHeight(), { width: 92, align: 'right' });
       doc.moveDown(0.3);
 
       doc.fontSize(11);
@@ -101,9 +110,11 @@ export async function generateQuote(
       doc.font('Helvetica').fontSize(9);
 
       const scopeItems = [
-        `Supply and install ${totalSewerLen}m of storm/sanitary sewer`,
+        `Supply and install ${formatLength(totalSewerLen)}m of storm/sanitary sewer`,
         `Supply and install ${extraction.manholes.length} manholes/catchbasins`,
-        `Supply and install ${totalWmLen}m of watermain`,
+        wmLenTbd
+          ? `Supply and install ${formatLength(totalWmLen)}m of watermain, plus main(s) whose length is TBD (not on the drawing; not priced)`
+          : `Supply and install ${formatLength(totalWmLen)}m of watermain`,
         'Excavation, backfill, and compaction',
         'Granular and crushed stone bedding',
         'Trucking of excess material',
@@ -161,15 +172,42 @@ function addQuoteRow(
   doc.moveDown(0.5);
 }
 
+/** Lengths on the quote: one decimal, never float noise like 30.599999999999998. */
+export function formatLength(m: number): string {
+  return (Number.isFinite(m) ? m : 0).toFixed(1);
+}
+
+/** Section totals marked up by each section's own margin factor. */
+export function quoteMarkup(
+  totals: { sewers: number; manholes: number; watermain: number },
+  params: GlobalParams
+): number {
+  const f = (x: number | undefined) => (typeof x === 'number' && Number.isFinite(x) ? x : 1);
+  return (
+    totals.sewers * f(params.sewers.marginFactor) +
+    totals.manholes * f(params.manholes.marginFactor) +
+    totals.watermain * f(params.watermain.marginFactor)
+  );
+}
+
+function markupLabel(params: GlobalParams): string {
+  const factors = [params.sewers.marginFactor, params.manholes.marginFactor, params.watermain.marginFactor];
+  const same = factors.every((x) => x === factors[0]);
+  return same ? `MARKUP (${((factors[0] - 1) * 100).toFixed(0)}%)` : 'MARKUP (per section)';
+}
+
 function formatCurrency(val: number): string {
   return `$${val.toLocaleString('en-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
 // ---- Rough cost estimation (for quote — actual precision comes from Excel formulas) ----
 
-function estimateSewerTotal(extraction: ExtractionResult, params: GlobalParams): number {
+export function estimateSewerTotal(extraction: ExtractionResult, params: GlobalParams): number {
   let total = 0;
   for (const sw of extraction.sewers) {
+    // Priced add-ons (insulation/CONN/WYE surcharges, VIDEO/LAYOUT/AS BUILT fees) count
+    // on EVERY row — line items carry nothing else.
+    total += (sw.addMaterials || 0) + (sw.addLE || 0);
     if (sw.isLineItem) continue;
     const length = sw.length ?? 0;
     const pipeDiameter = sw.pipeDiameter ?? 0;
@@ -243,9 +281,11 @@ function estimateCatchbasinTotal(extraction: ExtractionResult, params: GlobalPar
   return total;
 }
 
-function estimateWatermainTotal(extraction: ExtractionResult, params: GlobalParams): number {
+export function estimateWatermainTotal(extraction: ExtractionResult, params: GlobalParams): number {
   let total = 0;
   for (const wm of extraction.watermain) {
+    total += (wm.addMaterials || 0) + (wm.addLE || 0);
+    if (!(wm.length > 0)) continue; // length TBD — flagged on the quote, not priced as $0 pipe
     const dailyCost = params.watermain.dayCostPerDay + params.watermain.extraPerDay;
     const daysPer = wm.length / params.watermain.productionMPerDay;
     const laborCost = dailyCost * daysPer;

@@ -20,9 +20,23 @@ function emptyFacts(overrides: Partial<TakeoffFacts> = {}): TakeoffFacts {
 }
 
 describe('determineTemplateType', () => {
-  it('selects LONG only when sewer rows exceed 40', () => {
-    expect(determineTemplateType(40)).toBe('SHORT');
-    expect(determineTemplateType(41)).toBe('LONG');
+  // SHORT capacities come from constants.ts::TEMPLATE_LAYOUT (asserted against the real
+  // template in spreadsheet.test.ts): 38 run rows (14..51; 52-54 are its fee rows),
+  // 36 structures (11..46), 6 watermain runs (13..18).
+  it('selects LONG when sewer run rows exceed SHORT capacity (38)', () => {
+    expect(determineTemplateType(38)).toBe('SHORT');
+    expect(determineTemplateType(39)).toBe('LONG');
+  });
+  it('selects LONG when structures or watermain runs exceed SHORT capacity', () => {
+    expect(determineTemplateType(5, 36, 6)).toBe('SHORT');
+    expect(determineTemplateType(5, 37, 0)).toBe('LONG');
+    expect(determineTemplateType(5, 0, 7)).toBe('LONG');
+  });
+  it('does not count the standard fee rows against SHORT run capacity', () => {
+    const sewers = Array.from({ length: 38 }, (_, i) => ({
+      runLabel: `MH${i}-MH${i + 1}`, isLineItem: false, length: 1, pipeDiameter: 300, typeClass: null, slope: null, depth: null,
+    }));
+    expect(priceTakeoff(emptyFacts({ sewers })).templateType).toBe('SHORT');
   });
 });
 
@@ -103,6 +117,19 @@ describe('priceTakeoff — sewers', () => {
     expect(video.addMaterials).toBe(18 * 25); // total non-line-item length * $25/m
   });
 
+  it('prices an extracted fee line item in place instead of duplicating it', () => {
+    const out = priceTakeoff(
+      emptyFacts({
+        sewers: [
+          { runLabel: 'MH1-MH2', isLineItem: false, length: 10, pipeDiameter: 300, typeClass: null, slope: null, depth: null },
+          { runLabel: 'VIDEO', isLineItem: true, length: null, pipeDiameter: null, typeClass: null, slope: null, depth: null },
+        ],
+      })
+    );
+    expect(out.sewers.map((s) => s.runLabel)).toEqual(['MH1-MH2', 'VIDEO', 'LAYOUT', 'AS BUILT']);
+    expect(out.sewers[1].addMaterials).toBe(10 * DEFAULT_COSTING.standardFees.videoPerM);
+  });
+
   it('adds no fee rows when there are no sewers', () => {
     expect(priceTakeoff(emptyFacts()).sewers).toHaveLength(0);
   });
@@ -126,6 +153,17 @@ describe('priceTakeoff — catchbasins, watermain', () => {
       addMaterials: 900,
     });
     expect(out.catchbasins.laborRates).toEqual(DEFAULT_COSTING.laborRates);
+  });
+
+  it('warns about a watermain run with no length, without mutating the input facts', () => {
+    const input = emptyFacts({
+      warnings: ['upstream'],
+      watermain: [{ sizeAndType: '200mm PVC', length: 0, pipeDiameter: 200, ocSc: 1.1, avgCover: 1.8 }],
+    });
+    const out = priceTakeoff(input);
+    expect(out.warnings[0]).toBe('upstream');
+    expect(out.warnings.some((w) => /200mm PVC.*length not found.*TBD/.test(w))).toBe(true);
+    expect(input.warnings).toEqual(['upstream']);
   });
 
   it('applies watermain special/valve cost defaults', () => {

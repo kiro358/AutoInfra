@@ -102,7 +102,7 @@ export const INPUT_CELLS = {
     },
     // Data rows start at row 11, columns for each manhole:
     dataStartRow: 11,
-    dataEndRow: 50, // Changed from 60 to 50 to match the template (manholes stop at row 50)
+    dataEndRow: 46, // template formulas + totals cover 11..46; row 48 is MANHOLE TOTALS (see TEMPLATE_LAYOUT)
     dataColumns: {
       B: 'description',
       C: 'topElevation',
@@ -141,7 +141,7 @@ export const INPUT_CELLS = {
       V4: 'fedTax',
     },
     dataStartRow: 14,
-    dataEndRow: 55,
+    dataEndRow: 54, // C57 = SUM(C14:C54); SHORT reserves 52-54 for its fee rows (see TEMPLATE_LAYOUT)
     dataColumns: {
       B: 'runLabel',
       C: 'length',
@@ -183,8 +183,9 @@ export const INPUT_CELLS = {
       U3: 'provTax',
       U4: 'fedTax',
     },
+    // SHORT layout (13..18); LONG is shifted down one row (14..19) — see TEMPLATE_LAYOUT.
     dataStartRow: 13,
-    dataEndRow: 19,
+    dataEndRow: 18,
     dataColumns: {
       B: 'sizeAndType',
       C: 'length',
@@ -194,7 +195,7 @@ export const INPUT_CELLS = {
       H: 'addLE',
       J: 'avgCover',
     },
-    // Specials section starts at row 24
+    // Specials section starts at row 24 (SHORT) / 25 (LONG) — see TEMPLATE_LAYOUT
     specialsStartRow: 24,
     specialsColumns: {
       B: 'specialName',
@@ -216,14 +217,67 @@ export const INPUT_CELLS = {
   },
 };
 
-// Template selection thresholds
-export const TEMPLATE_THRESHOLDS = {
+export type TemplateType = 'SHORT' | 'LONG';
+
+export interface RowBlock {
+  /** Worksheet names, in fill order. A block repeats once per sheet. */
+  sheets: string[];
+  firstRow: number;
+  lastRow: number;
+}
+
+/**
+ * Where data goes in each estimating template — the single source of truth for row
+ * ranges. Every number here was read off the real .xlsx in empty_templates/ (formula
+ * ranges and totals rows), and spreadsheet.test.ts asserts them against those files,
+ * so a template edit breaks a test instead of silently mis-pricing a takeoff.
+ *
+ *   manholes   rows 11..46: J/K/L shared formulas are J11:J46, totals are SUM(..11:46),
+ *              row 48 is "MANHOLE TOTALS".
+ *   sewers     rows 14..54: C57 = SUM(C14:C54). SHORT pre-fills its own VIDEO / LAYOUT /
+ *              AS BUILT fee rows at 52/53/54, so SHORT runs only get 14..51.
+ *   watermain  SHORT runs 13..18 (U13:U18), specials 24..53, valve table O24:O29.
+ *              LONG is shifted down one row: runs 14..19, specials 25..54, valves O25:O30.
+ *              Specials stop where the pre-filled "One Locks" rows begin.
+ */
+export const TEMPLATE_LAYOUT: Record<
+  TemplateType,
+  {
+    file: string;
+    manholes: RowBlock;
+    sewers: RowBlock;
+    /** Template-owned standard fee rows (SHORT only). H holds the amount. */
+    sewerFeeRows: { VIDEO: number; LAYOUT: number; 'AS BUILT': number } | null;
+    watermainRuns: RowBlock;
+    watermainSpecials: { sheet: string; firstRow: number; lastRow: number };
+    /** Fixed valve-size table: size label in O, quantity in P, $/valve in Q. */
+    valveTable: { sheet: string; firstRow: number; lastRow: number };
+  }
+> = {
   SHORT: {
-    maxSewerRuns: 40,
-    maxManholes: 50,
-    maxWatermainRuns: 6,
+    file: 'SHORT-NEW - Copy (3).xlsx',
+    manholes: { sheets: ['MANHOLES (1)'], firstRow: 11, lastRow: 46 },
+    sewers: { sheets: ['SEWERS (1)'], firstRow: 14, lastRow: 51 },
+    sewerFeeRows: { VIDEO: 52, LAYOUT: 53, 'AS BUILT': 54 },
+    watermainRuns: { sheets: ['WATERMAIN (1)'], firstRow: 13, lastRow: 18 },
+    watermainSpecials: { sheet: 'WATERMAIN (1)', firstRow: 24, lastRow: 53 },
+    valveTable: { sheet: 'WATERMAIN (1)', firstRow: 24, lastRow: 29 },
+  },
+  LONG: {
+    file: 'LONG-NEW.xlsx',
+    manholes: { sheets: ['MANHOLES (1)', 'MANHOLES (2)', 'MANHOLES (3)'], firstRow: 11, lastRow: 46 },
+    sewers: { sheets: ['SEWERS (1)', 'SEWERS (2)', 'SEWERS (3)', 'SEWERS (4)'], firstRow: 14, lastRow: 54 },
+    sewerFeeRows: null,
+    watermainRuns: { sheets: ['WATERMAIN (1)', 'WATERMAIN (2)'], firstRow: 14, lastRow: 19 },
+    watermainSpecials: { sheet: 'WATERMAIN (1)', firstRow: 25, lastRow: 54 },
+    valveTable: { sheet: 'WATERMAIN (1)', firstRow: 25, lastRow: 30 },
   },
 };
+
+/** Number of data rows a block holds across all of its sheets. */
+export function blockCapacity(b: RowBlock): number {
+  return b.sheets.length * (b.lastRow - b.firstRow + 1);
+}
 
 export const PIPE_DIAMETERS = [100, 150, 200, 250, 300, 375, 450, 525, 600, 675, 750, 825, 900, 975, 1050, 1200, 1350, 1500, 1650, 1800];
 

@@ -359,8 +359,15 @@ is empirical: validate the facts metric on the dataset and A/B single-pass vs ag
   agree on emission policy.
 - **Pricing**: `costing-rules.ts::DEFAULT_COSTING`. This is the ONLY place dollars live.
   Do NOT put pricing back into the extraction path.
-- **Template cells**: `constants.ts::INPUT_CELLS` is the intended source of truth;
-  `spreadsheet.ts` still re-hardcodes them — keep in sync (or unify).
+- **Template cells**: row ranges per template live in `constants.ts::TEMPLATE_LAYOUT`
+  (SHORT/LONG) and are asserted against the real `.xlsx` files in `spreadsheet.test.ts`
+  ("TEMPLATE_LAYOUT matches the real templates") — a template edit fails that test instead
+  of silently mis-totalling. Data blocks: manholes 11–46, sewer runs 14–54 (SHORT: 14–51,
+  rows 52–54 are its own VIDEO/LAYOUT/AS BUILT fee rows, which we fill instead of appending
+  a second set), watermain runs from 13 (SHORT) / 14 (LONG), valves are matched by size into
+  the fixed 50–300mm table (only P/R/S/T are written). `determineTemplateType` picks SHORT
+  only when sewers, structures and watermain all fit; anything that overflows even LONG is a
+  warning, never a silent drop. `INPUT_CELLS` is the older cell map — keep in sync.
 - **Eval**: `compare-facts.ts` (canonical, facts-level) + `compare-sheets.ts` (legacy cell).
   The golden set is canonically `golden-set.ts::GOLDEN_PROJECTS` — `evaluate-golden.ts`,
   `evaluate-text.ts`, `score-offline.ts` and `analyze-eval.ts` all import it, so they can't

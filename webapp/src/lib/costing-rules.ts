@@ -18,6 +18,7 @@ import {
   WatermainValve,
 } from './types';
 import { snapToMHSize } from './geometry';
+import { TEMPLATE_LAYOUT, blockCapacity } from './constants';
 
 export interface CostingRules {
   /** Per-structure material/labor surcharges, matched by token in the description. */
@@ -99,9 +100,34 @@ export const DEFAULT_COSTING: CostingRules = {
   },
 };
 
-/** SHORT vs LONG template selection (sewer-row count driven). */
-export function determineTemplateType(sewerCount: number): 'SHORT' | 'LONG' {
-  return sewerCount > 40 ? 'LONG' : 'SHORT';
+/** The standard per-project sewer fees, in the order they are appended. */
+export const STANDARD_FEE_KINDS = ['VIDEO', 'LAYOUT', 'AS BUILT'] as const;
+export type StandardFeeKind = (typeof STANDARD_FEE_KINDS)[number];
+
+/** Which standard fee (if any) a sewer row label names. */
+export function standardFeeKind(runLabel: string | null | undefined): StandardFeeKind | null {
+  const upper = (runLabel || '').toUpperCase();
+  return STANDARD_FEE_KINDS.find((k) => upper.includes(k)) ?? null;
+}
+
+/**
+ * SHORT vs LONG template selection. SHORT is used only when EVERYTHING fits its
+ * fixed rows (see constants.ts::TEMPLATE_LAYOUT) — otherwise rows would be dropped.
+ *
+ * @param sewerRows  sewer rows that need their own run row, i.e. EXCLUDING the
+ *                   standard VIDEO/LAYOUT/AS BUILT fees (SHORT has dedicated rows for those)
+ */
+export function determineTemplateType(
+  sewerRows: number,
+  structures = 0,
+  watermainRuns = 0
+): 'SHORT' | 'LONG' {
+  const short = TEMPLATE_LAYOUT.SHORT;
+  const fits =
+    sewerRows <= blockCapacity(short.sewers) &&
+    structures <= blockCapacity(short.manholes) &&
+    watermainRuns <= blockCapacity(short.watermainRuns);
+  return fits ? 'SHORT' : 'LONG';
 }
 
 /** Normalize a structure/run label into comparable manhole tokens. */
@@ -229,32 +255,61 @@ export function priceTakeoff(
     laborRates: { ...rules.laborRates },
   };
 
-  // --- Standard sewer fees (appended once, only if there are sewers) ---
+  // --- Standard sewer fees (once per project, only if there are sewers) ---
+  // A fee row the drawing already lists (e.g. an extracted "VIDEO" line item) is priced
+  // in place rather than duplicated; missing ones are appended.
   if (sewers.length > 0) {
     const totalSewerLength = sewers.reduce(
       (sum, s) => (!s.isLineItem && s.length ? sum + s.length : sum),
       0
     );
-    const has = (kw: string) => sewers.some((s) => s.runLabel.toUpperCase().includes(kw));
-    const feeRow = (runLabel: string, addMaterials: number): SewerRun => ({
-      item: sewers.length + 1,
-      runLabel,
-      isLineItem: true,
-      lineItemType: undefined,
-      length: null,
-      pipeDiameter: null,
-      typeClass: null,
-      slope: null,
-      depth: null,
-      addMaterials,
-      addLE: 0,
-    });
-    if (!has('VIDEO')) sewers.push(feeRow('VIDEO ($25/m)', totalSewerLength * rules.standardFees.videoPerM));
-    if (!has('LAYOUT')) sewers.push(feeRow('LAYOUT', rules.standardFees.layout));
-    if (!has('AS BUILT')) sewers.push(feeRow('AS BUILT', rules.standardFees.asBuilt));
+    const feeAmount: Record<StandardFeeKind, number> = {
+      VIDEO: totalSewerLength * rules.standardFees.videoPerM,
+      LAYOUT: rules.standardFees.layout,
+      'AS BUILT': rules.standardFees.asBuilt,
+    };
+    const feeLabel: Record<StandardFeeKind, string> = {
+      VIDEO: `VIDEO ($${rules.standardFees.videoPerM}/m)`,
+      LAYOUT: 'LAYOUT',
+      'AS BUILT': 'AS BUILT',
+    };
+    const present = new Set<StandardFeeKind>();
+    for (const s of sewers) {
+      const kind = s.isLineItem ? standardFeeKind(s.runLabel) : null;
+      if (!kind) continue;
+      present.add(kind);
+      s.addMaterials = feeAmount[kind];
+      s.addLE = 0;
+    }
+    for (const kind of STANDARD_FEE_KINDS) {
+      if (present.has(kind)) continue;
+      sewers.push({
+        item: sewers.length + 1,
+        runLabel: feeLabel[kind],
+        isLineItem: true,
+        lineItemType: undefined,
+        length: null,
+        pipeDiameter: null,
+        typeClass: null,
+        slope: null,
+        depth: null,
+        addMaterials: feeAmount[kind],
+        addLE: 0,
+      });
+    }
   }
 
+  // Never mutate the caller's facts.warnings — priced output gets its own copy.
+  const warnings = [...(facts.warnings || [])];
+
   // --- Watermain ---
+  for (const w of facts.watermain) {
+    if (!(w.length > 0)) {
+      warnings.push(
+        `Watermain "${w.sizeAndType}": length not found on the drawing — left blank in the workbook and NOT priced on the quote (length TBD; scale it off the plan).`
+      );
+    }
+  }
   const watermain: WatermainRun[] = facts.watermain.map((w, i) => ({
     item: i + 1,
     sizeAndType: w.sizeAndType,
@@ -290,7 +345,11 @@ export function priceTakeoff(
     projectName: facts.projectName,
     jobNumber: facts.jobNumber,
     date: facts.date,
-    templateType: determineTemplateType(facts.sewers.length),
+    templateType: determineTemplateType(
+      sewers.filter((s) => !(s.isLineItem && standardFeeKind(s.runLabel))).length,
+      manholes.length,
+      watermain.length
+    ),
     manholes,
     catchbasins,
     sewers,
@@ -298,7 +357,7 @@ export function priceTakeoff(
     watermainSpecials,
     watermainValves,
     confidence: facts.confidence,
-    warnings: facts.warnings,
+    warnings,
     locatorIndex: facts.locatorIndex ?? null,
   };
 }

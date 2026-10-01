@@ -75,9 +75,10 @@ export interface ExtractionModeMeta {
 }
 
 const EXTRACTION_MODE_META: Record<string, ExtractionModeMeta> = {
-  default: { id: 'default', label: 'Multimodal', badgeVariant: 'storm' },
+  default: { id: 'default', label: 'Automatic', badgeVariant: 'storm' },
   transcribe: { id: 'transcribe', label: 'Transcribe', badgeVariant: 'sanitary' },
-  hybrid: { id: 'hybrid', label: 'Hybrid', badgeVariant: 'water' },
+  'single-pass': { id: 'single-pass', label: 'Single-pass', badgeVariant: 'water' },
+  hybrid: { id: 'hybrid', label: 'Hybrid', badgeVariant: 'storm' },
   vector: { id: 'vector', label: 'Vector', badgeVariant: 'structures' },
 };
 
@@ -87,7 +88,7 @@ const EXTRACTION_MODE_META: Record<string, ExtractionModeMeta> = {
  * unexpected backend value never blanks out the metadata row.
  */
 export function resolveExtractionModeMeta(mode?: string | null): ExtractionModeMeta {
-  if (!mode) return { id: 'default', label: 'Multimodal', badgeVariant: 'storm' };
+  if (!mode) return EXTRACTION_MODE_META.default;
   const known = EXTRACTION_MODE_META[mode];
   if (known) return known;
   return { id: mode, label: mode, badgeVariant: 'muted' };
@@ -124,6 +125,27 @@ export function clampStage(stage: number): number {
   return Math.min(Math.max(Math.round(stage), 1), TOTAL_STAGES + 1);
 }
 
+/**
+ * Maps the server's coarse job stage onto the 1-based timeline. The server only
+ * knows "extracting" as one long step, so while extracting the timeline may
+ * self-advance between stages 1 and 2 (`simulated`) but never past them — it
+ * can no longer claim work is done that the server has not finished.
+ */
+export function stageFromServer(serverStage: string | undefined, simulated: number): number {
+  switch (serverStage) {
+    case 'pricing':
+      return 3;
+    case 'documents':
+      return 4;
+    case 'done':
+      return TOTAL_STAGES + 1;
+    case 'queued':
+      return 1;
+    default:
+      return Math.min(Math.max(simulated, 1), 2);
+  }
+}
+
 /** Completion ratio (0..1) used by the progress rail. */
 export function getProgressRatio(currentStage: number): number {
   const clamped = clampStage(currentStage);
@@ -144,6 +166,8 @@ export interface ProcessingStagesProps {
    * used as a standalone indeterminate progress animation.
    */
   currentStage?: number;
+  /** Real job stage from GET /api/jobs/[id]; takes precedence over simulation. */
+  serverStage?: string;
   /** Milliseconds each simulated stage occupies when `currentStage` is omitted. */
   simulatedStageMs?: number;
   className?: string;
@@ -154,7 +178,8 @@ export const ProcessingStages: React.FC<ProcessingStagesProps> = ({
   fileSize,
   extractionMode,
   currentStage,
-  simulatedStageMs = 9000,
+  serverStage,
+  simulatedStageMs = 20000,
   className = '',
 }) => {
   const isControlled = currentStage != null;
@@ -181,7 +206,13 @@ export const ProcessingStages: React.FC<ProcessingStagesProps> = ({
     return () => clearInterval(timer);
   }, [isControlled, simulatedStageMs]);
 
-  const activeStage = clampStage(isControlled ? (currentStage as number) : simulatedStage);
+  const activeStage = clampStage(
+    isControlled
+      ? (currentStage as number)
+      : serverStage
+      ? stageFromServer(serverStage, simulatedStage)
+      : simulatedStage
+  );
   const modeMeta = resolveExtractionModeMeta(extractionMode);
   const progressPct = Math.round(getProgressRatio(activeStage) * 100);
   const completedCount = Math.min(activeStage - 1, TOTAL_STAGES);
@@ -302,7 +333,9 @@ export const ProcessingStages: React.FC<ProcessingStagesProps> = ({
       </div>
 
       <p className="proc-status font-mono" role="status" aria-live="polite">
-        {runningStage
+        {serverStage === 'queued'
+          ? 'Waiting for a free worker — another takeoff is running…'
+          : runningStage
           ? `Step ${activeStage} of ${TOTAL_STAGES} — ${runningStage.name}`
           : `Finishing up — ${TOTAL_STAGES}/${TOTAL_STAGES} steps complete`}
       </p>

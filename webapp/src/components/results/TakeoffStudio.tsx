@@ -12,6 +12,7 @@ import {
   StructuresView,
   TelemetryView,
   WatermainView,
+  sewerTrade,
   takeoffHeadline,
   toManholeRows,
   toSewerRunRows,
@@ -45,7 +46,8 @@ export function downloadBase64File(base64: string, filename: string, mimeType: s
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    // Revoking synchronously can cancel the download in Safari/Firefox.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch (err) {
     console.error('Failed to trigger file download:', err);
   }
@@ -58,13 +60,13 @@ export const TakeoffStudio: React.FC<TakeoffStudioProps> = ({ result, onReset })
 
   const extraction = result.extraction;
 
-  // Split sewer runs into storm vs sanitary based on label heuristic
+  // Same storm/sanitary rule as the Cost Ledger (rows.ts::sewerTrade)
   const stormRunsRaw = useMemo(() => {
-    return (extraction.sewers ?? []).filter((r: SewerRun) => !r.runLabel?.toUpperCase().includes('SAN'));
+    return (extraction.sewers ?? []).filter((r: SewerRun) => sewerTrade(r.runLabel) === 'storm');
   }, [extraction.sewers]);
 
   const sanitaryRunsRaw = useMemo(() => {
-    return (extraction.sewers ?? []).filter((r: SewerRun) => r.runLabel?.toUpperCase().includes('SAN'));
+    return (extraction.sewers ?? []).filter((r: SewerRun) => sewerTrade(r.runLabel) === 'sanitary');
   }, [extraction.sewers]);
 
   // Transformed table rows
@@ -162,6 +164,7 @@ export const TakeoffStudio: React.FC<TakeoffStudioProps> = ({ result, onReset })
         projectId={result.projectId}
         projectName={extraction.projectName}
         extractionDate={extraction.date}
+        processedAt={result.processedAt}
         onDownloadXlsx={handleDownloadXlsx}
         onDownloadQuote={handleDownloadQuote}
         onReset={onReset}
@@ -182,7 +185,7 @@ export const TakeoffStudio: React.FC<TakeoffStudioProps> = ({ result, onReset })
         counts={counts}
       />
 
-      <main className="studio-view-container">
+      <div className="studio-view-container" role="region" aria-label="Takeoff details">
         {activeTab === 'summary' && (
           <CostLedgerView extraction={extraction} />
         )}
@@ -215,9 +218,9 @@ export const TakeoffStudio: React.FC<TakeoffStudioProps> = ({ result, onReset })
           />
         )}
         {activeTab === 'telemetry' && (
-          <TelemetryView extraction={extraction} />
+          <TelemetryView extraction={extraction} factsCost={result.cost ?? undefined} />
         )}
-      </main>
+      </div>
     </div>
   );
 };

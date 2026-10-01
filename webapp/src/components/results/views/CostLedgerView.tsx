@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Card } from '@/components/ui/Card';
 import { Column, DataTable } from '@/components/ui/DataTable';
 import { formatCurrency, formatNumber, formatPercent } from '@/lib/formatters';
-import { addOnCost, classifySewerSystem, shareOfTotal, specialGroupCost, valveGroupCost } from './rows';
+import { addOnCost, sewerTrade, shareOfTotal, specialGroupCost, valveGroupCost } from './rows';
 
 /**
  * Cost ledger — where the money is, by trade, and every line that produced it.
@@ -99,7 +99,7 @@ export function buildLedgerLines(extraction: ExtractionResult): LedgerLine[] {
   const lines: LedgerLine[] = [];
 
   for (const run of extraction.sewers ?? []) {
-    const trade: TradeKey = classifySewerSystem(run.runLabel) === 'SAN' ? 'sanitary' : 'storm';
+    const trade: TradeKey = sewerTrade(run.runLabel);
     lines.push({
       id: `sewer-${run.item}-${run.runLabel}`,
       trade,

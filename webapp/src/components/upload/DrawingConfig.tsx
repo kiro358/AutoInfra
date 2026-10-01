@@ -4,7 +4,8 @@ import React from 'react';
 import { Badge, BadgeVariant } from '@/components/ui/Badge';
 import { EyeIcon, LayersIcon, RulerIcon, SparklesIcon } from '@/components/ui/Icons';
 
-export type ExtractionMode = 'default' | 'transcribe' | 'hybrid' | 'vector';
+/** `default` sends no mode, so the server uses its configured default (hybrid). */
+export type ExtractionMode = 'default' | 'transcribe' | 'single-pass' | 'vector';
 
 export interface ExtractionModeOption {
   id: ExtractionMode;
@@ -19,35 +20,39 @@ export interface ExtractionModeOption {
 export const EXTRACTION_MODES: ExtractionModeOption[] = [
   {
     id: 'default',
-    name: 'Multimodal Fact Extraction',
+    name: 'Automatic (hybrid)',
     badge: 'Standard',
     badgeVariant: 'storm',
-    description: 'End-to-end Gemini 2.5 multimodal fact extraction with direct reasoning over civil engineering drawings.',
-    icon: <SparklesIcon size={16} className="text-[var(--storm)]" />,
+    description:
+      'Reads callouts exactly from the PDF text layer where it exists, and uses AI transcription for scanned or CAD-font sheets.',
+    icon: <LayersIcon size={16} className="text-[var(--storm)]" />,
     recommended: true,
   },
   {
     id: 'transcribe',
-    name: 'Verbatim Vision + Grammar Parser',
+    name: 'AI transcription + parser',
     badge: 'Precision',
     badgeVariant: 'sanitary',
-    description: 'High-precision OCR transcription paired with deterministic municipal grammar & schedule parser.',
+    description:
+      'AI transcribes every callout verbatim; deterministic Ontario grammar rules turn the text into quantities.',
     icon: <EyeIcon size={16} className="text-[var(--sanitary)]" />,
   },
   {
-    id: 'hybrid',
-    name: 'Direct PDF Text + Transcribe Fallback',
-    badge: 'Fast',
+    id: 'single-pass',
+    name: 'Single-pass multimodal',
+    badge: 'Legacy',
     badgeVariant: 'water',
-    description: 'Direct PDF text stream extraction for vector plans with automated vision model fallback.',
-    icon: <LayersIcon size={16} className="text-[var(--water)]" />,
+    description:
+      'The original path: Gemini reads the drawing tiles and returns quantities directly in one pass.',
+    icon: <SparklesIcon size={16} className="text-[var(--water)]" />,
   },
   {
     id: 'vector',
-    name: 'Zero-LLM CAD Vector Geometry',
+    name: 'CAD vector geometry',
     badge: 'Deterministic',
     badgeVariant: 'structures',
-    description: 'Pure mathematical linework extraction, vector stroke tracing, and native symbol matching without LLM inference.',
+    description:
+      'No AI calls: traces vector linework and symbols directly. Only works on vector (non-scanned) CAD exports.',
     icon: <RulerIcon size={16} className="text-[var(--structures)]" />,
   },
 ];

@@ -33,10 +33,15 @@ PDF ──▶ extractFromPDF()  ──▶ TakeoffFacts   facts only, NO dollars 
 - **Costing** is deterministic: every dollar/labor/fee comes from one explicit, versioned,
   unit-tested rule table (`DEFAULT_COSTING` in `costing-rules.ts`).
 
-`extractFromPDF()` (`extraction.ts`) has four interpretation paths, chosen by the
-`EXTRACTION_MODE` env var. **Unset/any other value = the original default path** (vision
-both reads AND interprets tiles into TakeoffFacts JSON directly via
-`getSinglePassPrompt`) — unchanged, still what runs in production today.
+`extractFromPDF()` (`extraction.ts`) has four interpretation paths, chosen per call by
+`options.mode` (the web UI's engine picker), else the `EXTRACTION_MODE` env var, else
+**`hybrid` — the production default** (see `extraction.ts`; this note previously said
+single-pass, which stopped being true with the 2026-09-18 hybrid switch). Any unrecognised
+value falls through to the original single-pass path (vision both reads AND interprets
+tiles into TakeoffFacts JSON via `getSinglePassPrompt`). Mode ids live in
+`extraction-modes.ts`. Model calls that fail are recorded per run (`AsyncLocalStorage`):
+a partial result gets a warning, and a run where calls failed and **nothing** came back
+throws instead of returning an empty "successful" takeoff.
 
 - `EXTRACTION_MODE=transcribe`: vision ONLY transcribes verbatim callouts off each tile
   (`getTranscriptionPrompt` → `TileTranscript[]`, no interpretation); a deterministic
@@ -65,9 +70,11 @@ both reads AND interprets tiles into TakeoffFacts JSON directly via
 
 ```
 webapp/                       Next.js app (everything lives here)
-  src/app/api/process/        main endpoint: PDF -> facts -> priced -> xlsx + quote
+  src/app/api/process/        validates an upload (process-input.ts) and starts a background
+                              takeoff job -> 202 { jobId }. route.test.ts is a zero-LLM
+                              end-to-end test (synthetic CAD PDF, vector mode).
+  src/app/api/jobs/[id]/      poll a job: stage + result (priced takeoff, base64 xlsx/quote)
   src/app/api/performance/    ⭐ serves the FACTS-metric benchmark to the UI (see below)
-  src/app/api/scoreboard/     LEGACY cell-accuracy CSVs from GCS — not the accuracy metric
   src/app/page.tsx            upload UI + facts-metric benchmark panel
   src/app/globals.css         design system (drafting-sheet tokens; `.cov-*` = coverage strip)
   src/lib/
@@ -442,7 +449,17 @@ without the facts metric as the gate — see REDESIGN §3.5).
 
 ## Deploy / CI
 
-- `.github/workflows/deploy.yml` — pushes to `master`/`main` deploy to Cloud Run.
+- `.github/workflows/deploy.yml` — a `verify` job (tsc, vitest incl. the end-to-end route
+  test, `next build`) runs on every PR and push; pushes to `master`/`main` deploy to Cloud
+  Run only if it passes.
+- **Takeoffs are background jobs** (`lib/jobs.ts`): POST /api/process returns at once and
+  the browser polls. Doing the extraction inside the request 504'd in production (a real
+  drawing set takes 4–35 min). The job store is in-memory, so the deploy pins
+  `--max-instances 1 --no-cpu-throttling` (polls must hit the instance running the job, and
+  it needs CPU after the POST returns), `--memory 2Gi` (full-sheet rasters are ~155 MB each),
+  and `MAX_CONCURRENT_JOBS=1`. To scale out, back `JobStore` with GCS/Firestore first.
+- The old `/api/scoreboard` (legacy cell accuracy, public, leaked fs paths) and the dead
+  `/api/download/[id]` were removed.
 - The scheduled flywheel optimization workflow has been removed (see "Scripts" above).
 
 ## Working agreement for changes here

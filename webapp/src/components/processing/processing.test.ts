@@ -7,6 +7,7 @@ import {
   getProgressRatio,
   getStageStatus,
   resolveExtractionModeMeta,
+  stageFromServer,
 } from './ProcessingStages';
 
 describe('PIPELINE_STAGES', () => {
@@ -122,12 +123,12 @@ describe('resolveExtractionModeMeta', () => {
   it('maps each known extraction engine to its linework badge variant', () => {
     expect(resolveExtractionModeMeta('default').badgeVariant).toBe('storm');
     expect(resolveExtractionModeMeta('transcribe').badgeVariant).toBe('sanitary');
-    expect(resolveExtractionModeMeta('hybrid').badgeVariant).toBe('water');
+    expect(resolveExtractionModeMeta('single-pass').badgeVariant).toBe('water');
     expect(resolveExtractionModeMeta('vector').badgeVariant).toBe('structures');
   });
 
-  it('defaults to the multimodal storm chip when no mode is supplied', () => {
-    expect(resolveExtractionModeMeta(undefined).label).toBe('Multimodal');
+  it('defaults to the automatic storm chip when no mode is supplied', () => {
+    expect(resolveExtractionModeMeta(undefined).label).toBe('Automatic');
     expect(resolveExtractionModeMeta(null).badgeVariant).toBe('storm');
     expect(resolveExtractionModeMeta('').badgeVariant).toBe('storm');
   });
@@ -142,5 +143,19 @@ describe('resolveExtractionModeMeta', () => {
     for (const mode of ['default', 'transcribe', 'hybrid', 'vector']) {
       expect(resolveExtractionModeMeta(mode).label.length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('stageFromServer', () => {
+  it('never lets the simulated timeline run past extraction', () => {
+    expect(stageFromServer('extracting', 1)).toBe(1);
+    expect(stageFromServer('extracting', 4)).toBe(2);
+    expect(stageFromServer(undefined, 9)).toBe(2);
+  });
+  it('follows the real server stages after extraction', () => {
+    expect(stageFromServer('queued', 3)).toBe(1);
+    expect(stageFromServer('pricing', 1)).toBe(3);
+    expect(stageFromServer('documents', 1)).toBe(4);
+    expect(stageFromServer('done', 1)).toBe(TOTAL_STAGES + 1);
   });
 });

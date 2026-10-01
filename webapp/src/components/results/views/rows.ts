@@ -99,14 +99,26 @@ export type FactsCostTelemetry = NonNullable<TakeoffFacts['cost']>;
 
 export type SewerSystem = 'STORM' | 'SAN' | 'UNKNOWN';
 
-const SAN_RE = /\bSAN(?:ITARY)?\b/i;
-const STORM_RE = /\b(?:STM|STORM)\b/i;
+// Whole-token matches, plus the fused structure prefixes drawings use
+// ("SANMH 4", "STMH3", "SAN.MH") — but never a bare substring like "SANTA".
+const SAN_RE = /\bSAN(?:ITARY)?\b|\bSAN\.?MH\s*\d*\b/i;
+const STORM_RE = /\b(?:STM|STORM)\b|\bST(?:M)?\.?MH\s*\d*\b/i;
 
 /**
  * Which system a run belongs to, read off its label. Storm is NOT the default:
  * an unqualified label ("CB 3-DCBMH 2") returns UNKNOWN so the caller decides
  * where to put it rather than silently inflating the storm table.
  */
+/**
+ * Which tab/ledger trade a sewer run belongs to. UNKNOWN goes to storm: on an
+ * Ontario servicing plan the unqualified network is the storm system, and
+ * sanitary is always called out. Every view must use this — the Studio tabs and
+ * the Cost Ledger previously split runs by different rules and disagreed.
+ */
+export function sewerTrade(runLabel: string | null | undefined): 'storm' | 'sanitary' {
+  return classifySewerSystem(runLabel) === 'SAN' ? 'sanitary' : 'storm';
+}
+
 export function classifySewerSystem(runLabel: string | null | undefined): SewerSystem {
   if (!runLabel) return 'UNKNOWN';
   if (SAN_RE.test(runLabel)) return 'SAN';

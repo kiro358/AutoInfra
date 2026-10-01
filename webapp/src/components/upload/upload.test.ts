@@ -4,7 +4,7 @@ import { EXTRACTION_MODES } from './DrawingConfig';
 describe('DrawingConfig extraction modes', () => {
   it('defines all 4 required extraction pipeline modes', () => {
     const modeIds = EXTRACTION_MODES.map((m) => m.id);
-    expect(modeIds).toEqual(['default', 'transcribe', 'hybrid', 'vector']);
+    expect(modeIds).toEqual(['default', 'transcribe', 'single-pass', 'vector']);
   });
 
   it('sets default mode as recommended with standard storm badge', () => {
@@ -20,9 +20,9 @@ describe('DrawingConfig extraction modes', () => {
     expect(transcribeMode?.badgeVariant).toBe('sanitary');
     expect(transcribeMode?.badge).toBe('Precision');
 
-    const hybridMode = EXTRACTION_MODES.find((m) => m.id === 'hybrid');
-    expect(hybridMode?.badgeVariant).toBe('water');
-    expect(hybridMode?.badge).toBe('Fast');
+    const singlePass = EXTRACTION_MODES.find((m) => m.id === 'single-pass');
+    expect(singlePass?.badgeVariant).toBe('water');
+    expect(singlePass?.badge).toBe('Legacy');
 
     const vectorMode = EXTRACTION_MODES.find((m) => m.id === 'vector');
     expect(vectorMode?.badgeVariant).toBe('structures');
@@ -34,6 +34,16 @@ describe('DrawingConfig extraction modes', () => {
       expect(mode.name.length).toBeGreaterThan(0);
       expect(mode.description.length).toBeGreaterThan(0);
       expect(mode.icon).toBeDefined();
+    }
+  });
+});
+
+describe('DrawingConfig ↔ server modes', () => {
+  it('every non-default UI mode is a mode the server accepts', async () => {
+    const { EXTRACTION_MODES: SERVER_MODES } = await import('@/lib/extraction-modes');
+    for (const mode of EXTRACTION_MODES) {
+      if (mode.id === 'default') continue;
+      expect(SERVER_MODES as readonly string[]).toContain(mode.id);
     }
   });
 });

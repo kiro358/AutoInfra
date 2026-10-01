@@ -8,6 +8,7 @@ export interface TakeoffHeaderProps {
   projectId: string;
   projectName?: string;
   extractionDate?: string;
+  processedAt?: string;
   onDownloadXlsx: () => void;
   onDownloadQuote: () => void;
   onReset: () => void;
@@ -19,21 +20,21 @@ export const TakeoffHeader: React.FC<TakeoffHeaderProps> = ({
   projectId,
   projectName,
   extractionDate,
+  processedAt,
   onDownloadXlsx,
   onDownloadQuote,
   onReset,
   isDownloadingXlsx,
   isDownloadingQuote,
 }) => {
-  const formattedDate = extractionDate
-    ? new Date(extractionDate).toLocaleString('en-CA', {
-        dateStyle: 'medium',
-        timeStyle: 'short',
-      })
-    : new Date().toLocaleString('en-CA', {
-        dateStyle: 'medium',
-        timeStyle: 'short',
-      });
+  const processed = processedAt ? new Date(processedAt) : null;
+  const formattedProcessed =
+    processed && !Number.isNaN(processed.getTime())
+      ? processed.toLocaleString('en-CA', { dateStyle: 'medium', timeStyle: 'short' })
+      : null;
+  // The drawing date is free text read off the title block (e.g. "APR.19th,2026"),
+  // so show it verbatim rather than risk "Invalid Date" or a UTC day shift.
+  const drawingDate = extractionDate?.trim() || null;
 
   return (
     <header className="results-header" aria-label="Takeoff Header">
@@ -44,8 +45,18 @@ export const TakeoffHeader: React.FC<TakeoffHeaderProps> = ({
         </span>
         <h1 className="results-title">{projectName || 'Site Servicing Takeoff'}</h1>
         <div className="results-meta">
-          <span>Processed {formattedDate}</span>
-          <span className="dot-sep" />
+          {formattedProcessed && (
+            <>
+              <span>Processed {formattedProcessed}</span>
+              <span className="dot-sep" />
+            </>
+          )}
+          {drawingDate && (
+            <>
+              <span>Drawing date {drawingDate}</span>
+              <span className="dot-sep" />
+            </>
+          )}
           <span className="font-mono text-[12px]" title={projectId}>
             {projectId.slice(0, 10)}
           </span>

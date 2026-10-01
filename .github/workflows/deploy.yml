@@ -5,9 +5,37 @@ on:
     branches:
       - master
       - main # Included just in case the default branch changes
+  pull_request:
 
 jobs:
+  # Gate: nothing reaches Cloud Run unless it typechecks, passes the unit +
+  # end-to-end suite (route.test.ts runs a real takeoff with zero LLM calls)
+  # and produces a production build.
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: webapp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: webapp/package-lock.json
+      - run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit -p .
+      - name: Unit + end-to-end tests
+        run: npx vitest run
+      - name: Production build
+        run: npx next build
+        env:
+          NEXT_TELEMETRY_DISABLED: 1
+
   deploy:
+    needs: verify
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -28,10 +56,21 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
+      # Takeoffs run as background jobs held in memory (webapp/src/lib/jobs.ts),
+      # which needs: one instance (polls must reach the instance running the job),
+      # CPU kept between requests (the job runs after POST returns), and enough
+      # memory for full-sheet rasters (~0.5-0.75 GB per job at 150 DPI).
+      # --update-env-vars MERGES, so secrets set on the service are kept.
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy autoinfra \
             --source . \
             --region us-central1 \
             --allow-unauthenticated \
+            --memory 2Gi \
+            --cpu 2 \
+            --no-cpu-throttling \
+            --max-instances 1 \
+            --timeout 3600 \
+            --update-env-vars "ENABLE_EVAL_CACHE=false,REUSE_PREP=false,MAX_CONCURRENT_JOBS=1,NODE_OPTIONS=--max-old-space-size=768" \
             --quiet

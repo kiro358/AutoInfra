@@ -6,11 +6,13 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env.local') });
 import { GoogleGenAI } from '@google/genai';
 import { Storage } from '@google-cloud/storage';
 import { TakeoffFacts, CatchbasinGroupFact, TileTranscript, WatermainFact, WatermainSpecialFact, WatermainValveFact } from './types';
+import type { ExtractionModeId } from './extraction-modes';
 import { PIPE_DIAMETERS } from './constants';
 import { snapToPipeDiameter, normalizeSlope } from './geometry';
 import { buildFewShotPromptSection } from './few-shot-examples';
 import { setGlobalDispatcher, Agent, ProxyAgent } from 'undici';
 import crypto from 'crypto';
+import { AsyncLocalStorage } from 'async_hooks';
 import { getSinglePassPrompt, getPageLocatorPrompt, getTranscriptionPrompt, getWatermainExtractionPrompt } from './modular-prompts';
 import { renderTilesFlat, renderPageThumbnails, IMAGE_MIME } from './rasterize';
 import { normalizeLabel, runSignature } from './compare-facts';
@@ -186,37 +188,44 @@ async function getCachedOrCallLLM(
   callLLM: () => Promise<string>,
   projectName?: string
 ): Promise<string> {
-  const isCacheEnabled = process.env.ENABLE_EVAL_CACHE !== 'false';
+  // The eval cache is a dev/eval tool: off in production unless explicitly enabled
+  // (in the container its directory resolves to an unwritable path anyway).
+  const isCacheEnabled =
+    process.env.ENABLE_EVAL_CACHE === 'true' ||
+    (process.env.ENABLE_EVAL_CACHE !== 'false' && process.env.NODE_ENV !== 'production');
   if (!isCacheEnabled) {
     return await callLLM();
   }
 
+  // Cache I/O failures must never cause a second model call: the previous version
+  // re-ran callLLM() from its catch, so a failed call ran its whole retry loop
+  // twice and a failed cache WRITE after a successful call paid for it twice.
+  let cachePath: string | null = null;
   try {
     if (!fs.existsSync(EVAL_CACHE_DIR)) {
       fs.mkdirSync(EVAL_CACHE_DIR, { recursive: true });
     }
-
     const pdfHash = crypto.createHash('sha256').update(pdfIdentifier).digest('hex');
     const promptHash = crypto.createHash('sha256').update(prompt).digest('hex');
-    const cacheFilename = `${agentType}_${pdfHash}_${promptHash}.json`;
-    const cachePath = path.join(EVAL_CACHE_DIR, cacheFilename);
-
+    cachePath = path.join(EVAL_CACHE_DIR, `${agentType}_${pdfHash}_${promptHash}.json`);
     if (fs.existsSync(cachePath)) {
       console.log(`      [extraction.ts] ⚡ Local Cache Hit for ${agentType}!`);
       return fs.readFileSync(cachePath, 'utf8');
     }
-
-    // (eval cache stores real model responses; no ground-truth seeding)
-
-    const resultText = await callLLM();
-    if (resultText && resultText !== '{}') {
-      fs.writeFileSync(cachePath, resultText, 'utf8');
-    }
-    return resultText;
-  } catch (err: any) {
-    console.warn(`      [extraction.ts] Cache operation failed, falling back to direct LLM call:`, err.message);
-    return await callLLM();
+  } catch (err) {
+    console.warn(`      [extraction.ts] Eval cache unavailable (${(err as Error).message}); calling the model directly.`);
+    cachePath = null;
   }
+
+  const resultText = await callLLM();
+  if (cachePath && resultText && resultText !== '{}') {
+    try {
+      fs.writeFileSync(cachePath, resultText, 'utf8');
+    } catch (err) {
+      console.warn(`      [extraction.ts] Could not write eval cache: ${(err as Error).message}`);
+    }
+  }
+  return resultText;
 }
 
 // A predicted "structure" is really a non-structure plan callout if it names one of
@@ -458,10 +467,73 @@ async function locateRelevantPages(
   }
 }
 
+export { EXTRACTION_MODES, type ExtractionModeId } from './extraction-modes';
+
+export interface ExtractOptions {
+  /**
+   * Per-call mode. Wins over the EXTRACTION_MODE env var, so a web request can
+   * choose a path without mutating process.env (which concurrent requests share).
+   */
+  mode?: ExtractionModeId;
+}
+
+/**
+ * Model calls that failed during the current extraction (after retries). Scoped
+ * per extractFromPDF call via AsyncLocalStorage so concurrent jobs never mix.
+ * Individual batch failures are tolerated (partial takeoff + warning), but a
+ * run where calls failed and NOTHING came back is an error, not an empty
+ * "successful" takeoff — previously quota/IAM outages returned HTTP 200 with
+ * a blank spreadsheet.
+ */
+const extractionFailures = new AsyncLocalStorage<string[]>();
+
+function recordCallFailure(what: string, err: unknown): void {
+  const msg = err instanceof Error ? err.message : String(err);
+  extractionFailures.getStore()?.push(`${what}: ${msg}`);
+}
+
+export function countEntities(facts: TakeoffFacts): number {
+  return (
+    (facts.structures?.length ?? 0) +
+    (facts.sewers?.length ?? 0) +
+    (facts.watermain?.length ?? 0) +
+    (facts.catchbasins?.length ?? 0) +
+    (facts.watermainValves?.length ?? 0) +
+    (facts.watermainSpecials?.length ?? 0)
+  );
+}
+
+/** Pure: turn recorded failures into warnings, or an error when nothing survived. */
+export function applyCallFailures(facts: TakeoffFacts, failures: string[]): TakeoffFacts {
+  if (failures.length === 0) return facts;
+  if (countEntities(facts) === 0) {
+    throw new Error(`AI extraction failed (${failures.length} call(s)): ${failures[0]}`);
+  }
+  facts.warnings = [
+    ...(facts.warnings ?? []),
+    `${failures.length} AI call(s) failed during extraction, so this takeoff may be incomplete. First error: ${failures[0]}`,
+  ];
+  return facts;
+}
+
 export async function extractFromPDF(
   pdfInput: Buffer | Buffer[], // Single PDF buffer or array of buffers to merge
   projectName: string,
-  gcsSourceUri?: string
+  gcsSourceUri?: string,
+  options: ExtractOptions = {}
+): Promise<TakeoffFacts> {
+  const failures: string[] = [];
+  const facts = await extractionFailures.run(failures, () =>
+    extractFromPDFInner(pdfInput, projectName, gcsSourceUri, options)
+  );
+  return applyCallFailures(facts, failures);
+}
+
+async function extractFromPDFInner(
+  pdfInput: Buffer | Buffer[],
+  projectName: string,
+  gcsSourceUri: string | undefined,
+  options: ExtractOptions
 ): Promise<TakeoffFacts> {
   // If given multiple buffers, merge them first
   const pdfBuffer = Array.isArray(pdfInput)
@@ -654,6 +726,7 @@ export async function extractFromPDF(
         });
       } catch (e: any) {
         console.warn(`      [extraction.ts] Transcribe tile rendering failed (${e.message}).`);
+        recordCallFailure('Rendering drawing tiles', e);
         return [];
       }
 
@@ -711,6 +784,7 @@ export async function extractFromPDF(
           }, projectName);
         } catch (e: any) {
           console.error(`      [extraction.ts] Transcribe ${label} failed: ${e.message}`);
+          recordCallFailure(`Transcription ${label}`, e);
         }
 
         try {
@@ -785,7 +859,7 @@ export async function extractFromPDF(
       // EXTRACTION_MODE: defaults to 'hybrid' (text-layer for TrueType pages, vision
       // transcribe + deterministic grammar for raster/SHX pages). Setting
       // EXTRACTION_MODE=single-pass restores the legacy monolithic vision path.
-      const mode = process.env.EXTRACTION_MODE || 'hybrid';
+      const mode = options.mode || process.env.EXTRACTION_MODE || 'hybrid';
 
       // EXTRACTION_MODE=vector: full CAD vector geometry and topology graph extraction ($0 LLM cost).
       if (mode === 'vector') {
@@ -952,6 +1026,7 @@ export async function extractFromPDF(
           }, projectName);
         } catch (e: any) {
           console.error(`      [extraction.ts] Single-pass batch ${bi + 1}/${tileBatches.length} failed: ${e.message}`);
+          recordCallFailure(`Extraction batch ${bi + 1}/${tileBatches.length}`, e);
         }
         try {
           const parsed = tryParseJSONWithRepair(text);
@@ -1679,6 +1754,7 @@ export async function runSecondPassWatermain(
       }, projectName);
     } catch (e: any) {
       console.error(`      [extraction.ts] Watermain batch ${bi + 1}/${batches.length} failed: ${e.message}`);
+      recordCallFailure(`Watermain batch ${bi + 1}/${batches.length}`, e);
     }
     try {
       const parsed = tryParseJSONWithRepair(text);

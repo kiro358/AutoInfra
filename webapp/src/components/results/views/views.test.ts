@@ -9,6 +9,7 @@ import type {
 import {
   addOnCost,
   classifySewerSystem,
+  sewerTrade,
   formatMetersAt,
   formatSlopePct,
   isPhysicalStructure,
@@ -698,5 +699,21 @@ describe('takeoffHeadline', () => {
         })
       )
     ).toEqual({ totalCost: 0, structureCount: 0, appurtenanceCount: 0 });
+  });
+});
+
+describe('sewerTrade', () => {
+  it('recognises fused structure prefixes', () => {
+    expect(classifySewerSystem('SANMH 1-SANMH 2')).toBe('SAN');
+    expect(classifySewerSystem('SANMH1-SANMH2')).toBe('SAN');
+    expect(classifySewerSystem('STMH 3 - STMH 4')).toBe('STORM');
+  });
+  it('does not treat a substring like SANTA as sanitary', () => {
+    expect(sewerTrade('SANTA ROSA CB 1-CB 2')).toBe('storm');
+  });
+  it('sends unqualified runs to storm', () => {
+    expect(sewerTrade('CB 3-DCBMH 2')).toBe('storm');
+    expect(sewerTrade(null)).toBe('storm');
+    expect(sewerTrade('SAN MH 4 - SAN MH 5')).toBe('sanitary');
   });
 });

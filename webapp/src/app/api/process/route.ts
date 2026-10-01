@@ -1,70 +1,84 @@
+/**
+ * POST /api/process — validate an upload and start a background takeoff job.
+ *
+ * Returns 202 `{ jobId }` immediately; poll GET /api/jobs/[id] for progress and
+ * the result. (Running the whole extraction inside this request is what caused
+ * the production 504s — see lib/jobs.ts.)
+ */
 import { NextRequest, NextResponse } from 'next/server';
-import { v4 as uuidv4 } from 'uuid';
 import { extractFromPDF } from '@/lib/extraction';
 import { priceTakeoff } from '@/lib/costing-rules';
 import { populateTemplate } from '@/lib/spreadsheet';
 import { generateQuote } from '@/lib/quote-generator';
-import { DEFAULT_PARAMS } from '@/lib/constants';
-import { GlobalParams } from '@/lib/types';
+import { jobStore, JobCapacityError } from '@/lib/jobs';
+import {
+  InputError,
+  parseMode,
+  parseParams,
+  parseProjectName,
+  validatePdf,
+} from '@/lib/process-input';
+import type { ProcessResponse } from '@/lib/types';
+
+export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
   try {
-    const formData = await request.formData();
-    const file = formData.get('pdf') as File | null;
-    const projectName = (formData.get('projectName') as string) || 'Untitled Project';
-    const paramsJson = formData.get('params') as string | null;
-
-    if (!file) {
-      return NextResponse.json({ error: 'No PDF file provided' }, { status: 400 });
+    let formData: FormData;
+    try {
+      formData = await request.formData();
+    } catch {
+      throw new InputError('Expected a multipart/form-data upload with a "pdf" field.');
     }
 
-    // Parse optional parameter overrides
-    let params = structuredClone(DEFAULT_PARAMS) as unknown as GlobalParams;
-    if (paramsJson) {
-      try {
-        const overrides = JSON.parse(paramsJson);
-        for (const section of ['manholes', 'sewers', 'watermain'] as const) {
-          if (overrides[section] && typeof overrides[section] === 'object') {
-            Object.assign(
-              (params as unknown as Record<string, Record<string, unknown>>)[section],
-              overrides[section]
-            );
-          }
-        }
-      } catch {
-        // Ignore invalid JSON, use defaults
-      }
+    const file = formData.get('pdf');
+    if (!(file instanceof File)) {
+      throw new InputError('No PDF file provided.');
     }
 
-    const projectId = uuidv4();
     const pdfBuffer = Buffer.from(await file.arrayBuffer());
+    validatePdf(pdfBuffer, file.name || 'upload.pdf');
 
-    // Stage 1: extract physical facts from the drawings (no pricing)
-    const facts = await extractFromPDF(pdfBuffer, projectName);
-
-    // Stage 2: apply deterministic costing rules -> priced takeoff
-    const extraction = priceTakeoff(facts);
-
-    // Populate spreadsheet template
-    const xlsxBuffer = await populateTemplate(extraction, params);
-
-    // Generate quote PDF
-    const quoteBuffer = await generateQuote(extraction, params);
-
-    // Return everything inline — no filesystem dependency
-    return NextResponse.json({
-      projectId,
-      extraction,
-      // Encode files as base64 so the client can download directly
-      xlsxBase64: xlsxBuffer.toString('base64'),
-      quoteBase64: quoteBuffer.toString('base64'),
-      status: 'completed',
-    });
-  } catch (error) {
-    console.error('Processing error:', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Processing failed' },
-      { status: 500 }
+    const mode = parseMode(formData.get('extractionMode'));
+    const params = parseParams(formData.get('params'));
+    const projectName = parseProjectName(
+      formData.get('projectName') || file.name.replace(/\.pdf$/i, '')
     );
+
+    const jobId = jobStore.start(file.name || 'upload.pdf', async (setStage, id) => {
+      // Stage 1: physical facts only (no pricing)
+      const facts = await extractFromPDF(pdfBuffer, projectName, undefined, { mode });
+
+      // Stage 2: deterministic costing rules -> priced takeoff
+      setStage('pricing');
+      const extraction = priceTakeoff(facts);
+
+      // Stage 3: workbook + quote
+      setStage('documents');
+      const xlsxBuffer = await populateTemplate(extraction, params);
+      const quoteBuffer = await generateQuote(extraction, params);
+
+      const response: ProcessResponse = {
+        projectId: id,
+        extraction,
+        xlsxBase64: xlsxBuffer.toString('base64'),
+        quoteBase64: quoteBuffer.toString('base64'),
+        status: 'completed',
+        cost: facts.cost,
+        processedAt: new Date().toISOString(),
+      };
+      return response;
+    });
+
+    return NextResponse.json({ jobId }, { status: 202 });
+  } catch (error) {
+    if (error instanceof InputError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    if (error instanceof JobCapacityError) {
+      return NextResponse.json({ error: error.message }, { status: 429 });
+    }
+    console.error('Process submission error:', error);
+    return NextResponse.json({ error: 'Could not start processing.' }, { status: 500 });
   }
 }

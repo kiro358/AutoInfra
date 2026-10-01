@@ -103,9 +103,16 @@ export async function renderPdfPagesToTiles(
             if (sw <= 0 || sh <= 0) continue;
             const tile = createCanvas(sw, sh);
             tile.getContext('2d').drawImage(full, sx, sy, sw, sh, 0, 0, sw, sh);
-            tiles.push(tile.toBuffer('image/jpeg', TILE_JPEG_QUALITY));
+            // Async encode runs off the main thread; the sync toBuffer() froze the
+            // server for seconds per page, stalling job polls and health checks.
+            tiles.push(await tile.encode('jpeg', TILE_JPEG_QUALITY));
+            tile.width = 0; // release native pixel memory now, not at next GC
+            tile.height = 0;
           }
         }
+        // A 36x48in sheet at 150 DPI is a ~155 MB canvas; free it before the next page.
+        full.width = 0;
+        full.height = 0;
         result.push({ page: pageNum, tiles });
       } finally {
         page.cleanup?.();
@@ -153,7 +160,7 @@ export async function renderPageThumbnails(
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, W, H);
         await page.render({ canvasContext: ctx as unknown as object, viewport, canvasFactory }).promise;
-        out.push({ page: pageNum, img: canvas.toBuffer('image/jpeg', THUMB_JPEG_QUALITY) });
+        out.push({ page: pageNum, img: await canvas.encode('jpeg', THUMB_JPEG_QUALITY) });
       } finally {
         page.cleanup?.();
       }

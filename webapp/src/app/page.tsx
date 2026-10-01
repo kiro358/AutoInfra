@@ -71,11 +71,65 @@ const TRADES = [
   },
 ] as const;
 
+/** Unit rates saved on the Settings page (validated again on the server). */
+function readSavedRates(): string | null {
+  try {
+    return window.localStorage.getItem('autoinfra_params');
+  } catch {
+    return null; // storage blocked (private mode / policy) — server uses defaults
+  }
+}
+
+const POLL_MS = 2500;
+const MAX_WAIT_MS = 45 * 60_000;
+const MAX_CONSECUTIVE_POLL_ERRORS = 8;
+
+/**
+ * Poll GET /api/jobs/[id] until the takeoff finishes. Transient network errors
+ * are retried (a laptop sleeping or a proxy blip must not kill a 5-minute job);
+ * a job the server no longer knows about, or a failed job, ends the wait.
+ */
+async function pollJob(
+  jobId: string,
+  onStage: (stage: string) => void
+): Promise<ProcessResponse> {
+  const started = Date.now();
+  let consecutiveErrors = 0;
+  while (Date.now() - started < MAX_WAIT_MS) {
+    await new Promise((r) => setTimeout(r, POLL_MS));
+    let res: Response;
+    try {
+      res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { cache: 'no-store' });
+    } catch {
+      if (++consecutiveErrors >= MAX_CONSECUTIVE_POLL_ERRORS) {
+        throw new Error('Lost contact with the server. Check your connection and try again.');
+      }
+      continue;
+    }
+    const body = await res.json().catch(() => ({}));
+    if (res.status === 404) {
+      throw new Error(body.error || 'The server lost track of this takeoff. Please try again.');
+    }
+    if (!res.ok) {
+      if (++consecutiveErrors >= MAX_CONSECUTIVE_POLL_ERRORS) {
+        throw new Error(body.error || `Status check failed (${res.status})`);
+      }
+      continue;
+    }
+    consecutiveErrors = 0;
+    if (body.stage) onStage(body.stage);
+    if (body.status === 'completed' && body.result) return body.result as ProcessResponse;
+    if (body.status === 'failed') throw new Error(body.error || 'Processing failed');
+  }
+  throw new Error('This takeoff is taking unusually long. Please try again with fewer sheets.');
+}
+
 export default function AutoInfraApp() {
   const [appState, setAppState] = useState<AppState>('upload');
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [activeFile, setActiveFile] = useState<{ name: string; size: number } | null>(null);
   const [activeMode, setActiveMode] = useState<string>('default');
+  const [jobStage, setJobStage] = useState<string>('queued');
 
   // Benchmark metrics state
   const [perfSummary, setPerfSummary] = useState<PerformanceSummary | null>(null);
@@ -117,26 +171,24 @@ export default function AutoInfraApp() {
     setUploadError(null);
     setActiveFile({ name: file.name, size: file.size });
     setActiveMode(mode);
+    setJobStage('queued');
     setAppState('processing');
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
     const formData = new FormData();
     formData.append('pdf', file);
-    formData.append('extractionMode', mode);
+    if (mode !== 'default') formData.append('extractionMode', mode);
+    const savedRates = readSavedRates();
+    if (savedRates) formData.append('params', savedRates);
 
     try {
-      const res = await fetch('/api/process', {
-        method: 'POST',
-        body: formData,
-      });
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || `Processing failed with status ${res.status}`);
+      const res = await fetch('/api/process', { method: 'POST', body: formData });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || !body.jobId) {
+        throw new Error(body.error || `Upload failed (${res.status})`);
       }
-
-      const data: ProcessResponse = await res.json();
-      setProcessResult(data);
+      const result = await pollJob(body.jobId, setJobStage);
+      setProcessResult(result);
       setAppState('results');
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Processing failed');
@@ -158,8 +210,9 @@ export default function AutoInfraApp() {
       {appState === 'upload' && <div className="hero-grid" aria-hidden="true" />}
 
       <div className="app-container relative">
-        {appState === 'upload' && (
-          <div className="animate-in">
+        {/* Kept mounted (just hidden) while processing so a failed run returns
+            to the same file and engine choice — one click to retry. */}
+        <div className={appState === 'upload' ? 'animate-in' : 'hidden'} aria-hidden={appState !== 'upload'}>
             <section className="mx-auto max-w-3xl text-center pt-6 pb-10">
               <span className="badge badge-accent mb-5">
                 <span className="badge-dot" />
@@ -178,7 +231,11 @@ export default function AutoInfraApp() {
             </section>
 
             <div className="mx-auto max-w-3xl">
-              <DropZone onProcess={handleProcessFile} error={uploadError} />
+              <DropZone
+                onProcess={handleProcessFile}
+                onFileSelected={() => setUploadError(null)}
+                error={uploadError}
+              />
             </div>
 
             <section className="mx-auto max-w-5xl mt-16" aria-label="How it works">
@@ -235,8 +292,7 @@ export default function AutoInfraApp() {
                 />
               </section>
             )}
-          </div>
-        )}
+        </div>
 
         {appState === 'processing' && activeFile && (
           <div className="mx-auto max-w-3xl animate-in">
@@ -244,6 +300,7 @@ export default function AutoInfraApp() {
               fileName={activeFile.name}
               fileSize={activeFile.size}
               extractionMode={activeMode}
+              serverStage={jobStage}
             />
             <p className="mt-4 text-center text-[12.5px] text-muted">
               Large drawing sets can take a few minutes. Keep this tab open.

@@ -6,7 +6,7 @@
  *                                  cached predictions; carries a per-entity breakdown)
  *   golden-results.json          — written by `npm run evaluate:golden` (a real run)
  *
- * Deliberately NOT the legacy scoreboards/*.csv cell-accuracy files (/api/scoreboard):
+ * Deliberately NOT the legacy scoreboards/*.csv cell-accuracy files (the old /api/scoreboard, now removed):
  * cell accuracy scores guessed dollars cell-by-cell and is not this system's accuracy
  * metric. See CLAUDE.md and REDESIGN.md.
  */

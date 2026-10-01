@@ -268,6 +268,10 @@ export interface ProjectRecord {
 export interface ProcessResponse {
   projectId: string;
   extraction: ExtractionResult;
+  /** Extraction run telemetry (tokens, tiles, LLM calls) for the Telemetry tab. */
+  cost?: TakeoffFacts['cost'];
+  /** ISO time the takeoff finished on the server. */
+  processedAt?: string;
   xlsxBase64: string;
   quoteBase64: string;
   status: string;

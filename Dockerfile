@@ -29,6 +29,10 @@ RUN npm run build
 FROM base AS runner
 WORKDIR /app/webapp
 
+# Fonts for drawing rasterisation: PDFs that reference non-embedded fonts are drawn
+# with system fonts, and node:alpine ships none — callouts would render blank.
+RUN apk add --no-cache fontconfig ttf-liberation font-dejavu
+
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 

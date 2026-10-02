@@ -108,6 +108,9 @@ export interface StructureFact {
   pipeOutDiameter: number | null;
   structureType: string | null;
   depth: number | null;
+  /** Structure size as stated on the drawing ("MH 2 (1800mmØ)"), in mm. When present it
+   *  beats the size inferred from connected pipes. */
+  diameter?: number | null;
 }
 
 export interface CatchbasinGroupFact {

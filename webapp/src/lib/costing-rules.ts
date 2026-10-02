@@ -212,7 +212,16 @@ export function priceTakeoff(
     const effectivePipeOutDia = Math.max(st.pipeOutDiameter || 0, maxPipe);
 
     const desc = (st.description || '').toUpperCase();
-    const diameter = desc.includes('DCBMH') ? 1500 : snapToMHSize(effectivePipeOutDia);
+    // A chamber system (Cultec, StormTech) is not a precast manhole: giving it a diameter
+    // makes the template price it as one. It is priced by hand (see chamberWarning).
+    const isChamber = st.structureType === 'CHAMBER';
+    // The size stated on the drawing ("MH 2 (1800mmØ)") wins; inferring from connected
+    // pipes is the fallback, and it can only ever under-size (a 300mm pipe says 1200).
+    const diameter = isChamber
+      ? null
+      : st.diameter
+      ? st.diameter
+      : desc.includes('DCBMH') ? 1500 : snapToMHSize(effectivePipeOutDia);
 
     let addMaterials = 0;
     let addLE = 0;

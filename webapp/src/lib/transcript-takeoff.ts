@@ -11,6 +11,7 @@
  */
 import {
   parseRunCallout, parseStructureLabel, parseElevation, parseWatermainCallout,
+  structureDescription, chamberWarning,
   isDanglingRunHead, isRunContinuation, ParsedStructure, ParsedRun,
 } from './callout-parser';
 import { reconcileTakeoff } from './reconcile';
@@ -134,14 +135,16 @@ function processLines(lines: string[], out: Sink, warnings: string[]): boolean {
       out.catchbasinLabels.set(cbType, labels);
     } else {
       out.structures.push({
-        description: parsed.label,
+        description: structureDescription(parsed),
         topElevation,
         lowInvert: inverts.length ? Math.min(...inverts) : null,
         highInvert: inverts.length >= 2 ? Math.max(...inverts) : null,
         pipeOutDiameter: null,
-        structureType: null,
+        structureType: parsed.kind === 'CHAMBER' ? 'CHAMBER' : null,
         depth: null,
+        diameter: parsed.diameterMm,
       });
+      if (parsed.kind === 'CHAMBER') warnings.push(chamberWarning(parsed.label, lines));
     }
     return true;
   }

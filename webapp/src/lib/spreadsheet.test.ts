@@ -241,3 +241,40 @@ describe('populateTemplate — watermain', () => {
     expect(ex.warnings.some((w) => /length not found/.test(w))).toBe(true);
   });
 });
+
+describe('populateTemplate — 460 Bayly St E regressions', () => {
+  it('writes the discount in each template\'s own convention', async () => {
+    // SHORT: precast is *(1-F$5); LONG: *(100-F$5)/100.
+    const short = await build(facts({ structures: [st('MH 1')] }));
+    expect(short.ex.templateType).toBe('SHORT');
+    expect(val(short.wb, 'MANHOLES (1)', 'F5')).toBe(PARAMS.manholes.discount);
+    // SHORT's catchbasin factor no longer reads the fraction as a percent.
+    expect(formulaOf(short.wb.getWorksheet('MANHOLES (1)')!, 'L6')).toBe('(1-F5)*I3*I4');
+
+    const long = await build(facts({ structures: Array.from({ length: 40 }, (_, i) => st(`MH ${i + 1}`)) }));
+    expect(long.ex.templateType).toBe('LONG');
+    expect(val(long.wb, 'MANHOLES (1)', 'F5')).toBeCloseTo(PARAMS.manholes.discount * 100);
+  });
+
+  it('never writes half an elevation pair (it makes a negative depth and #N/A totals)', async () => {
+    const { ex, wb } = await build(facts({ structures: [
+      { ...st('MH 13'), topElevation: null, lowInvert: 85.1 },
+      { ...st('MH 2'), topElevation: 89.7, lowInvert: 85.94 },
+    ] }));
+    expect(val(wb, 'MANHOLES (1)', 'C11')).toBeNull();
+    expect(val(wb, 'MANHOLES (1)', 'D11')).toBeNull();
+    expect(ex.warnings.some((w) => w.startsWith('MH 13'))).toBe(true);
+    expect(val(wb, 'MANHOLES (1)', 'C12')).toBe(89.7);
+    expect(val(wb, 'MANHOLES (1)', 'D12')).toBe(85.94);
+  });
+
+  it('uses the diameter stated on the drawing, and gives a chamber none', async () => {
+    const { wb } = await build(facts({ structures: [
+      { ...st('MH 100'), diameter: 2400 },
+      { ...st('902 HD'), topElevation: null, lowInvert: null, structureType: 'CHAMBER' },
+    ] }));
+    expect(val(wb, 'MANHOLES (1)', 'L11')).toBe(2400);
+    expect(val(wb, 'MANHOLES (1)', 'B12')).toBe('902 HD');
+    expect(val(wb, 'MANHOLES (1)', 'L12')).not.toBe(1200);
+  });
+});

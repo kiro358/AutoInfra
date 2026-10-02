@@ -53,7 +53,7 @@ function mergeStructureGroup(group: StructureFact[]): StructureFact {
     // Fill every field the earlier readings left blank. Order is significance order:
     // the first row wins any field both read, which is what keeps mergeTakeoffs'
     // "primary wins" contract true for the exact text-layer path.
-    for (const k of ['topElevation', 'lowInvert', 'highInvert', 'pipeOutDiameter', 'structureType', 'depth'] as const) {
+    for (const k of ['topElevation', 'lowInvert', 'highInvert', 'pipeOutDiameter', 'structureType', 'depth', 'diameter'] as const) {
       if (isBlank(out[k]) && !isBlank(s[k])) (out as any)[k] = s[k];
     }
     // structureType is the one field where later beats earlier, because the readings
@@ -513,8 +513,12 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
   // 1. structures: merge by normalized label
   const byLabel = new Map<string, StructureFact[]>();
   for (const s of facts.structures) {
-    const k = normalizeLabel(s.description);
-    if (!k) continue;
+    // normalizeLabel strips the system prefix (the estimator's sheet does too), but storm
+    // and sanitary networks number independently: "SAN MH 1" and "MH 1" are two
+    // structures, so the merge key keeps the system.
+    const base = normalizeLabel(s.description);
+    if (!base) continue;
+    const k = /^\s*SAN(?:ITARY)?\b/i.test(s.description) ? `SAN|${base}` : base;
     (byLabel.get(k) ?? byLabel.set(k, []).get(k)!).push(s);
   }
   const structures = Array.from(byLabel.values()).map(mergeStructureGroup);

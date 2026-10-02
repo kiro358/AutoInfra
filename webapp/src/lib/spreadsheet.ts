@@ -88,7 +88,18 @@ function fillManholes(
 
     setCellValue(sheet, 'F3', params.manholes.truckingPerCM);
     setCellValue(sheet, 'F4', params.manholes.concretePerCM);
-    setCellValue(sheet, 'F5', params.manholes.discount);
+    // F5 is "%DISCOUNT", and the two templates read it differently: LONG's precast formula
+    // is *(100-F$5)/100 (F5 = 40 means 40%), SHORT's is *(1-F$5) (F5 = 0.35). Writing the
+    // fraction into LONG made the discount 0.35% instead of 35%. Follow the template.
+    const percent = discountIsPercent(sheet);
+    const d = params.manholes.discount;
+    setCellValue(sheet, 'F5', percent ? (d <= 1 ? d * 100 : d) : (d > 1 ? d / 100 : d));
+    // SHORT's catchbasin factor L6 is written in the percent convention while its own
+    // precast column uses the fraction one, so catchbasins got ~0.35% off, not 35%.
+    const l6 = sheet.getCell('L6');
+    if (!percent && /\(100-F\$?5\)\/100/.test(String(l6.formula ?? ''))) {
+      l6.value = { formula: '(1-F5)*I3*I4' } as ExcelJS.CellFormulaValue;
+    }
     setCellValue(sheet, 'F6', params.manholes.marginFactor);
     setCellValue(sheet, 'F7', params.manholes.metric ? 1 : 0);
     setCellValue(sheet, 'I3', params.manholes.fstFactor);
@@ -108,11 +119,20 @@ function fillManholes(
     const { sheet, row } = slot;
 
     setCellValue(sheet, `B${row}`, mh.description);
-    setCellValue(sheet, `C${row}`, mh.topElevation || undefined);
-    setCellValue(sheet, `D${row}`, mh.lowInvert || undefined);
+    // The template derives depth as Top El - Low Inv. Writing only one of the pair gives a
+    // depth of minus the invert (MH 13 on 460 Bayly: -85.1), the precast VLOOKUP returns
+    // #N/A, and that #N/A takes out the MANHOLES and SUMMARY totals. Write the pair only
+    // when it makes a real depth; otherwise leave both blank and say so.
+    const top = mh.topElevation, low = mh.lowInvert;
+    if (top && low && top > low) {
+      setCellValue(sheet, `C${row}`, top);
+      setCellValue(sheet, `D${row}`, low);
+    } else if ((mh.topElevation || mh.lowInvert) && mh.structureType !== 'CHAMBER') {
+      extraction.warnings.push(`${mh.description}: top elevation and low invert not both read — depth left blank, price it by hand.`);
+    }
     setCellValue(sheet, `E${row}`, mh.highInvert || undefined);
     setCellValue(sheet, `F${row}`, mh.pipeOutDiameter || undefined);
-    setCellValue(sheet, `G${row}`, mh.structureType ?? undefined);
+    if (mh.structureType !== 'CHAMBER') setCellValue(sheet, `G${row}`, mh.structureType ?? undefined);
     if (mh.addMaterials) setCellValue(sheet, `H${row}`, mh.addMaterials);
     if (mh.addLE) setCellValue(sheet, `I${row}`, mh.addLE);
     if (mh.depth != null) forceSetCellValue(sheet, `J${row}`, mh.depth);
@@ -359,6 +379,11 @@ function fillValves(workbook: ExcelJS.Workbook, extraction: ExtractionResult, la
  * Set a cell value WITHOUT destroying formulas in other cells.
  * Only writes if the value is defined and non-empty.
  */
+/** Whether this MANHOLES sheet's precast formula reads F5 as a percent (40) or a fraction (0.4). */
+function discountIsPercent(sheet: ExcelJS.Worksheet): boolean {
+  return /100\s*-\s*F\$?5/.test(String(sheet.getCell('N11').formula ?? ''));
+}
+
 function setCellValue(
   sheet: ExcelJS.Worksheet,
   cellRef: string,

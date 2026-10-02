@@ -124,12 +124,16 @@ function fillManholes(
     // #N/A, and that #N/A takes out the MANHOLES and SUMMARY totals. Write the pair only
     // when it makes a real depth; otherwise leave both blank and say so.
     const top = mh.topElevation, low = mh.lowInvert;
-    if (top && low && top > low) {
-      setCellValue(sheet, `C${row}`, top);
-      setCellValue(sheet, `D${row}`, low);
-    } else if ((mh.topElevation || mh.lowInvert) && mh.structureType !== 'CHAMBER') {
+    const hasPair = Boolean(top && low && top > low);
+    if (hasPair) {
+      setCellValue(sheet, `C${row}`, top!);
+      setCellValue(sheet, `D${row}`, low!);
+    } else if (mh.structureType !== 'CHAMBER') {
       extraction.warnings.push(`${mh.description}: top elevation and low invert not both read — depth left blank, price it by hand.`);
     }
+    // No depth means no precast price, and a diameter alone breaks it: LONG's lookup row for
+    // 1200mm at 0m is a literal #N/A (SHORT's silently priced it ~$1,045). Leave L blank.
+    const hasDepth = hasPair || (mh.depth != null && mh.depth > 0);
     setCellValue(sheet, `E${row}`, mh.highInvert || undefined);
     setCellValue(sheet, `F${row}`, mh.pipeOutDiameter || undefined);
     if (mh.structureType !== 'CHAMBER') setCellValue(sheet, `G${row}`, mh.structureType ?? undefined);
@@ -137,7 +141,7 @@ function fillManholes(
     if (mh.addLE) setCellValue(sheet, `I${row}`, mh.addLE);
     if (mh.depth != null) forceSetCellValue(sheet, `J${row}`, mh.depth);
     if (mh.drop != null) forceSetCellValue(sheet, `K${row}`, mh.drop);
-    if (mh.diameter != null) forceSetCellValue(sheet, `L${row}`, mh.diameter);
+    if (mh.diameter != null && hasDepth) forceSetCellValue(sheet, `L${row}`, mh.diameter);
   });
 
   // Fill catchbasin groups (Rows 53-56) - only on MANHOLES (1)

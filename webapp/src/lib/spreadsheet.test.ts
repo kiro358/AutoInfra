@@ -268,6 +268,18 @@ describe('populateTemplate — 460 Bayly St E regressions', () => {
     expect(val(wb, 'MANHOLES (1)', 'D12')).toBe(85.94);
   });
 
+  it('leaves the diameter blank on a row with no depth (LONG prices 1200mm @ 0m as #N/A)', async () => {
+    const { wb } = await build(facts({ structures: [
+      { ...st('HEADWALL 1'), topElevation: null, lowInvert: null },
+      ...Array.from({ length: 40 }, (_, i) => st(`MH ${i + 1}`)),
+    ] }));
+    expect(val(wb, 'MANHOLES (1)', 'B11')).toBe('HEADWALL 1');
+    // The template's own size formula stays (it yields 0 with no pipe size), as on the
+    // estimator's sheet for "HW 1 / RIP RAP" and "902 HD".
+    expect(formulaOf(wb.getWorksheet('MANHOLES (1)')!, 'L11')).toContain('HLOOKUP');
+    expect(val(wb, 'MANHOLES (1)', 'L12')).toBe(1200);
+  });
+
   it('uses the diameter stated on the drawing, and gives a chamber none', async () => {
     const { wb } = await build(facts({ structures: [
       { ...st('MH 100'), diameter: 2400 },

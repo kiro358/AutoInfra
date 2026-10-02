@@ -177,3 +177,19 @@ describe('priceTakeoff — catchbasins, watermain', () => {
     expect(out.watermainValves[0]).toMatchObject({ boxCost: 285, anodeCost: 150, laborPerValve: 150 });
   });
 });
+
+describe('priceTakeoff — stated manhole size (460 Bayly St E)', () => {
+  const base = { description: 'MH 10', topElevation: 89.45, lowInvert: 85.02, highInvert: null, pipeOutDiameter: null, structureType: null, depth: null };
+  const facts = (diameter: number | null) => ({
+    projectName: 'P', jobNumber: '', date: '', confidence: 1, warnings: [], catchbasins: [], sewers: [],
+    watermain: [], watermainSpecials: [], watermainValves: [], structures: [{ ...base, diameter }],
+  });
+  it('uses a stated size that is a real manhole size', () => {
+    expect(priceTakeoff(facts(2400)).manholes[0].diameter).toBe(2400);
+  });
+  it('rejects a misread size and warns', () => {
+    const r = priceTakeoff(facts(180));
+    expect(r.manholes[0].diameter).toBe(1200);
+    expect(r.warnings.some((w) => w.includes('180mm'))).toBe(true);
+  });
+});

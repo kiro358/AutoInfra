@@ -109,6 +109,8 @@ function joinBlockLines(block: string[]): string[] {
 // tried independently as a run / watermain callout. Returns whether the
 // grammar made sense of ANY of the lines (used to decide whether an
 // unparseable schedule row deserves a warning).
+const STANDALONE_SIZE_RE = /^\s*\(?\s*(\d{3,4})\s*(?:MM)?\s*[ØO]\s*\)?\s*$/i;
+
 function processLines(lines: string[], out: Sink, warnings: string[]): boolean {
   const structureLine = lines.find((l) => parseStructureLabel(l));
   if (structureLine) {
@@ -116,16 +118,31 @@ function processLines(lines: string[], out: Sink, warnings: string[]): boolean {
     if (parsed.existing) return true; // recognized, intentionally excluded
 
     let topElevation: number | null = null;
+    let diameterMm = parsed.diameterMm;
     const inverts: number[] = [];
     for (const line of lines) {
       if (line === structureLine) continue;
+      // The size is often wrapped onto its own line: "PROP STM MH 100 / (2400 mmØ) / ...".
+      const size = STANDALONE_SIZE_RE.exec(line);
+      if (size) {
+        diameterMm ??= parseInt(size[1], 10);
+        continue;
+      }
       const e = parseElevation(line);
       if (!e) {
         warnings.push(`Unrecognized line in structure block: "${line}"`);
         continue;
       }
-      if (e.type === 'TG') topElevation = e.value;
-      else inverts.push(e.value);
+      if (e.type === 'TG') {
+        // A second rim means the vision step merged the NEXT structure's callout into this
+        // block (460 Bayly: MH 9's 88.09 followed by MH 200's 86.78). Its lines are not this
+        // structure's — taking them made a 2400mm MH 1.76m deep and #N/A in the workbook.
+        if (topElevation !== null) {
+          warnings.push(`Structure block for ${parsed.label} holds a second rim (${e.value}); later lines ignored: "${lines.slice(lines.indexOf(line)).join(' / ')}"`);
+          break;
+        }
+        topElevation = e.value;
+      } else inverts.push(e.value);
     }
 
     const cbType = cbKindType(parsed.kind);
@@ -142,7 +159,7 @@ function processLines(lines: string[], out: Sink, warnings: string[]): boolean {
         pipeOutDiameter: null,
         structureType: parsed.kind === 'CHAMBER' ? 'CHAMBER' : null,
         depth: null,
-        diameter: parsed.diameterMm,
+        diameter: diameterMm,
       });
       if (parsed.kind === 'CHAMBER') warnings.push(chamberWarning(parsed.label, lines));
     }

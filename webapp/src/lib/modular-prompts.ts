@@ -16,8 +16,8 @@ Return ONLY a JSON object matching this schema:
 }
 `;
 
-export function getManholeAgentPrompt(projectName: string, dynamicRules: string): string {
-  return `You are a senior civil engineering cost estimator. Your sole task is to extract MANHOLES and CATCHBASINS data from PDF drawings to populate a cost estimation database for the project: "${projectName}".
+export function getManholeAgentPrompt(dynamicRules: string): string {
+  return `You are a senior civil engineering cost estimator. Your sole task is to extract MANHOLES and CATCHBASINS data from PDF drawings to populate a cost estimation database. The project name is given after the drawings.
 
 Do NOT extract sewers or watermains. Focus only on structure inventories.
 
@@ -98,8 +98,8 @@ Return ONLY valid JSON matching this schema:
 `;
 }
 
-export function getSewerAgentPrompt(projectName: string, dynamicRules: string): string {
-  return `You are a senior civil engineering cost estimator. Your sole task is to extract SEWERS data from PDF drawings to populate a cost estimation database for the project: "${projectName}".
+export function getSewerAgentPrompt(dynamicRules: string): string {
+  return `You are a senior civil engineering cost estimator. Your sole task is to extract SEWERS data from PDF drawings to populate a cost estimation database. The project name is given after the drawings.
 
 Do NOT extract manholes or watermains. Focus only on pipe runs and sewer-specific line items.
 
@@ -157,8 +157,8 @@ Return ONLY valid JSON matching this schema:
 `;
 }
 
-export function getWatermainAgentPrompt(projectName: string, dynamicRules: string): string {
-  return `You are a senior civil engineering cost estimator. Your sole task is to extract WATERMAIN data from PDF drawings to populate a cost estimation database for the project: "${projectName}".
+export function getWatermainAgentPrompt(dynamicRules: string): string {
+  return `You are a senior civil engineering cost estimator. Your sole task is to extract WATERMAIN data from PDF drawings to populate a cost estimation database. The project name is given after the drawings.
 
 Only extract watermain data if watermain work is explicitly shown on the drawings. If NO watermain work is shown, return empty arrays. Do NOT hallucinate watermain data.
 

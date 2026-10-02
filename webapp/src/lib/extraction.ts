@@ -617,13 +617,11 @@ async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 6, initialDel
 
 import { PDFDocument } from 'pdf-lib';
 
-async function extractPagesFromPDF(pdfBuffer: Buffer, pages: number[]): Promise<Buffer> {
+async function extractPagesFromPDF(pdfBuffer: Buffer, srcDoc: PDFDocument, pages: number[]): Promise<Buffer> {
   if (!pages || pages.length === 0) {
     return pdfBuffer;
   }
   try {
-    const srcDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
-    const dstDoc = await PDFDocument.create();
     const totalPages = srcDoc.getPageCount();
     const validIndices = pages
       .map(p => p - 1)
@@ -633,6 +631,12 @@ async function extractPagesFromPDF(pdfBuffer: Buffer, pages: number[]): Promise<
       return pdfBuffer;
     }
 
+    // Selecting every page in order would just rebuild the same PDF
+    if (validIndices.length === totalPages && validIndices.every((idx, i) => idx === i)) {
+      return pdfBuffer;
+    }
+
+    const dstDoc = await PDFDocument.create();
     const copiedPages = await dstDoc.copyPages(srcDoc, validIndices);
     copiedPages.forEach(page => dstDoc.addPage(page));
 
@@ -694,145 +698,10 @@ export async function extractFromPDF(
   const useVertex = process.env.USE_VERTEX_AI === 'true' || !apiKey;
   const uploadedFiles: any[] = [];
 
-  let fileUriToUse: string | null = null;
-  let gcsPath: string | null = null;
-  let isCacheHit = false;
-
   try {
-    if (useVertex) {
-      if (gcsSourceUri) {
-        fileUriToUse = gcsSourceUri;
-        console.log(`      [extraction.ts] Using direct GCS URI: ${fileUriToUse}`);
-      } else if (pdfBuffer.length > 4 * 1024 * 1024) {
-        const hash = crypto.createHash('sha256').update(pdfBuffer).digest('hex');
-        const fileName = `cached-drawings/${hash}.pdf`;
-
-        const bucket = storage.bucket(BUCKET_NAME);
-        const file = bucket.file(fileName);
-
-        console.log(`      [extraction.ts] File size (${(pdfBuffer.length / 1024 / 1024).toFixed(2)}MB) > 4MB. Checking GCS cache: gs://${BUCKET_NAME}/${fileName}`);
-
-        const [exists] = await file.exists();
-        if (exists) {
-          console.log(`      [extraction.ts] ⚡ GCS Cache Hit! Reusing gs://${BUCKET_NAME}/${fileName}`);
-          isCacheHit = true;
-        } else {
-          console.log(`      [extraction.ts] Cache Miss. Uploading to GCS: gs://${BUCKET_NAME}/${fileName}`);
-          await file.save(pdfBuffer, {
-            contentType: 'application/pdf',
-            metadata: {
-              cacheControl: 'public, max-age=31536000', // Cache for 1 year
-            },
-          });
-        }
-
-        gcsPath = fileName;
-        fileUriToUse = `gs://${BUCKET_NAME}/${fileName}`;
-      }
-    } else {
-      // Google AI Studio (Free Tier) - Always upload to Files API for robust PDF parsing
-      if (pdfBuffer.length > 0 || gcsSourceUri) {
-        const tempPath = path.join(os.tmpdir(), `locator-${crypto.randomBytes(8).toString('hex')}.pdf`);
-        fs.writeFileSync(tempPath, pdfBuffer);
-        try {
-          console.log(`      [extraction.ts] File size (${(pdfBuffer.length / 1024 / 1024).toFixed(2)}MB) > 0MB or GCS source specified. Uploading to Gemini Files API...`);
-          const uploadedFileObj = await ai.files.upload({
-            file: tempPath,
-            config: { mimeType: 'application/pdf' }
-          });
-          fileUriToUse = uploadedFileObj.uri || null;
-          uploadedFiles.push(uploadedFileObj);
-          console.log(`      [extraction.ts] Uploaded successfully to Gemini Files API: ${uploadedFileObj.name} (${uploadedFileObj.uri})`);
-        } finally {
-          try {
-            fs.unlinkSync(tempPath);
-          } catch (err) {}
-        }
-      }
-    }
-
-    const pdfPart = fileUriToUse
-      ? {
-        fileData: {
-          fileUri: fileUriToUse,
-          mimeType: 'application/pdf',
-        },
-      }
-      : {
-        inlineData: {
-          mimeType: 'application/pdf',
-          data: pdfBuffer.toString('base64'),
-        },
-      };
-
     const srcDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
     const totalPages = srcDoc.getPageCount();
     console.log(`      [extraction.ts] Total pages in merged PDF: ${totalPages}`);
-
-    let locatorIndex: { manholePages: number[], sewerPages: number[], watermainPages: number[] } | null = null;
-
-    if (totalPages <= 15) {
-      const allPages = Array.from({ length: totalPages }, (_, i) => i + 1);
-      locatorIndex = {
-        manholePages: allPages,
-        sewerPages: allPages,
-        watermainPages: allPages
-      };
-      console.log(`      [extraction.ts] Small/Medium PDF (<= 15 pages). Skipping locator and using all pages:`, locatorIndex);
-    } else {
-      const locatorPrompt = LOCATOR_SYSTEM_PROMPT + '\nAnalyze the drawing pages and return the JSON index.';
-      const locatorText = await getCachedOrCallLLM(`${sourceHash}_all`, locatorPrompt, 'locator', async () => {
-        const response = await callWithRetry(async () => {
-          return await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: [
-              {
-                role: 'user',
-                parts: [
-                  { text: LOCATOR_SYSTEM_PROMPT },
-                  pdfPart,
-                  { text: 'Analyze the drawing pages and return the JSON index.' }
-                ]
-              }
-            ],
-            config: {
-              temperature: 0,
-              responseMimeType: 'application/json'
-            }
-          });
-        });
-        return response.text || '{}';
-      }, projectName);
-
-      try {
-        const parsed = JSON.parse(locatorText);
-        if (Array.isArray(parsed.manholePages) || Array.isArray(parsed.sewerPages) || Array.isArray(parsed.watermainPages)) {
-          locatorIndex = {
-            manholePages: parsed.manholePages || [],
-            sewerPages: parsed.sewerPages || [],
-            watermainPages: parsed.watermainPages || []
-          };
-        }
-        console.log(`      [extraction.ts] Locator results:`, locatorIndex);
-      } catch (e) {
-        console.warn(`      [extraction.ts] Failed to parse locator response, falling back to all pages`, e);
-      }
-    }
-
-    const shouldRunManholes = !locatorIndex || locatorIndex.manholePages.length > 0;
-    const shouldRunSewers = !locatorIndex || locatorIndex.sewerPages.length > 0;
-    const shouldRunWatermain = !locatorIndex || locatorIndex.watermainPages.length > 0;
-
-    // Helper to generate instructions for focusing on specific pages
-    const getPageInstructions = (pages: number[], desc: string, isSliced: boolean) => {
-      if (isSliced && pages && pages.length > 0) {
-        return `\nNote: The provided PDF has been pre-sliced to contain only the relevant pages (original page(s): ${pages.join(', ')}) containing ${desc}. Extract the data from these pages.`;
-      }
-      if (pages && pages.length > 0) {
-        return `\nFocus ONLY on page(s) ${pages.join(', ')} of the provided PDF. These are the identified pages containing ${desc}. Do not extract from any other pages.`;
-      }
-      return '\nAnalyze the PDF to extract this data.';
-    };
 
     const preparePdfPart = async (buffer: Buffer): Promise<any> => {
       if (useVertex) {
@@ -895,10 +764,103 @@ export async function extractFromPDF(
       }
     };
 
-    console.log(`      [extraction.ts] Running extraction agents (Manholes, Sewers, Watermain) in parallel with stagger...`);
+    // Identical page sets (e.g. every agent getting all pages of a small PDF) share one upload.
+    // Sliced buffers are memoized per page set, so buffer identity is a reliable key.
+    const pdfPartCache = new Map<Buffer, Promise<any>>();
+    const getPdfPart = (buffer: Buffer): Promise<any> => {
+      let part = pdfPartCache.get(buffer);
+      if (!part) {
+        if (buffer === pdfBuffer && useVertex && gcsSourceUri) {
+          console.log(`      [extraction.ts] Using direct GCS URI: ${gcsSourceUri}`);
+          part = Promise.resolve({ fileData: { fileUri: gcsSourceUri, mimeType: 'application/pdf' } });
+        } else {
+          part = preparePdfPart(buffer);
+        }
+        part.catch(() => pdfPartCache.delete(buffer));
+        pdfPartCache.set(buffer, part);
+      }
+      return part;
+    };
 
-    // Helper to add a delay before starting an agent (stagger to avoid simultaneous rate limit hits)
-    const stagger = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+    const slicedPdfCache = new Map<string, Promise<Buffer>>();
+    const getSlicedPdf = (pages: number[]): Promise<Buffer> => {
+      const key = pages.join(',');
+      let sliced = slicedPdfCache.get(key);
+      if (!sliced) {
+        sliced = extractPagesFromPDF(pdfBuffer, srcDoc, pages);
+        slicedPdfCache.set(key, sliced);
+      }
+      return sliced;
+    };
+
+    let locatorIndex: { manholePages: number[], sewerPages: number[], watermainPages: number[] } | null = null;
+
+    if (totalPages <= 15) {
+      const allPages = Array.from({ length: totalPages }, (_, i) => i + 1);
+      locatorIndex = {
+        manholePages: allPages,
+        sewerPages: allPages,
+        watermainPages: allPages
+      };
+      console.log(`      [extraction.ts] Small/Medium PDF (<= 15 pages). Skipping locator and using all pages:`, locatorIndex);
+    } else {
+      const locatorPrompt = LOCATOR_SYSTEM_PROMPT + '\nAnalyze the drawing pages and return the JSON index.';
+      const locatorText = await getCachedOrCallLLM(`${sourceHash}_all`, locatorPrompt, 'locator', async () => {
+        const pdfPart = await getPdfPart(pdfBuffer);
+        const response = await callWithRetry(async () => {
+          return await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  { text: LOCATOR_SYSTEM_PROMPT },
+                  pdfPart,
+                  { text: 'Analyze the drawing pages and return the JSON index.' }
+                ]
+              }
+            ],
+            config: {
+              temperature: 0,
+              responseMimeType: 'application/json'
+            }
+          });
+        });
+        return response.text || '{}';
+      }, projectName);
+
+      try {
+        const parsed = JSON.parse(locatorText);
+        if (Array.isArray(parsed.manholePages) || Array.isArray(parsed.sewerPages) || Array.isArray(parsed.watermainPages)) {
+          locatorIndex = {
+            manholePages: parsed.manholePages || [],
+            sewerPages: parsed.sewerPages || [],
+            watermainPages: parsed.watermainPages || []
+          };
+        }
+        console.log(`      [extraction.ts] Locator results:`, locatorIndex);
+      } catch (e) {
+        console.warn(`      [extraction.ts] Failed to parse locator response, falling back to all pages`, e);
+      }
+    }
+
+    const shouldRunManholes = !locatorIndex || locatorIndex.manholePages.length > 0;
+    const shouldRunSewers = !locatorIndex || locatorIndex.sewerPages.length > 0;
+    const shouldRunWatermain = !locatorIndex || locatorIndex.watermainPages.length > 0;
+
+    // Helper to generate instructions for focusing on specific pages
+    const getPageInstructions = (pages: number[], desc: string, isSliced: boolean) => {
+      if (isSliced && pages && pages.length > 0) {
+        return `\nNote: The provided PDF has been pre-sliced to contain only the relevant pages (original page(s): ${pages.join(', ')}) containing ${desc}. Extract the data from these pages.`;
+      }
+      if (pages && pages.length > 0) {
+        return `\nFocus ONLY on page(s) ${pages.join(', ')} of the provided PDF. These are the identified pages containing ${desc}. Do not extract from any other pages.`;
+      }
+      return '\nAnalyze the PDF to extract this data.';
+    };
+
+    console.log(`      [extraction.ts] Running extraction agents (Manholes, Sewers, Watermain) in parallel...`);
+
 
     // --- PARALLEL AGENT EXECUTION WITH STAGGER ---
     const agentTasks: Promise<void>[] = [];
@@ -906,6 +868,7 @@ export async function extractFromPDF(
     let manholesData: any = { manholes: [], catchbasins: { groups: [], laborRates: {} } };
     let sewersData: any = { sewers: [] };
     let watermainData: any = { watermain: [], watermainSpecials: [], watermainValves: [] };
+    const chunkConfidences: number[] = [];
 
     if (shouldRunManholes) {
       agentTasks.push((async () => {
@@ -923,7 +886,7 @@ export async function extractFromPDF(
 
         console.log(`      [extraction.ts] Extracting manholes in ${chunks.length} parallel chunk(s)...`);
         const chunkPromises = chunks.map(async (chunk, chunkIdx) => {
-          const slicedBuffer = await extractPagesFromPDF(pdfBuffer, chunk);
+          const slicedBuffer = await getSlicedPdf(chunk);
           const isSliced = slicedBuffer !== pdfBuffer;
 
           const fewShots = buildFewShotPromptSection(
@@ -931,12 +894,16 @@ export async function extractFromPDF(
             { name: projectName, hasWatermain: shouldRunWatermain, hasSanitary: shouldRunSewers },
             'manholes'
           );
-          const prompt = getManholeAgentPrompt(projectName, getDynamicPromptAdditions('manholes')) + '\n' + fewShots + getPageInstructions(chunk, 'manholes or catchbasins schedules/plans', isSliced);
+          // Static instructions + few-shots go before the PDF so Gemini's implicit prefix cache can reuse them across projects;
+          // project-specific context goes after.
+          const staticPrompt = getManholeAgentPrompt(getDynamicPromptAdditions('manholes')) + '\n' + fewShots;
+          const projectPrompt = `Project: "${projectName}".` + getPageInstructions(chunk, 'manholes or catchbasins schedules/plans', isSliced);
+          const prompt = staticPrompt + '\n' + projectPrompt;
 
           let text = '{}';
           try {
             text = await getCachedOrCallLLM(`${sourceHash}_chunk_${chunk.join('_')}`, prompt, 'manholes', async () => {
-              const subPdfPart = await preparePdfPart(slicedBuffer);
+              const subPdfPart = await getPdfPart(slicedBuffer);
               const response = await callWithRetry(async () => {
                 return await ai.models.generateContent({
                   model: 'gemini-2.5-flash',
@@ -944,8 +911,9 @@ export async function extractFromPDF(
                     {
                       role: 'user',
                       parts: [
-                        { text: prompt },
-                        subPdfPart
+                        { text: staticPrompt },
+                        subPdfPart,
+                        { text: projectPrompt }
                       ]
                     }
                   ],
@@ -963,6 +931,7 @@ export async function extractFromPDF(
 
           try {
             const parsed = tryParseJSONWithRepair(text);
+            if (typeof parsed.confidence === 'number') chunkConfidences.push(parsed.confidence);
             return parsed;
           } catch (e: any) {
             console.error(`      [extraction.ts] Failed to parse manholes response for chunk ${chunkIdx + 1}: ${e.message}`);
@@ -1016,7 +985,6 @@ export async function extractFromPDF(
 
     if (shouldRunSewers) {
       agentTasks.push((async () => {
-        await stagger(2000); // 2s after manholes starts
         console.log(`      [extraction.ts] Stage 3: Slicing and Extracting Sewer Pipe Runs & Line Items...`);
         const targetPages = locatorIndex?.sewerPages || [];
         
@@ -1031,7 +999,7 @@ export async function extractFromPDF(
 
         console.log(`      [extraction.ts] Extracting sewers in ${chunks.length} parallel chunk(s)...`);
         const chunkPromises = chunks.map(async (chunk, chunkIdx) => {
-          const slicedBuffer = await extractPagesFromPDF(pdfBuffer, chunk);
+          const slicedBuffer = await getSlicedPdf(chunk);
           const isSliced = slicedBuffer !== pdfBuffer;
 
           const fewShots = buildFewShotPromptSection(
@@ -1039,12 +1007,16 @@ export async function extractFromPDF(
             { name: projectName, hasWatermain: shouldRunWatermain, hasSanitary: shouldRunSewers },
             'sewers'
           );
-          const prompt = getSewerAgentPrompt(projectName, getDynamicPromptAdditions('sewers')) + '\n' + fewShots + getPageInstructions(chunk, 'sewer profile views or plan tables', isSliced);
+          // Static instructions + few-shots go before the PDF so Gemini's implicit prefix cache can reuse them across projects;
+          // project-specific context goes after.
+          const staticPrompt = getSewerAgentPrompt(getDynamicPromptAdditions('sewers')) + '\n' + fewShots;
+          const projectPrompt = `Project: "${projectName}".` + getPageInstructions(chunk, 'sewer profile views or plan tables', isSliced);
+          const prompt = staticPrompt + '\n' + projectPrompt;
 
           let text = '{}';
           try {
             text = await getCachedOrCallLLM(`${sourceHash}_chunk_${chunk.join('_')}`, prompt, 'sewers', async () => {
-              const subPdfPart = await preparePdfPart(slicedBuffer);
+              const subPdfPart = await getPdfPart(slicedBuffer);
               const response = await callWithRetry(async () => {
                 return await ai.models.generateContent({
                   model: 'gemini-2.5-flash',
@@ -1052,8 +1024,9 @@ export async function extractFromPDF(
                     {
                       role: 'user',
                       parts: [
-                        { text: prompt },
-                        subPdfPart
+                        { text: staticPrompt },
+                        subPdfPart,
+                        { text: projectPrompt }
                       ]
                     }
                   ],
@@ -1071,6 +1044,7 @@ export async function extractFromPDF(
 
           try {
             const parsed = tryParseJSONWithRepair(text);
+            if (typeof parsed.confidence === 'number') chunkConfidences.push(parsed.confidence);
             return parsed.sewers || [];
           } catch (e: any) {
             console.error(`      [extraction.ts] Failed to parse sewers response for chunk ${chunkIdx + 1}: ${e.message}`);
@@ -1093,7 +1067,6 @@ export async function extractFromPDF(
 
     if (shouldRunWatermain) {
       agentTasks.push((async () => {
-        await stagger(4000); // 4s after manholes starts
         console.log(`      [extraction.ts] Stage 4: Slicing and Extracting Watermain Infrastructure...`);
         const targetPages = locatorIndex?.watermainPages || [];
         
@@ -1108,7 +1081,7 @@ export async function extractFromPDF(
 
         console.log(`      [extraction.ts] Extracting watermain in ${chunks.length} parallel chunk(s)...`);
         const chunkPromises = chunks.map(async (chunk, chunkIdx) => {
-          const slicedBuffer = await extractPagesFromPDF(pdfBuffer, chunk);
+          const slicedBuffer = await getSlicedPdf(chunk);
           const isSliced = slicedBuffer !== pdfBuffer;
 
           const fewShots = buildFewShotPromptSection(
@@ -1116,12 +1089,16 @@ export async function extractFromPDF(
             { name: projectName, hasWatermain: shouldRunWatermain, hasSanitary: shouldRunSewers },
             'watermain'
           );
-          const prompt = getWatermainAgentPrompt(projectName, getDynamicPromptAdditions('watermain')) + '\n' + fewShots + getPageInstructions(chunk, 'watermain tables/schedules', isSliced);
+          // Static instructions + few-shots go before the PDF so Gemini's implicit prefix cache can reuse them across projects;
+          // project-specific context goes after.
+          const staticPrompt = getWatermainAgentPrompt(getDynamicPromptAdditions('watermain')) + '\n' + fewShots;
+          const projectPrompt = `Project: "${projectName}".` + getPageInstructions(chunk, 'watermain tables/schedules', isSliced);
+          const prompt = staticPrompt + '\n' + projectPrompt;
 
           let text = '{}';
           try {
             text = await getCachedOrCallLLM(`${sourceHash}_chunk_${chunk.join('_')}`, prompt, 'watermain', async () => {
-              const subPdfPart = await preparePdfPart(slicedBuffer);
+              const subPdfPart = await getPdfPart(slicedBuffer);
               const response = await callWithRetry(async () => {
                 return await ai.models.generateContent({
                   model: 'gemini-2.5-flash',
@@ -1129,8 +1106,9 @@ export async function extractFromPDF(
                     {
                       role: 'user',
                       parts: [
-                        { text: prompt },
-                        subPdfPart
+                        { text: staticPrompt },
+                        subPdfPart,
+                        { text: projectPrompt }
                       ]
                     }
                   ],
@@ -1148,6 +1126,7 @@ export async function extractFromPDF(
 
           try {
             const parsed = tryParseJSONWithRepair(text);
+            if (typeof parsed.confidence === 'number') chunkConfidences.push(parsed.confidence);
             return parsed;
           } catch (e: any) {
             console.error(`      [extraction.ts] Failed to parse watermain response for chunk ${chunkIdx + 1}: ${e.message}`);
@@ -1193,7 +1172,9 @@ export async function extractFromPDF(
       watermain: watermainData.watermain || [],
       watermainSpecials: watermainData.watermainSpecials || [],
       watermainValves: watermainData.watermainValves || [],
-      confidence: (Number(manholesData.confidence) || 0.9 + Number(sewersData.confidence) || 0.9 + Number(watermainData.confidence) || 0.9) / 3,
+      confidence: chunkConfidences.length > 0
+        ? chunkConfidences.reduce((sum, c) => sum + c, 0) / chunkConfidences.length
+        : 0.9,
       warnings: [
         ...(manholesData.warnings || []),
         ...(sewersData.warnings || []),
@@ -1216,13 +1197,6 @@ export async function extractFromPDF(
     console.error('      [extraction.ts] Error during Gemini extraction:', err);
     throw err;
   } finally {
-    if (gcsPath) {
-      if (isCacheHit) {
-        console.log(`      [extraction.ts] Reused cached drawing: gs://${BUCKET_NAME}/${gcsPath}`);
-      } else {
-        console.log(`      [extraction.ts] Persisted new drawing in GCS cache: gs://${BUCKET_NAME}/${gcsPath}`);
-      }
-    }
     // Clean up files uploaded to Gemini Files API
     for (const f of uploadedFiles) {
       if (f.name) {

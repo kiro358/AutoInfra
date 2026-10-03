@@ -72,5 +72,5 @@ jobs:
             --no-cpu-throttling \
             --max-instances 1 \
             --timeout 3600 \
-            --update-env-vars "ENABLE_EVAL_CACHE=false,REUSE_PREP=false,MAX_CONCURRENT_JOBS=1,NODE_OPTIONS=--max-old-space-size=768" \
+            --update-env-vars "ENABLE_EVAL_CACHE=false,REUSE_PREP=false,MAX_CONCURRENT_JOBS=1,NODE_OPTIONS=--max-old-space-size=768,TILE_DPI=200,BATCH_TILES=4" \
             --quiet

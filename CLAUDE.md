@@ -465,6 +465,14 @@ without the facts metric as the gate — see REDESIGN §3.5).
   `--max-instances 1 --no-cpu-throttling` (polls must hit the instance running the job, and
   it needs CPU after the POST returns), `--memory 2Gi` (full-sheet rasters are ~155 MB each),
   and `MAX_CONCURRENT_JOBS=1`. To scale out, back `JobStore` with GCS/Firestore first.
+- **Production runs `TILE_DPI=200 BATCH_TILES=4`** (set in `deploy.yml`, NOT the code
+  defaults, which stay 150/16 for the golden eval). Evidence, 460 Bayly St E (2026-10-02, two
+  runs each): at 150/16 one 12-tile call hit MAX_TOKENS, a tile was discarded for a repetition
+  loop and 13 of 28 structures were never transcribed; at 200/4 structures 23/28 and rim/invert
+  96%/96% on both runs, ~44k tokens vs 58k. 150 DPI also misread "BED AREA 3200" as 2000.
+  This is one project — validate on the golden set (`TILE_DPI=200 BATCH_TILES=4
+  GOLDEN_REPEATS=3`) before changing the code defaults. 200 DPI rasters are ~1.8x the memory
+  of 150 (a 36x48 sheet ~276 MB); fine at 2Gi with one job, revisit before raising concurrency.
 - The old `/api/scoreboard` (legacy cell accuracy, public, leaked fs paths) and the dead
   `/api/download/[id]` were removed.
 - The scheduled flywheel optimization workflow has been removed (see "Scripts" above).

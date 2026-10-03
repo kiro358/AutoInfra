@@ -73,9 +73,17 @@ const REUSE_PREP = process.env.REUSE_PREP !== 'false';
 // Tiling knobs — the image-token cost of an extraction scales with rasterized
 // pixel area (≈ DPI²), so these are the primary cost levers. Kept configurable so
 // the eval can A/B cost vs accuracy on stable infra (see cost telemetry on facts.cost).
+// For knobs where 0 is a real setting (no overlap, thinking off): `Number(x) || def` turns an
+// explicit 0 back into the default, so THINKING_BUDGET=0 silently meant 8192.
+export function envNumber(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
 const TILE_DPI = Number(process.env.TILE_DPI) || 150;
 const TILE_PX = Number(process.env.TILE_PX) || 1600;
-const TILE_OVERLAP = Number(process.env.TILE_OVERLAP) || 160;
+const TILE_OVERLAP = envNumber(process.env.TILE_OVERLAP, 160);
 
 // Tiles are emitted row-major and truncated, so a per-page cap below what the
 // sheet actually needs silently discards its BOTTOM rows. A 36x48 sheet at
@@ -103,7 +111,7 @@ const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS) || 32768;
 // budget so the JSON response truncated (structures, emitted last, collapsed to 0 on
 // dense projects) and (b) was the dominant token COST. AI Studio's smaller default
 // thinking masked this locally. Capping thinking fixes the truncation AND cuts cost.
-const THINKING_BUDGET = Number(process.env.THINKING_BUDGET) || 8192;
+const THINKING_BUDGET = envNumber(process.env.THINKING_BUDGET, 8192);
 
 // Sum a streamed/one-shot response's usageMetadata into a per-extraction cost accumulator.
 export type CostAcc = { promptTokens: number; outputTokens: number; totalTokens: number; llmCalls: number; tiles: number; dpi: number };

@@ -18,7 +18,7 @@ import {
   WatermainValve,
 } from './types';
 import { snapToMHSize } from './geometry';
-import { TEMPLATE_LAYOUT, blockCapacity } from './constants';
+import { TEMPLATE_LAYOUT, blockCapacity, MH_DIAMETERS } from './constants';
 
 export interface CostingRules {
   /** Per-structure material/labor surcharges, matched by token in the description. */
@@ -193,6 +193,7 @@ export function priceTakeoff(
   };
 
   // --- Manholes / structures ---
+  const sizeWarnings: string[] = [];
   const manholes: Manhole[] = facts.structures.map((st, i) => {
     const inv =
       st.lowInvert !== null && st.highInvert !== null
@@ -212,7 +213,22 @@ export function priceTakeoff(
     const effectivePipeOutDia = Math.max(st.pipeOutDiameter || 0, maxPipe);
 
     const desc = (st.description || '').toUpperCase();
-    const diameter = desc.includes('DCBMH') ? 1500 : snapToMHSize(effectivePipeOutDia);
+    // A chamber system (Cultec, StormTech) is not a precast manhole: giving it a diameter
+    // makes the template price it as one. It is priced by hand (see chamberWarning).
+    const isChamber = st.structureType === 'CHAMBER';
+    // The size stated on the drawing ("MH 2 (1800mmØ)") wins; inferring from connected
+    // pipes is the fallback, and it can only ever under-size (a 300mm pipe says 1200).
+    // Only a real manhole size counts as stated: a misread "(180mmØ)" for 1800 would price a
+    // size the template has no row for (#N/A), so fall back to the pipe-inferred size.
+    const stated = st.diameter && MH_DIAMETERS.includes(st.diameter) ? st.diameter : null;
+    if (st.diameter && !stated) {
+      sizeWarnings.push(`${st.description}: stated size ${st.diameter}mm is not a manhole size — sized from connected pipes instead; check the drawing.`);
+    }
+    const diameter = isChamber
+      ? null
+      : stated
+      ? stated
+      : desc.includes('DCBMH') ? 1500 : snapToMHSize(effectivePipeOutDia);
 
     let addMaterials = 0;
     let addLE = 0;
@@ -300,7 +316,7 @@ export function priceTakeoff(
   }
 
   // Never mutate the caller's facts.warnings — priced output gets its own copy.
-  const warnings = [...(facts.warnings || [])];
+  const warnings = [...(facts.warnings || []), ...sizeWarnings];
 
   // --- Watermain ---
   for (const w of facts.watermain) {

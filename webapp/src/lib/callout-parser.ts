@@ -41,6 +41,9 @@ export interface ParsedStructure {
     | 'CHAMBER' | 'HW' | 'OCS' | 'FES' | 'VAULT' | 'TANK';
   diameterMm: number | null;
   existing: boolean;
+  /** Sewer system the label names ("SAN MH 1" vs "STMH 1"), when it says. Storm and
+   *  sanitary networks reuse the same numbers, so without this "MH 1" collides. */
+  system?: 'SAN' | 'STM' | null;
 }
 export interface ParsedElevation { type: 'TG' | 'INV'; direction: string | null; value: number; }
 export interface ParsedWatermain {
@@ -254,7 +257,7 @@ export function isRunContinuation(line: string): boolean {
 // (Note: the widened (?:^|[\s(]) delimiter applies to every kind, not just JF.)
 // OCS (outlet control structure), HW (headwall) and FES (flared end section) are the
 // abbreviated spellings; their written-out forms go through NAMED_STRUCTURES below.
-const STRUCT_RE = /(?:^|[\s(])(EX\.?\s+)?(?:(?:SAN(?:ITARY)?|STM|STORM)\s+)?(DDICB|DCBMH|DICB|CBMH|DCB|STMH|SANMH|OCS|FES|CB|MH|HS|HW|OS|JF|EF)(\s?-?\s?)(\d+(?:-\d+)*[A-Z]?)\s*(?:\((\d{3,4})\s*[ØO]?\))?/i;
+const STRUCT_RE = /(?:^|[\s(])(EX\.?\s+)?(?:(?:SAN(?:ITARY)?|STM|STORM)\s+)?(DDICB|DCBMH|DICB|CBMH|DCB|STMH|SANMH|OCS|FES|CB|MH|HS|HW|OS|JF|EF)(\s?-?\s?)(\d+(?:-\d+)*[A-Z]?)\s*(?:\((\d{3,4})\s*(?:MM)?\s*[ØO]?\))?/i;
 // Global copy for matchAll iteration. matchAll clones the regex internally, so no shared
 // lastIndex state leaks between calls (do NOT add 'g' to STRUCT_RE itself and call exec in a loop).
 const STRUCT_RE_G = new RegExp(STRUCT_RE.source, 'gi');
@@ -325,7 +328,42 @@ const MODEL_QUALIFIED_RE = new RegExp(
   'i',
 );
 
+// A leading EX/EXISTING marks the whole callout existing even when the kind code that
+// follows it is not the one STRUCT_RE matches ("EX STMH MH 3": STMH has no id, so the
+// match is " MH 3" — and the EX would otherwise be lost).
+const LEADING_EX_RE = /^\s*EX(?:IST(?:ING)?)?\.?\s/i;
+const SAN_SYSTEM_RE = /\bSAN(?:ITARY|MH)?\b/i;
+const STM_SYSTEM_RE = /\b(?:STM|STORM|STMH)\b/i;
+// Cultec spells its chamber models as product names: "RECHARGER 902HD", "CONTACTOR 100HD".
+const CULTEC_PRODUCT_RE = /\b(?:RECHARGER|CONTACTOR)\s*(\d{2,4})\s*-?\s*HD\b/i;
+
+function structureSystem(prefix: string, kind: string): 'SAN' | 'STM' | null {
+  if (kind === 'SANMH' || SAN_SYSTEM_RE.test(prefix)) return 'SAN';
+  if (kind === 'STMH' || STM_SYSTEM_RE.test(prefix)) return 'STM';
+  return null;
+}
+
+/** The structure's row label. Sanitary structures keep their "SAN" qualifier: storm and
+ *  sanitary networks number independently, so a bare "MH 1" names two different
+ *  structures and reconcile would merge them into one. */
+export function structureDescription(parsed: ParsedStructure): string {
+  return parsed.system === 'SAN' ? `SAN ${parsed.label}` : parsed.label;
+}
+
+/** Chamber systems (Cultec, StormTech, ...) are priced as a lump sum by the estimator —
+ *  there is no precast-manhole formula for them — so surface one loudly rather than let
+ *  it ride through as an unpriced row. Includes the bed area when the callout states it. */
+export function chamberWarning(label: string, lines: string[]): string {
+  const area = lines.join(' ').match(/BED\s+AREA\s*([\d,]+(?:\.\d+)?)\s*(?:SQ\.?\s*M|M2|M²)/i);
+  return `Chamber system ${label}${area ? ` (bed area ${area[1]} m²)` : ''} needs manual pricing — it is listed as a structure row with no precast cost.`;
+}
+
 export function parseStructureLabel(line: string): ParsedStructure | null {
+  const cultec = CULTEC_PRODUCT_RE.exec(line);
+  if (cultec) {
+    return { label: `${cultec[1]} HD`, kind: 'CHAMBER', diameterMm: null, existing: LEADING_EX_RE.test(line) };
+  }
+
   const chamber = CHAMBER_RE.exec(line);
   if (chamber) {
     return { label: chamber[2].toUpperCase(), kind: 'CHAMBER', diameterMm: null, existing: Boolean(chamber[1]) };
@@ -353,7 +391,8 @@ export function parseStructureLabel(line: string): ParsedStructure | null {
       label,
       kind,
       diameterMm: m[5] ? parseInt(m[5], 10) : null,
-      existing: Boolean(m[1]),
+      existing: Boolean(m[1]) || LEADING_EX_RE.test(line),
+      system: structureSystem(line.slice(0, (m.index ?? 0) + m[0].length), rawKind) ?? undefined,
     };
   }
 
@@ -402,7 +441,7 @@ const ELEV_DIR = 'NORTH|SOUTH|EAST|WEST|UPSTREAM|DOWNSTREAM|BOTTOM|OUTLET|INLET|
 // (INV, INV., INVERT). INVERT precedes INV so the whole word is consumed.
 const ELEV_TYPE = 'T\\/G|T\\.\\s?G|TG|TOP(?:\\s+OF)?(?:\\s+GRATE|\\s+GRATING)?|RIM|GRATE|GRATING|INVERT|INV';
 const ELEV_RE = new RegExp(
-  `^\\s*(?:(${ELEV_DIR})[\\s.]+)?(${ELEV_TYPE})\\.?\\s*(?:(${ELEV_DIR})\\b\\.?\\s*)?[:=]?\\s*(\\d{2,3}(?:\\.\\d{1,3})?)\\s*±?\\s*$`,
+  `^\\s*(?:(${ELEV_DIR})[\\s.]+)?(${ELEV_TYPE})\\.?(?:\\s+EL(?:EV(?:ATION)?)?\\.?)?\\s*(?:(${ELEV_DIR})\\b\\.?\\s*)?[:=]?\\s*(\\d{2,3}(?:\\.\\d{1,3})?)\\s*±?\\s*$`,
   'i',
 );
 const DIR_ALIASES: Record<string, string> = {

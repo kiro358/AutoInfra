@@ -8,6 +8,7 @@ import { PageText, PositionedText } from './pdf-text';
 import {
   parseRunCallout, parseStructureLabel, parseElevation, parseWatermainCallout,
   isDanglingRunHead, isRunContinuation, parseSubdrainCallout, ParsedStructure,
+  structureDescription, chamberWarning,
 } from './callout-parser';
 import { reconcileTakeoff } from './reconcile';
 import { normalizeLabel } from './compare-facts';
@@ -57,6 +58,7 @@ function mergeLines(items: PositionedText[]): Line[] {
 
 export function assembleTextTakeoff(pages: PageText[], projectName: string): TakeoffFacts {
   const structures: StructureFact[] = [];
+  const warnings: string[] = [];
   const catchbasinLabels = new Map<CatchbasinGroupFact['type'], Set<string>>();
   const sewers: SewerFact[] = [];
   const watermain: WatermainFact[] = [];
@@ -153,14 +155,16 @@ export function assembleTextTakeoff(pages: PageText[], projectName: string): Tak
         catchbasinLabels.set(cbType, labels);
       } else {
         structures.push({
-          description: s.parsed.label,
+          description: structureDescription(s.parsed),
           topElevation: s.topElevation,
           lowInvert: s.inverts.length ? Math.min(...s.inverts) : null,
           highInvert: s.inverts.length >= 2 ? Math.max(...s.inverts) : null,
           pipeOutDiameter: null,
-          structureType: null,
+          structureType: s.parsed.kind === 'CHAMBER' ? 'CHAMBER' : null,
           depth: null,
+          diameter: s.parsed.diameterMm,
         });
+        if (s.parsed.kind === 'CHAMBER') warnings.push(chamberWarning(s.parsed.label, []));
       }
     }
   }
@@ -174,6 +178,6 @@ export function assembleTextTakeoff(pages: PageText[], projectName: string): Tak
     projectName, jobNumber: '', date: '',
     structures, catchbasins, sewers, watermain,
     watermainSpecials: [], watermainValves: [],
-    confidence: 1, warnings: [],
+    confidence: 1, warnings,
   });
 }

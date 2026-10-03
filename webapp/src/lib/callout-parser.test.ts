@@ -106,8 +106,8 @@ describe('parseStructureLabel', () => {
     });
   });
   it('parses spaced ids', () => {
-    expect(parseStructureLabel('STMH 1')).toEqual({ label: 'STMH 1', kind: 'MH', diameterMm: null, existing: false });
-    expect(parseStructureLabel('EX SAN MH 02')).toEqual({ label: 'MH 02', kind: 'MH', diameterMm: null, existing: true });
+    expect(parseStructureLabel('STMH 1')).toEqual({ label: 'STMH 1', kind: 'MH', diameterMm: null, existing: false, system: 'STM' });
+    expect(parseStructureLabel('EX SAN MH 02')).toEqual({ label: 'MH 02', kind: 'MH', diameterMm: null, existing: true, system: 'SAN' });
     expect(parseStructureLabel('MH 101')).toEqual({ label: 'MH 101', kind: 'MH', diameterMm: null, existing: false });
     expect(parseStructureLabel('DCBMH 2')!.kind).toBe('DCBMH');
     expect(parseStructureLabel('DICB 3')!.kind).toBe('DICB');
@@ -637,5 +637,38 @@ describe('EX. prefix butted against the length (no space)', () => {
   it('does not treat a proposed run as existing', () => {
     expect(parseRunCallout('83.7m-375mmØ SAN @ 0.02%')).toMatchObject({ existing: false });
     expect(parseRunCallout('44.1 - 200# PVC CL. 65.0 STM @ 0.30%')).toMatchObject({ existing: false });
+  });
+});
+
+// 460 Bayly St E (Odan/Detech, 2026): every one of these lines was read correctly by the
+// vision step and then dropped or mis-classified by the grammar, which zeroed the estimate.
+describe('Odan/Detech callout style (460 Bayly St E)', () => {
+  it('reads "EL"/"ELEV" after the elevation keyword', () => {
+    expect(parseElevation('RIM ELEV 89.70')).toEqual({ type: 'TG', direction: null, value: 89.7 });
+    expect(parseElevation('RIM EL 90.81')).toEqual({ type: 'TG', direction: null, value: 90.81 });
+    expect(parseElevation('SW INV EL 84.84')).toEqual({ type: 'INV', direction: 'SW', value: 84.84 });
+    expect(parseElevation('E INV ELEVATION 85.97')).toEqual({ type: 'INV', direction: 'E', value: 85.97 });
+  });
+
+  it('reads a stated diameter written with mm', () => {
+    expect(parseStructureLabel('PROP STMH MH 100 (2400mmØ)')!.diameterMm).toBe(2400);
+    expect(parseStructureLabel('PROP STMH MH 2 (1800 mmØ)')!.diameterMm).toBe(1800);
+  });
+
+  it('keeps EX when it precedes a system code that is not the matched kind', () => {
+    expect(parseStructureLabel('EX STMH MH 3')).toMatchObject({ label: 'MH 3', existing: true });
+    expect(parseStructureLabel('EXISTING MH 5')!.existing).toBe(true);
+    expect(parseStructureLabel('PROP STMH MH 3')!.existing).toBe(false);
+  });
+
+  it('records the sewer system so storm and sanitary MH 1 stay distinct', () => {
+    expect(parseStructureLabel('PROP SAN MH 1')!.system).toBe('SAN');
+    expect(parseStructureLabel('PROP STMH MH 1 (1200 mmØ)')!.system).toBe('STM');
+    expect(parseStructureLabel('PROP CB 3')!.system).toBeUndefined();
+  });
+
+  it('recognizes Cultec chambers named by product', () => {
+    expect(parseStructureLabel('RECHARGER 902HD')).toEqual({ label: '902 HD', kind: 'CHAMBER', diameterMm: null, existing: false });
+    expect(parseStructureLabel('CONTACTOR 100HD')!.label).toBe('100 HD');
   });
 });

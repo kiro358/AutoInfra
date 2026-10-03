@@ -101,3 +101,41 @@ describe('assembleTranscriptTakeoff', () => {
   });
 
 });
+
+describe('assembleTranscriptTakeoff — 460 Bayly St E blocks', () => {
+  const facts = assembleTranscriptTakeoff([{ tile: 1, blocks: [
+    ['PROP STMH MH 100 (2400mmØ)', 'RIM ELEV 89.70', 'SW INV EL 84.84', 'W INV EL 85.59'],
+    ['PROP STMH MH 1 (1200 mmØ)', 'RIM ELEV 90.93', 'E INV EL 88.68'],
+    ['PROP SAN MH 1', 'RIM EL 87.75', 'S INV EL 79.92'],
+    ['EX STMH MH 3', 'RIM EL 90.12', 'TO BE REMOVED', 'E INV EL 84.73'],
+    ['PROP. CULTEC OR APPROVED', 'RECHARGER 902HD', 'BED AREA 3200 SQ.M.'],
+  ] }], 'Bayly');
+  const by = (d: string) => facts.structures.find((s) => s.description === d);
+
+  it('attaches rim, low invert and stated diameter', () => {
+    expect(by('MH 100')).toMatchObject({ topElevation: 89.7, lowInvert: 84.84, diameter: 2400 });
+  });
+  it('keeps sanitary MH 1 separate from storm MH 1', () => {
+    expect(by('MH 1')).toMatchObject({ topElevation: 90.93, lowInvert: 88.68 });
+    expect(by('SAN MH 1')).toMatchObject({ topElevation: 87.75, lowInvert: 79.92 });
+  });
+  it('reads a size the drafter wrapped onto its own line', () => {
+    const f = assembleTranscriptTakeoff([{ tile: 1, blocks: [['PROP STM MH 15', '(1800 mmØ)', 'RIM ELEV 89.69', 'W INV EL 84.85']] }], 'Bayly');
+    expect(f.structures[0]).toMatchObject({ description: 'MH 15', diameter: 1800, topElevation: 89.69, lowInvert: 84.85 });
+    expect(f.warnings.filter((w) => w.startsWith('Unrecognized'))).toEqual([]);
+  });
+  it('stops at a second rim — the next structure\'s callout merged into this block', () => {
+    const f = assembleTranscriptTakeoff([{ tile: 1, blocks: [[
+      'PROP STMH 9', '(2400 mmØ)', 'RIM ELEV 88.09', 'W INV EL 85.24', 'PROP INV EL 200', 'RIM ELEV 86.78', 'W INV EL 85.02',
+    ]] }], 'Bayly');
+    expect(f.structures[0]).toMatchObject({ topElevation: 88.09, lowInvert: 85.24, diameter: 2400 });
+    expect(f.warnings.some((w) => w.includes('second rim'))).toBe(true);
+  });
+  it('drops existing structures', () => {
+    expect(facts.structures.some((s) => s.description === 'MH 3')).toBe(false);
+  });
+  it('lists a chamber system and warns that it needs manual pricing', () => {
+    expect(by('902 HD')).toMatchObject({ structureType: 'CHAMBER' });
+    expect(facts.warnings.some((w) => w.includes('902 HD') && w.includes('3200'))).toBe(true);
+  });
+});

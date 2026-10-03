@@ -775,3 +775,15 @@ describe('parseFacts — untrusted LLM JSON', () => {
     expect(parseFacts(null, 'P').projectName).toBe('P');
   });
 });
+
+describe('envNumber', () => {
+  it('honours an explicit 0 (THINKING_BUDGET=0 turns thinking off)', async () => {
+    const { envNumber } = await import('./extraction');
+    expect(envNumber('0', 8192)).toBe(0);
+    expect(envNumber('512', 8192)).toBe(512);
+    expect(envNumber(undefined, 8192)).toBe(8192);
+    expect(envNumber('', 8192)).toBe(8192);
+    expect(envNumber('abc', 8192)).toBe(8192);
+    expect(envNumber('-1', 160)).toBe(160);
+  });
+});

@@ -473,6 +473,12 @@ without the facts metric as the gate — see REDESIGN §3.5).
   This is one project — validate on the golden set (`TILE_DPI=200 BATCH_TILES=4
   GOLDEN_REPEATS=3`) before changing the code defaults. 200 DPI rasters are ~1.8x the memory
   of 150 (a 36x48 sheet ~276 MB); fine at 2Gi with one job, revisit before raising concurrency.
+- **Production also runs `THINKING_BUDGET=1024`** (deploy.yml; code default stays 8192). Same
+  project, 200 DPI / batch 4, 8 runs: budget 8192 -> ~48k tokens, 23/28 structures, rim/invert
+  96%; budget 1024 -> 27k tokens (both runs), 24-25/28, 96%; budget 0 -> 22k when clean but a
+  repetition loop on the same tile in 2 of 4 runs (55k tokens), and 92% fields. Some thinking
+  stabilises transcription; 8192 is mostly waste. `THINKING_BUDGET=0` only works since
+  `envNumber` (it used to fall back to 8192). One project again — confirm on the golden set.
 - The old `/api/scoreboard` (legacy cell accuracy, public, leaked fs paths) and the dead
   `/api/download/[id]` were removed.
 - The scheduled flywheel optimization workflow has been removed (see "Scripts" above).

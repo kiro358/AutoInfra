@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-13T14:03:50.767Z",
+  "generatedAt": "2026-10-13T20:34:13.142Z",
   "layer": "text",
   "projects": [
     {
@@ -52,9 +52,9 @@
       "status": "scored",
       "textyPages": 2,
       "totalPages": 5,
-      "detectionF1": 78.21,
-      "fieldAccuracy": 44.26,
-      "llmCachedF1": 72.6
+      "detectionF1": 82.38,
+      "fieldAccuracy": 45.31,
+      "llmCachedF1": 77.14
     },
     {
       "folder": "2026-001 ECOLE SECONDAIRE CATHOLIQUE-BRAMPTON",
@@ -140,7 +140,7 @@
       "status": "no-texty-pages",
       "textyPages": 0,
       "totalPages": 13,
-      "llmCachedF1": 27.62
+      "llmCachedF1": 27.98
     },
     {
       "folder": "2026-040 WALMART -PORT PERRY",
@@ -148,9 +148,9 @@
       "status": "scored",
       "textyPages": 1,
       "totalPages": 2,
-      "detectionF1": 40,
-      "fieldAccuracy": 43.75,
-      "llmCachedF1": 26.67
+      "detectionF1": 65,
+      "fieldAccuracy": 38.89,
+      "llmCachedF1": 55.24
     },
     {
       "folder": "2026-008 TCDSB LORRETTO ABBEY CATHOLIC SCHOOL",
@@ -158,8 +158,8 @@
       "status": "scored",
       "textyPages": 3,
       "totalPages": 5,
-      "detectionF1": 67.08,
-      "fieldAccuracy": 39.58,
+      "detectionF1": 73.75,
+      "fieldAccuracy": 38,
       "llmCachedF1": 54.54
     },
     {
@@ -235,7 +235,7 @@
   ],
   "aggregate": {
     "scoredProjects": 11,
-    "detectionF1": 41.12,
-    "fieldAccuracy": 36.91
+    "detectionF1": 44.38,
+    "fieldAccuracy": 36.73
   }
 }

@@ -436,12 +436,35 @@ function matchTypologies(
 }
 
 /**
+ * The phase-suffix view of a family key: family + number with the single trailing
+ * letter separated out ("MH:5A" -> key "MH:5", suffix "A"). The family regexes only
+ * ever capture one suffix letter, so a multi-letter tail ("C100HD") has no family
+ * key and never reaches this helper.
+ */
+function suffixBaseKey(norm: string): { key: string; suffix: string } | null {
+  const fk = structureFamilyKey(norm);
+  if (!fk) return null;
+  const [family, num] = fk.split(':');
+  const m = /^(\d+)([A-Z]?)$/.exec(num);
+  if (!m) return null;
+  return { key: `${family}:${m[1]}`, suffix: m[2] || '' };
+}
+
+/**
  * Structure matching:
  * Phase 1: strict normalized label equality (exact match).
  * Phase 2: structure family prefix relaxation — manholes ("MH 5" <-> "CBMH 5") and outlet
  * headwalls ("HW 1" <-> "HEADWALL 1" <-> "HS 1"). Only applies when both labels belong to the
  * SAME family and share the exact same numeric identifier, matching the common drafter vs
  * estimator convention mismatch; family keys are namespaced so "HW 1" never pairs with "MH 1".
+ * Phase 2.5: phase-suffix relaxation — the estimator's takeoff carries a phase/variant
+ * letter the drawing read omits, or vice versa ("MH 5A" <-> "MH5"): same family and number,
+ * one side suffixed, the other bare. Fires ONLY when the pairing is the unique completion
+ * among still-free rows — exactly one free truth row and one free pred row share the
+ * family+number. When truth itself keeps both forms as separate structures (bare + A),
+ * exact/family phases consume the twin they can, and any base left with two free rows on
+ * either side stays unmatched: a suffix letter can denote a REAL second structure, so
+ * ambiguity resolves to no match. Suffix-vs-different-suffix never pairs.
  * Phase 3a: qualifier-abbreviation equality ("DIVERSION MH 15" <-> "DIV.MH 15"), one pair per
  * key and only when that key is unambiguous (exactly one free row on each side).
  * Phase 3b: product/equipment typology (OGS units, chambers/vaults, doghouse MHs).
@@ -466,6 +489,35 @@ export function matchStructures(pred: StructureFact[], truth: StructureFact[]) {
       usedPred.add(p);
       usedTruth.add(t);
       pairs.push({ p, t });
+    }
+  }
+
+  // Phase 2.5: phase-suffix relaxation (see the phase list above matchStructures).
+  {
+    const groupFree = (list: StructureFact[], used: Set<StructureFact>) => {
+      const byKey = new Map<string, { s: StructureFact; suffix: string }[]>();
+      for (const s of list) {
+        if (used.has(s)) continue;
+        const b = suffixBaseKey(normalizeLabel(s.description));
+        if (!b) continue;
+        const bucket = byKey.get(b.key);
+        if (bucket) bucket.push({ s, suffix: b.suffix });
+        else byKey.set(b.key, [{ s, suffix: b.suffix }]);
+      }
+      return byKey;
+    };
+    const truthByBase = groupFree(truth, usedTruth);
+    const predByBase = groupFree(pred, usedPred);
+    for (const [key, ts] of truthByBase) {
+      const ps = predByBase.get(key);
+      if (!ps || ts.length !== 1 || ps.length !== 1) continue;
+      const t = ts[0], p = ps[0];
+      // Exactly one side carries the suffix; the other is the bare number.
+      if (t.suffix === p.suffix) continue;
+      if (t.suffix !== '' && p.suffix !== '') continue;
+      usedPred.add(p.s);
+      usedTruth.add(t.s);
+      pairs.push({ p: p.s, t: t.s });
     }
   }
 

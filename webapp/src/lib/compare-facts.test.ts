@@ -228,6 +228,83 @@ describe('structure matching (strict normalized label + manhole family fallback)
   });
 });
 
+describe('structure matching — phase 2.5 phase-suffix relaxation', () => {
+  const struct = (description: string) => ({
+    description,
+    topElevation: null,
+    lowInvert: null,
+    highInvert: null,
+    pipeOutDiameter: null,
+    structureType: 'MANHOLE',
+    depth: null,
+  });
+  const structEntity = (pred: ReturnType<typeof facts>, truth: ReturnType<typeof facts>) =>
+    compareFacts(pred, truth).entities.find((e) => e.kind === 'structures')!;
+
+  it('pairs the estimator A-suffix with the bare drawing read (Walmart shape)', () => {
+    const pred = facts({ structures: [struct('MH1'), struct('MH2'), struct('MH5')] });
+    const truth = facts({ structures: [struct('MH 1A'), struct('MH 2A'), struct('MH 5A')] });
+    expect(structEntity(pred, truth).matched).toBe(3);
+  });
+
+  it('pairs a suffixed pred read with a bare truth label', () => {
+    const pred = facts({ structures: [struct('MH61E')] });
+    const truth = facts({ structures: [struct('MH 61')] });
+    expect(structEntity(pred, truth).matched).toBe(1);
+  });
+
+  it('completes uniquely: exact twin first, leftover SAN read takes the A form (Wigmore shape)', () => {
+    // Truth keeps MH 1 and MH 1A as two structures; pred read the storm one bare
+    // and the sanitary one as "SAN MH 1" (same normalized label). Phase 1 takes one
+    // pair; phase 2.5 completes the only consistent assignment left.
+    const pred = facts({ structures: [struct('MH 1'), struct('SAN MH 1')] });
+    const truth = facts({ structures: [struct('MH 1'), struct('MH 1A')] });
+    expect(structEntity(pred, truth).matched).toBe(2);
+  });
+
+  it('pairs across kind spellings too (Panattoni shape: truth SAN 5A, pred CBMH5)', () => {
+    const pred = facts({ structures: [struct('CBMH5')] });
+    const truth = facts({ structures: [struct('SAN 5A')] });
+    expect(structEntity(pred, truth).matched).toBe(1);
+  });
+
+  it('applies to the headwall family as well', () => {
+    const pred = facts({ structures: [struct('HS 1')] });
+    const truth = facts({ structures: [struct('HW 1A')] });
+    expect(structEntity(pred, truth).matched).toBe(1);
+  });
+
+  it('does NOT pair when truth keeps two suffixed forms free for the number (ambiguity)', () => {
+    const pred = facts({ structures: [struct('MH 1')] });
+    const truth = facts({ structures: [struct('MH 1A'), struct('MH 1B')] });
+    expect(structEntity(pred, truth).matched).toBe(0);
+  });
+
+  it('does NOT pair when two pred forms are free for the number (ambiguity)', () => {
+    const pred = facts({ structures: [struct('MH 5'), struct('MH 5B')] });
+    const truth = facts({ structures: [struct('MH 5A')] });
+    expect(structEntity(pred, truth).matched).toBe(0);
+  });
+
+  it('does NOT pair suffix against a different suffix', () => {
+    const pred = facts({ structures: [struct('MH 5B')] });
+    const truth = facts({ structures: [struct('MH 5A')] });
+    expect(structEntity(pred, truth).matched).toBe(0);
+  });
+
+  it('does NOT pair across different numbers', () => {
+    const pred = facts({ structures: [struct('MH 6')] });
+    const truth = facts({ structures: [struct('MH 5A')] });
+    expect(structEntity(pred, truth).matched).toBe(0);
+  });
+
+  it('does NOT touch multi-letter tails (a model designation is not a phase suffix)', () => {
+    const pred = facts({ structures: [struct('C100HD')] });
+    const truth = facts({ structures: [struct('C100 CHAMBER')] });
+    expect(structEntity(pred, truth).matched).toBe(0);
+  });
+});
+
 describe('structure matching — phase 3 domain aliases (qualifiers, chambers, OGS)', () => {
   const struct = (description: string) => ({
     description,

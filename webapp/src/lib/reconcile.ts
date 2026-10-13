@@ -66,6 +66,79 @@ function mergeStructureGroup(group: StructureFact[]): StructureFact {
   return out;
 }
 
+/**
+ * A structure row that carries NO reading at all: every measured field null and no
+ * type text. It contributes a label and nothing else.
+ */
+const GEOMETRY_FIELDS = ['topElevation', 'lowInvert', 'highInvert', 'pipeOutDiameter', 'depth', 'diameter'] as const;
+export function isFieldEmptyStructure(s: StructureFact): boolean {
+  return GEOMETRY_FIELDS.every((k) => (s as any)[k] == null) && isBlank(s.structureType);
+}
+
+/**
+ * Collapse field-empty phase-suffix re-reads into the structure they duplicate.
+ *
+ * A numbered structure is sometimes read twice: once as a real callout block (label
+ * + elevations) and once as a bare suffixed echo — a legend/phase-list mention the
+ * transcriber emitted as "MH61E" beside the real "MH61" (the Milton transcript
+ * literally contains the garbled fragment "MH61EE61" next to MH61's full block).
+ * Grouping by normalized label can't merge them: the suffix IS part of the label.
+ * Left alone, the estimate prices the structure twice.
+ *
+ * The collapse is deliberately narrow, because a suffix letter can equally denote
+ * a REAL second structure (the golden corpus's truth sets hold bare + A forms as
+ * separate structures on 61 bases, usually both fully read). It fires only when a
+ * (system, kind, number) base has EXACTLY ONE field-bearing form: every other
+ * form of that base is field-empty, so merging it in loses no reading — the empty
+ * row's label is the only thing it ever contributed. Two bearing forms (Ontario
+ * Tech's MH106 / MH106A / MH106B, three distinct inverts) or zero (two bare
+ * mentions, nothing read) both stay untouched: ambiguity resolves to NO merge.
+ * Kind spellings are NOT unified here — CBMH15 vs MH15A are different bases;
+ * same-number different-kind rows are usually distinct structures.
+ */
+export function collapseEmptySuffixReads(structures: StructureFact[]): {
+  structures: StructureFact[];
+  collapsed: string[];
+} {
+  const byBase = new Map<string, StructureFact[]>();
+  for (const s of structures) {
+    const norm = normalizeLabel(s.description);
+    const m = LABEL_PARTS.exec(norm);
+    if (!m) continue;
+    const sys = /^\s*SAN(?:ITARY)?\b/i.test(s.description) ? 'SAN|' : '';
+    const base = `${sys}${m[1]}:${Number(m[2])}`;
+    (byBase.get(base) ?? byBase.set(base, []).get(base)!).push(s);
+  }
+
+  const collapsed: string[] = [];
+  const removed = new Set<StructureFact>();
+  const replaced = new Map<StructureFact, StructureFact>();
+  for (const rows of byBase.values()) {
+    // One entry per distinct label form (same-label rows were already one group
+    // in reconcileTakeoff; if a caller hands us raw duplicates, skip the base —
+    // which of them is "the" form is not this function's call).
+    const forms = new Map<string, StructureFact>();
+    for (const s of rows) forms.set(normalizeLabel(s.description), s);
+    if (forms.size < 2 || forms.size !== rows.length) continue;
+    const bearing = [...forms.values()].filter((s) => !isFieldEmptyStructure(s));
+    if (bearing.length !== 1) continue;
+    const keep = bearing[0];
+    const empties = [...forms.values()].filter((s) => s !== keep);
+    replaced.set(keep, mergeStructureGroup([keep, ...empties]));
+    for (const e of empties) {
+      removed.add(e);
+      collapsed.push(`${e.description} → ${keep.description}`);
+    }
+  }
+  if (collapsed.length === 0) return { structures, collapsed };
+  return {
+    structures: structures
+      .filter((s) => !removed.has(s))
+      .map((s) => replaced.get(s) ?? s),
+    collapsed,
+  };
+}
+
 // HW (headwall), OCS (outlet control structure) and FES (flared end section) are the
 // terminal structures of a storm system. A run that discharges to one ("MH 8-HW 1") is
 // a normal two-endpoint run, but without these tokens it read as having only ONE
@@ -544,7 +617,12 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
     const k = /^\s*SAN(?:ITARY)?\b/i.test(s.description) ? `SAN|${base}` : base;
     (byLabel.get(k) ?? byLabel.set(k, []).get(k)!).push(s);
   }
-  const structures = Array.from(byLabel.values()).map(mergeStructureGroup);
+  const groupedStructures = Array.from(byLabel.values()).map(mergeStructureGroup);
+  // 1b. collapse field-empty phase-suffix re-reads ("MH61E" echoing "MH61") into
+  // the one field-bearing form of their base — see collapseEmptySuffixReads for
+  // why this can only fire when there is exactly one.
+  const suffixCollapse = collapseEmptySuffixReads(groupedStructures);
+  const structures = suffixCollapse.structures;
 
   // 2. sewers: multi-tile sewer run stitching & endpoint-aware consolidation
   const keptSewers = stitchSewerRuns(facts.sewers);
@@ -588,6 +666,13 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
   const surfaceCb = dropSurfaceCatchbasinStructures(note.structures);
 
   const warnings = [...facts.warnings];
+  if (suffixCollapse.collapsed.length > 0) {
+    warnings.push(
+      `Collapsed ${suffixCollapse.collapsed.length} field-empty phase-suffix re-read(s) into the structure ` +
+        `they duplicate (the suffixed rows carried no measurements of their own): ` +
+        `${suffixCollapse.collapsed.slice(0, 8).join(' | ')}${suffixCollapse.collapsed.length > 8 ? ' | …' : ''}`
+    );
+  }
   if (nonStruct.dropped.length > 0) {
     warnings.push(
       `Dropped ${nonStruct.dropped.length} structure(s) whose description is a civil site feature or heading, not a structure: ` +

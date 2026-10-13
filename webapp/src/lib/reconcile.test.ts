@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   reconcileTakeoff,
   mergeTakeoffs,
+  collapseEmptySuffixReads,
+  isFieldEmptyStructure,
   isSpecNoteDescription,
   isNonStructureFeature,
   dropNonStructureFeatures,
@@ -413,6 +415,101 @@ describe('dropImplausibleCatchbasinGroups — misread quantities', () => {
     );
     expect(r.catchbasins).toEqual([grp('DOUBLE_CB', 2)]);
     expect(r.warnings.join(' ')).toContain('misread');
+  });
+});
+
+describe('collapseEmptySuffixReads — phase-suffix re-reads', () => {
+  it('isFieldEmptyStructure: a row with any measured field or a type is not empty', () => {
+    expect(isFieldEmptyStructure(struct({ description: 'MH61E' }))).toBe(true);
+    expect(isFieldEmptyStructure(struct({ description: 'MH61E', lowInvert: 193.06 }))).toBe(false);
+    expect(isFieldEmptyStructure(struct({ description: 'MH61E', structureType: 'EXISTING' }))).toBe(false);
+  });
+
+  it('collapses the field-empty E echo into the bearing structure (Milton MH61 shape)', () => {
+    const r = reconcileTakeoff(
+      emptyFacts({
+        structures: [
+          struct({ description: 'MH61', topElevation: 194.05, lowInvert: 193.06 }),
+          struct({ description: 'MH61E' }),
+          struct({ description: 'MH62', topElevation: 194.2 }),
+        ],
+      })
+    );
+    expect(r.structures).toHaveLength(2);
+    const mh61 = r.structures.find((s) => s.description === 'MH61')!;
+    expect(mh61.topElevation).toBe(194.05);
+    expect(mh61.lowInvert).toBe(193.06);
+    expect(r.warnings.join(' ')).toContain('MH61E → MH61');
+  });
+
+  it('collapses an empty BARE form into a bearing suffixed one (Milton MH60 shape, mirrored)', () => {
+    const { structures, collapsed } = collapseEmptySuffixReads([
+      struct({ description: 'MH60' }),
+      struct({ description: 'MH60A', topElevation: 194.0, lowInvert: 192.62 }),
+    ]);
+    expect(structures).toHaveLength(1);
+    expect(structures[0].description).toBe('MH60A');
+    expect(collapsed).toEqual(['MH60 → MH60A']);
+  });
+
+  it('collapses several empty forms into the single bearing one', () => {
+    const { structures, collapsed } = collapseEmptySuffixReads([
+      struct({ description: 'MH61', topElevation: 194.05 }),
+      struct({ description: 'MH61E' }),
+      struct({ description: 'MH61X' }),
+    ]);
+    expect(structures).toHaveLength(1);
+    expect(collapsed).toHaveLength(2);
+  });
+
+  it('does NOT collapse two field-bearing forms — suffixed variants are real structures (Ontario Tech shape)', () => {
+    const { structures, collapsed } = collapseEmptySuffixReads([
+      struct({ description: 'MH103', lowInvert: 155.61 }),
+      struct({ description: 'MH103A', lowInvert: 152.84 }),
+    ]);
+    expect(structures).toHaveLength(2);
+    expect(collapsed).toEqual([]);
+  });
+
+  it('does NOT collapse when BOTH forms are field-empty (nothing was read; ambiguity stands)', () => {
+    const { structures } = collapseEmptySuffixReads([
+      struct({ description: 'STMH 16' }),
+      struct({ description: 'STMH 16A' }),
+    ]);
+    expect(structures).toHaveLength(2);
+  });
+
+  it('does NOT collapse across kind spellings — CBMH15 is a different base from MH15A', () => {
+    const { structures } = collapseEmptySuffixReads([
+      struct({ description: 'MH15A' }),
+      struct({ description: 'CBMH15', topElevation: 194.55 }),
+    ]);
+    expect(structures).toHaveLength(2);
+  });
+
+  it('does NOT collapse across systems — SAN MH 61 is not the base of MH61E', () => {
+    const { structures } = collapseEmptySuffixReads([
+      struct({ description: 'SAN MH 61', topElevation: 194.05 }),
+      struct({ description: 'MH61E' }),
+    ]);
+    expect(structures).toHaveLength(2);
+  });
+
+  it('does NOT collapse when the geometry-empty row still carries a structure type', () => {
+    const { structures } = collapseEmptySuffixReads([
+      struct({ description: 'MH61', topElevation: 194.05 }),
+      struct({ description: 'MH61E', structureType: 'EXISTING' }),
+    ]);
+    expect(structures).toHaveLength(2);
+  });
+
+  it('does NOT touch different numbers or unnumbered labels', () => {
+    const { structures } = collapseEmptySuffixReads([
+      struct({ description: 'MH61', topElevation: 194.05 }),
+      struct({ description: 'MH62E' }),
+      struct({ description: 'DIVERTER MH' }),
+    ]);
+    expect(structures).toHaveLength(3);
   });
 });
 

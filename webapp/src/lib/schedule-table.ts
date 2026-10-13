@@ -126,7 +126,7 @@ const num = (s: string | undefined): number | null => {
   return m ? parseFloat(m[0]) : null;
 };
 
-export function tableToSewers(t: DetectedTable): SewerFact[] {
+export function tableToSewers(t: DetectedTable, page?: number): SewerFact[] {
   const cFrom = findCol(t.header, 'FROM');
   const cTo = findCol(t.header, 'TO');
   const cRun = findCol(t.header, 'RUN', 'PIPE');
@@ -137,7 +137,8 @@ export function tableToSewers(t: DetectedTable): SewerFact[] {
   if (cLen === -1 || cDia === -1) return [];
 
   const out: SewerFact[] = [];
-  for (const { cells } of t.rows) {
+  for (const row of t.rows) {
+    const { cells } = row;
     if (cRun !== -1 && EX_ROW_RE.test(cells[cRun] ?? '')) continue; // existing — excluded
     const length = num(cells[cLen]);
     const dia = num(cells[cDia]);
@@ -155,6 +156,7 @@ export function tableToSewers(t: DetectedTable): SewerFact[] {
       typeClass: cClass !== -1 ? num(cells[cClass]) : null,
       slope: slope != null ? normalizeSlope(slope) : null,
       depth: null,
+      source: { method: 'schedule', page, evidence: cells.join(' | ') },
     });
   }
   return out;

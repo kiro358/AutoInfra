@@ -272,6 +272,8 @@ export function mergeSewerFact(a: SewerFact, b: SewerFact): SewerFact {
     typeClass: a.typeClass ?? b.typeClass,
     slope: a.slope ?? b.slope,
     depth,
+    // Provenance follows the primary reading, like every other field here.
+    source: a.source ?? b.source,
   };
 }
 
@@ -745,5 +747,6 @@ export function mergeTakeoffs(primary: TakeoffFacts, secondary: TakeoffFacts): T
     watermainSpecials: [...primary.watermainSpecials, ...secondary.watermainSpecials],
     watermainValves: [...primary.watermainValves, ...secondary.watermainValves],
     warnings: [...primary.warnings, ...secondary.warnings],
+    withheld: [...(primary.withheld ?? []), ...(secondary.withheld ?? [])],
   });
 }

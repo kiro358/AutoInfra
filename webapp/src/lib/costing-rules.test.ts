@@ -193,3 +193,102 @@ describe('priceTakeoff — stated manhole size (460 Bayly St E)', () => {
     expect(r.warnings.some((w) => w.includes('180mm'))).toBe(true);
   });
 });
+
+describe('priceTakeoff — withheld & provenance (PR 8)', () => {
+  it('records CB wall/depth defaults as withheld items, values unchanged', () => {
+    const out = priceTakeoff(emptyFacts({
+      catchbasins: [{ type: 'SINGLE_CB', quantity: 3, wallThickness: null, depth: null }],
+    }));
+    expect(out.catchbasins.groups[0].wallThickness).toBe(4);
+    expect(out.catchbasins.groups[0].depth).toBe(2.2);
+    const items = (out.withheld ?? []).filter((w) => w.entity.includes('SINGLE_CB'));
+    expect(items.map((w) => w.field).sort()).toEqual(['depth', 'wallThickness']);
+    expect(items.every((w) => w.kind === 'defaulted')).toBe(true);
+    expect(items.find((w) => w.field === 'wallThickness')!.defaultApplied).toEqual({
+      value: 4, source: expect.stringContaining('costing-rules'),
+    });
+  });
+
+  it('records nothing for CB groups whose wall/depth were read', () => {
+    const out = priceTakeoff(emptyFacts({
+      catchbasins: [{ type: 'SINGLE_CB', quantity: 1, wallThickness: 6, depth: 3.1 }],
+    }));
+    expect(out.catchbasins.groups[0].wallThickness).toBe(6);
+    expect((out.withheld ?? []).filter((w) => w.entity.includes('SINGLE_CB'))).toHaveLength(0);
+  });
+
+  it('records watermain ocSc/avgCover defaults; stated values pass through unrecorded', () => {
+    const out = priceTakeoff(emptyFacts({
+      watermain: [
+        { sizeAndType: '200mm PVC', length: 50, pipeDiameter: 200, ocSc: null, avgCover: null },
+        { sizeAndType: '300mm PVC', length: 20, pipeDiameter: 300, ocSc: 2.1, avgCover: 2.4 },
+      ],
+    }));
+    expect(out.watermain[0].ocSc).toBe(1.1);
+    expect(out.watermain[0].avgCover).toBe(1.8);
+    expect(out.watermain[1].ocSc).toBe(2.1);
+    const items = out.withheld ?? [];
+    expect(items.filter((w) => w.entity === '200mm PVC').map((w) => w.field).sort()).toEqual(['avgCover', 'ocSc']);
+    expect(items.filter((w) => w.entity === '300mm PVC')).toHaveLength(0);
+  });
+
+  it('classifies manhole diameter provenance: stated / derived / DCBMH convention / fallback invention', () => {
+    const out = priceTakeoff(emptyFacts({
+      structures: [
+        { description: 'MH 1', topElevation: null, lowInvert: null, highInvert: null, pipeOutDiameter: null, structureType: null, depth: null, diameter: 1800 },
+        { description: 'MH 2', topElevation: null, lowInvert: null, highInvert: null, pipeOutDiameter: null, structureType: null, depth: null },
+        { description: 'DCBMH 3', topElevation: null, lowInvert: null, highInvert: null, pipeOutDiameter: null, structureType: null, depth: null },
+        { description: 'MH 4', topElevation: null, lowInvert: null, highInvert: null, pipeOutDiameter: null, structureType: null, depth: null },
+      ],
+      sewers: [
+        { runLabel: 'MH4-MH5', isLineItem: false, length: 10, pipeDiameter: 700, typeClass: null, slope: null, depth: null },
+      ],
+    }));
+    const byEntity = (e: string) => (out.withheld ?? []).filter((w) => w.entity === e && w.field === 'diameter');
+    expect(byEntity('MH 1')).toHaveLength(0);                                    // stated on the drawing
+    expect(byEntity('MH 2')).toEqual([expect.objectContaining({ kind: 'defaulted', defaultApplied: { value: 1200, source: expect.stringContaining('snapToMHSize') } })]);
+    expect(byEntity('DCBMH 3')).toEqual([expect.objectContaining({ kind: 'defaulted', defaultApplied: { value: 1500, source: expect.stringContaining('DCBMH') } })]);
+    expect(byEntity('MH 4')).toEqual([expect.objectContaining({ kind: 'derived', defaultApplied: { value: 1800, source: expect.stringContaining('snapToMHSize') } })]);
+    expect(out.manholes.map((m) => m.diameter)).toEqual([1800, 1200, 1500, 1800]);
+  });
+
+  it('records depth computed from rim − invert as derived', () => {
+    const out = priceTakeoff(emptyFacts({
+      structures: [{ description: 'MH 1', topElevation: 100, lowInvert: 96.5, highInvert: null, pipeOutDiameter: null, structureType: null, depth: null, diameter: 1200 }],
+    }));
+    expect(out.manholes[0].depth).toBe(3.5);
+    expect((out.withheld ?? []).filter((w) => w.field === 'depth')).toEqual([
+      expect.objectContaining({ kind: 'derived', defaultApplied: { value: 3.5, source: expect.stringContaining('topElevation') } }),
+    ]);
+  });
+
+  it('carries fact withheld through, dedupes repeats with a count, and passes fact source to priced rows', () => {
+    const item = { entity: '200mm PVC', field: 'length', kind: 'withheld' as const, question: 'Length?', defaultApplied: null };
+    const src = { method: 'transcript' as const, tile: 3, evidence: 'STMH 1' };
+    const out = priceTakeoff(emptyFacts({
+      structures: [{ description: 'STMH 1', topElevation: null, lowInvert: null, highInvert: null, pipeOutDiameter: null, structureType: null, depth: null, diameter: 1200, source: src }],
+      withheld: [item, { ...item }, { ...item }],
+    }));
+    expect(out.manholes[0].source).toEqual(src);
+    const carried = (out.withheld ?? []).filter((w) => w.field === 'length');
+    expect(carried).toHaveLength(1);
+    expect(carried[0].question).toContain('[3 callouts]');
+  });
+
+  it('legacy facts (no source, no withheld) price to identical numbers as annotated facts', () => {
+    const base = emptyFacts({
+      structures: [{ description: 'MH 1', topElevation: 100, lowInvert: 97, highInvert: null, pipeOutDiameter: 300, structureType: null, depth: null }],
+      catchbasins: [{ type: 'DOUBLE_CB', quantity: 2, wallThickness: null, depth: null }],
+      sewers: [{ runLabel: 'MH1-MH2', isLineItem: false, length: 30, pipeDiameter: 300, typeClass: null, slope: 1, depth: null }],
+      watermain: [{ sizeAndType: '200mm PVC', length: 40, pipeDiameter: 200, ocSc: null, avgCover: null }],
+    });
+    const annotated = structuredClone(base);
+    annotated.structures[0].source = { method: 'text-layer', page: 2, evidence: 'MH 1' };
+    annotated.sewers[0].source = { method: 'schedule', page: 2, evidence: 'MH1 | MH2 | 30' };
+    annotated.watermain[0].source = { method: 'text-layer', page: 3, evidence: '200mm PVC WM' };
+    annotated.withheld = [{ entity: 'X', field: 'length', kind: 'withheld', question: 'q', defaultApplied: null }];
+    const strip = (o: unknown) => JSON.parse(JSON.stringify(o, (k, v) => (k === 'source' || k === 'withheld' ? undefined : v)));
+    expect(strip(priceTakeoff(annotated))).toEqual(strip(priceTakeoff(base)));
+    expect(priceTakeoff(base).withheld!.length).toBeGreaterThan(0); // defaults recorded even for legacy facts
+  });
+});

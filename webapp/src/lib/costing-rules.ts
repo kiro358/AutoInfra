@@ -16,6 +16,7 @@ import {
   WatermainRun,
   WatermainSpecial,
   WatermainValve,
+  WithheldItem,
 } from './types';
 import { snapToMHSize } from './geometry';
 import { TEMPLATE_LAYOUT, blockCapacity, MH_DIAMETERS } from './constants';
@@ -148,6 +149,14 @@ export function priceTakeoff(
   facts: TakeoffFacts,
   rules: CostingRules = DEFAULT_COSTING
 ): ExtractionResult {
+  // Withheld/derived bookkeeping: carried in from the facts (values the
+  // assembly never read) and extended below with every default or derivation
+  // THIS function applies, so the workbook's AUDIT sheet can show the
+  // estimator every number that was not read off the drawings. Recording
+  // never changes a value — the defaults below are exactly the ones that
+  // were always applied; they just stop being silent.
+  const withheld: WithheldItem[] = [...(facts.withheld ?? [])];
+
   // --- Sewers first (manhole diameters depend on connected pipe sizes) ---
   const sewers: SewerRun[] = facts.sewers.map((s, i) => {
     let addMaterials = 0;
@@ -176,6 +185,7 @@ export function priceTakeoff(
       addLE,
       isLineItem: s.isLineItem,
       lineItemType: s.lineItemType,
+      source: s.source,
     };
   });
 
@@ -205,7 +215,16 @@ export function priceTakeoff(
     let depth = st.depth;
     if (st.topElevation !== null && inv !== null && inv !== undefined) {
       const calc = Math.round((st.topElevation - inv) * 100) / 100;
-      if (calc > 0) depth = calc;
+      if (calc > 0) {
+        depth = calc;
+        withheld.push({
+          entity: st.description,
+          field: 'depth',
+          kind: 'derived',
+          question: `Depth not stated as such; computed from the read rim and invert elevations (top − low invert).`,
+          defaultApplied: { value: calc, source: 'derived: topElevation − lowInvert' },
+        });
+      }
     }
 
     const connected = connectedSewerDiameters(st.description);
@@ -230,6 +249,37 @@ export function priceTakeoff(
       ? stated
       : desc.includes('DCBMH') ? 1500 : snapToMHSize(effectivePipeOutDia);
 
+    // An unstated diameter is never a read value: record how it was arrived
+    // at (convention for DCBMH, derivation from the connected pipes, or the
+    // bare fallback invention) so the AUDIT sheet can show it.
+    if (!isChamber && !stated && diameter !== null) {
+      if (desc.includes('DCBMH')) {
+        withheld.push({
+          entity: st.description,
+          field: 'diameter',
+          kind: 'defaulted',
+          question: `Structure size not stated on the drawing — priced as a 1500mm DCBMH by convention. Confirm the size.`,
+          defaultApplied: { value: diameter, source: 'costing convention: unstated DCBMH = 1500mm' },
+        });
+      } else if (effectivePipeOutDia > 0) {
+        withheld.push({
+          entity: st.description,
+          field: 'diameter',
+          kind: 'derived',
+          question: `Structure size not stated on the drawing; sized from the largest connected pipe (${effectivePipeOutDia}mm).`,
+          defaultApplied: { value: diameter, source: 'derived: snapToMHSize(largest connected pipe)' },
+        });
+      } else {
+        withheld.push({
+          entity: st.description,
+          field: 'diameter',
+          kind: 'defaulted',
+          question: `Structure size not stated on the drawing and no connected pipe was read — priced as 1200mm. Confirm the size.`,
+          defaultApplied: { value: diameter, source: 'snapToMHSize fallback (no size evidence)' },
+        });
+      }
+    }
+
     let addMaterials = 0;
     let addLE = 0;
     for (const rule of rules.structureSurcharge) {
@@ -253,6 +303,7 @@ export function priceTakeoff(
       depth,
       drop: null,
       diameter,
+      source: st.source,
     };
   });
 
@@ -260,14 +311,36 @@ export function priceTakeoff(
   const catchbasins: CatchbasinSummary = {
     groups: facts.catchbasins
       .filter((g) => g.quantity > 0)
-      .map((g) => ({
-        type: g.type,
-        quantity: g.quantity,
-        wallThickness: g.wallThickness ?? rules.catchbasin.defaultWallThickness,
-        depth: g.depth ?? rules.catchbasin.defaultDepth,
-        grateEach: 0,
-        addMaterials: rules.catchbasin.defaultAddMaterials,
-      })),
+      .map((g) => {
+        const entity = `Catchbasins ${g.type} ×${g.quantity}`;
+        if (g.wallThickness == null) {
+          withheld.push({
+            entity,
+            field: 'wallThickness',
+            kind: 'defaulted',
+            question: `Catchbasin wall thickness not read off the drawings — the standard ${rules.catchbasin.defaultWallThickness} was priced. Confirm.`,
+            defaultApplied: { value: rules.catchbasin.defaultWallThickness, source: 'estimator default (costing-rules catchbasin.defaultWallThickness)' },
+          });
+        }
+        if (g.depth == null) {
+          withheld.push({
+            entity,
+            field: 'depth',
+            kind: 'defaulted',
+            question: `Catchbasin depth not read off the drawings — the standard ${rules.catchbasin.defaultDepth}m was priced. Confirm.`,
+            defaultApplied: { value: rules.catchbasin.defaultDepth, source: 'estimator default (costing-rules catchbasin.defaultDepth)' },
+          });
+        }
+        return {
+          type: g.type,
+          quantity: g.quantity,
+          wallThickness: g.wallThickness ?? rules.catchbasin.defaultWallThickness,
+          depth: g.depth ?? rules.catchbasin.defaultDepth,
+          grateEach: 0,
+          addMaterials: rules.catchbasin.defaultAddMaterials,
+          source: g.source,
+        };
+      }),
     laborRates: { ...rules.laborRates },
   };
 
@@ -326,18 +399,40 @@ export function priceTakeoff(
       );
     }
   }
-  const watermain: WatermainRun[] = facts.watermain.map((w, i) => ({
-    item: i + 1,
-    sizeAndType: w.sizeAndType,
-    length: w.length,
-    pipeDiameter: w.pipeDiameter,
+  const watermain: WatermainRun[] = facts.watermain.map((w, i) => {
     // Facts carry null when the drawing/truth never stated these; the
-    // estimator defaults live HERE, at pricing, where they always belonged.
-    ocSc: w.ocSc ?? 1.1,
-    addMaterials: 0,
-    addLE: 0,
-    avgCover: w.avgCover ?? 1.8,
-  }));
+    // estimator defaults live HERE, at pricing, where they always belonged —
+    // and from now on each application is recorded as a withheld item.
+    if (w.ocSc == null) {
+      withheld.push({
+        entity: w.sizeAndType,
+        field: 'ocSc',
+        kind: 'defaulted',
+        question: `Overburden class (OC/SC) for the ${w.sizeAndType} watermain was not stated — the standard 1.1 was priced. Confirm.`,
+        defaultApplied: { value: 1.1, source: 'estimator default (costing-rules)' },
+      });
+    }
+    if (w.avgCover == null) {
+      withheld.push({
+        entity: w.sizeAndType,
+        field: 'avgCover',
+        kind: 'defaulted',
+        question: `Average cover for the ${w.sizeAndType} watermain was not stated — the standard 1.8m was priced. Confirm.`,
+        defaultApplied: { value: 1.8, source: 'estimator default (costing-rules)' },
+      });
+    }
+    return {
+      item: i + 1,
+      sizeAndType: w.sizeAndType,
+      length: w.length,
+      pipeDiameter: w.pipeDiameter,
+      ocSc: w.ocSc ?? 1.1,
+      addMaterials: 0,
+      addLE: 0,
+      avgCover: w.avgCover ?? 1.8,
+      source: w.source,
+    };
+  });
 
   const watermainSpecials: WatermainSpecial[] = facts.watermainSpecials.map((sp, i) => ({
     item: i + 1,
@@ -376,6 +471,30 @@ export function priceTakeoff(
     watermainValves,
     confidence: facts.confidence,
     warnings,
+    withheld: dedupeWithheld(withheld),
     locatorIndex: facts.locatorIndex ?? null,
   };
+}
+
+/**
+ * Collapse repeated withheld items before they reach the workbook. Assembly
+ * records one item per unmeasured callout, but pricing aggregates (watermain
+ * is summed by diameter), and a repetitive plan can carry hundreds of
+ * identical unmeasured labels for what becomes one priced row — the AUDIT
+ * sheet should ask the question once, with the count, not 600 times.
+ */
+function dedupeWithheld(items: WithheldItem[]): WithheldItem[] {
+  const seen = new Map<string, { item: WithheldItem; count: number }>();
+  for (const item of items) {
+    const key = [
+      item.entity, item.field, item.kind, item.question,
+      item.defaultApplied ? `${item.defaultApplied.value}|${item.defaultApplied.source}` : '',
+    ].join('|');
+    const ex = seen.get(key);
+    if (ex) ex.count++;
+    else seen.set(key, { item, count: 1 });
+  }
+  return [...seen.values()].map(({ item, count }) =>
+    count > 1 ? { ...item, question: `${item.question} [${count} callouts]` } : item
+  );
 }

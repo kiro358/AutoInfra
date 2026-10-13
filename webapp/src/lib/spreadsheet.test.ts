@@ -290,3 +290,46 @@ describe('populateTemplate — 460 Bayly St E regressions', () => {
     expect(val(wb, 'MANHOLES (1)', 'L12')).not.toBe(1200);
   });
 });
+
+describe('populateTemplate — AUDIT sheet (PR 8)', () => {
+  it('lists withheld, defaulted and derived values on an AUDIT sheet', async () => {
+    const { wb } = await build(facts({
+      catchbasins: [{ type: 'SINGLE_CB', quantity: 2, wallThickness: null, depth: null }],
+      watermain: [{ sizeAndType: '200mm PVC', length: 40, pipeDiameter: 200, ocSc: null, avgCover: null }],
+      withheld: [{ entity: '200mm PVC', field: 'length', kind: 'withheld', question: 'Length not stated?', defaultApplied: null }],
+    }));
+    const audit = wb.getWorksheet('AUDIT');
+    expect(audit, 'AUDIT sheet exists').toBeTruthy();
+    const texts: string[] = [];
+    audit!.eachRow({ includeEmpty: false }, (r) => r.eachCell({ includeEmpty: false }, (c) => texts.push(String(c.value))));
+    const joined = texts.join('\n');
+    expect(joined).toContain('WITHHELD — left blank');
+    expect(joined).toContain('DEFAULTED — default applied');
+    expect(joined).toContain('wallThickness');
+    expect(joined).toContain('ocSc');
+    expect(joined).toContain('Length not stated?');
+  });
+
+  it('still writes an AUDIT sheet for a legacy extraction with no withheld list', async () => {
+    const ex = priceTakeoff(facts({}));
+    delete ex.withheld; // simulate a pre-PR-8 extraction record
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load((await populateTemplate(ex, PARAMS)) as unknown as ArrayBuffer);
+    const audit = wb.getWorksheet('AUDIT');
+    expect(audit).toBeTruthy();
+    const texts: string[] = [];
+    audit!.eachRow({ includeEmpty: false }, (r) => r.eachCell({ includeEmpty: false }, (c) => texts.push(String(c.value))));
+    expect(texts.join('\n')).toContain('predates provenance/withheld recording');
+  });
+
+  it('says so when nothing was withheld', async () => {
+    const { ex } = await build(facts({}));
+    ex.withheld = [];
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load((await populateTemplate(ex, PARAMS)) as unknown as ArrayBuffer);
+    const audit = wb.getWorksheet('AUDIT');
+    const texts: string[] = [];
+    audit!.eachRow({ includeEmpty: false }, (r) => r.eachCell({ includeEmpty: false }, (c) => texts.push(String(c.value))));
+    expect(texts.join('\n')).toContain('Nothing withheld');
+  });
+});

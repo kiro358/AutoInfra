@@ -16,6 +16,7 @@ import {
   isDanglingRunHead, isRunContinuation, ParsedStructure, ParsedRun,
 } from './callout-parser';
 import { reconcileTakeoff } from './reconcile';
+import { appendCoverageWarnings } from './coverage-checks';
 import { normalizeLabel } from './compare-facts';
 import { TakeoffFacts, StructureFact, SewerFact, WatermainFact, CatchbasinGroupFact, TileTranscript } from './types';
 
@@ -34,6 +35,106 @@ interface Sink {
   catchbasinLabels: Map<CatchbasinGroupFact['type'], Set<string>>;
   sewers: SewerFact[];
   watermain: WatermainFact[];
+  /**
+   * Coverage bookkeeping (see coverageWarningsFor): every structure/CB label
+   * the grammar can see in the transcripts, keyed by normalized label with
+   * the raw label kept for display, and the labels seen only as EXISTING
+   * (intentionally excluded from the takeoff, so never "missing").
+   */
+  mentionedStructures: Map<string, string>;
+  mentionedCatchbasins: Map<CatchbasinGroupFact['type'], Map<string, string>>;
+  mentionedExisting: Set<string>;
+}
+
+/**
+ * Record a line (or schedule-row cell) the grammar recognises as a structure
+ * label, for the coverage check. Runs on exactly the lines the assembler
+ * itself processes (post repetition-filter, post line-join), so "mentioned"
+ * means "the assembler had this label in front of it".
+ */
+function noteMention(sink: Sink, line: string): void {
+  const parsed = parseStructureLabel(line);
+  if (!parsed) return;
+  const norm = normalizeLabel(parsed.label);
+  if (!norm) return;
+  if (parsed.existing) {
+    sink.mentionedExisting.add(norm);
+    return;
+  }
+  const cbType = cbKindType(parsed.kind);
+  if (cbType) {
+    const byLabel = sink.mentionedCatchbasins.get(cbType) ?? new Map<string, string>();
+    if (!byLabel.has(norm)) byLabel.set(norm, parsed.label);
+    sink.mentionedCatchbasins.set(cbType, byLabel);
+  } else if (!sink.mentionedStructures.has(norm)) {
+    sink.mentionedStructures.set(norm, parsed.label);
+  }
+}
+
+const rawList = (labels: string[], cap = 8): string =>
+  labels.slice(0, cap).join(', ') + (labels.length > cap ? `, … (+${labels.length - cap} more)` : '');
+
+/**
+ * Assembly-level partial-miss warnings (the facts-level endpoint rule lives
+ * in coverage-checks.ts). Two signals, both computed against the assembler's
+ * own sink — NOT the reconciled facts — so deliberate downstream removals
+ * (reconcile's junk filters, the phase-suffix collapse, the catchbasin
+ * ceiling) never masquerade as assembly losses; those carry their own
+ * warnings already.
+ *
+ *  - Mentioned but not assembled: a label the transcripts contain that never
+ *    reached the sink. Today this is how schedule-carried structures and
+ *    mis-routed block headers vanish without a trace.
+ *  - Empty assembly: transcripts came back but produced no takeoff at all —
+ *    the takeoff is missing, not empty, and must not read as a clean zero.
+ */
+export function coverageWarningsFor(
+  transcripts: TileTranscript[],
+  sink: Sink,
+  assembled: TakeoffFacts
+): string[] {
+  const warnings: string[] = [];
+
+  const assembledStructures = new Set(sink.structures.map((s) => normalizeLabel(s.description)));
+  const lostStructures = [...sink.mentionedStructures.entries()]
+    .filter(([norm]) => !assembledStructures.has(norm) && !sink.mentionedExisting.has(norm))
+    .map(([, raw]) => raw);
+  if (lostStructures.length > 0) {
+    warnings.push(
+      `Coverage: ${lostStructures.length} structure label(s) appear in the tile transcripts but are not in this takeoff ` +
+        `(${rawList(lostStructures)}). They may sit in schedules or tables outside the takeoff's scope, or their callout ` +
+        `blocks could not be assembled — verify them against the drawings.`
+    );
+  }
+
+  for (const [type, mentioned] of sink.mentionedCatchbasins) {
+    const recorded = sink.catchbasinLabels.get(type) ?? new Set<string>();
+    const lost = [...mentioned.entries()]
+      .filter(([norm]) => !recorded.has(norm) && !sink.mentionedExisting.has(norm))
+      .map(([, raw]) => raw);
+    if (lost.length > 0) {
+      warnings.push(
+        `Coverage: ${lost.length} ${type} label(s) appear in the tile transcripts but were not counted in the ` +
+          `catchbasin groups (${rawList(lost)}). They may sit in schedules or tables outside the takeoff's scope, ` +
+          `or their callout blocks could not be assembled — verify the catchbasin count against the drawings.`
+      );
+    }
+  }
+
+  const entityCount =
+    assembled.structures.length + assembled.sewers.length + assembled.watermain.length +
+    assembled.catchbasins.length;
+  if (transcripts.length > 0 && entityCount === 0) {
+    const tiles = transcripts.length;
+    const blocks = transcripts.reduce((n, t) => n + (t.blocks?.length ?? 0), 0);
+    warnings.push(
+      `Coverage: the transcription returned ${tiles} tile(s) / ${blocks} block(s) but nothing could be assembled ` +
+        `into a takeoff. The located pages may not carry the servicing drawings, or their callouts use a form the ` +
+        `assembler cannot read — treat this takeoff as missing, not as an empty project.`
+    );
+  }
+
+  return warnings;
 }
 
 /**
@@ -216,6 +317,9 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
     catchbasinLabels: new Map(),
     sewers: [],
     watermain: [],
+    mentionedStructures: new Map(),
+    mentionedCatchbasins: new Map(),
+    mentionedExisting: new Set(),
   };
   const warnings: string[] = [];
 
@@ -237,6 +341,17 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
 
     for (const block of validBlocks) {
       const joined = joinBlockLines(block);
+
+      // Coverage bookkeeping: every label the grammar can see in this block,
+      // including schedule-row cells the assembly deliberately does not
+      // harvest (the "#" header filter below) — a mention that never reaches
+      // the sink is surfaced by coverageWarningsFor, not silently lost.
+      for (const line of joined) {
+        noteMention(out, line);
+        if (line.includes(' | ')) {
+          for (const cell of line.split(' | ')) noteMention(out, cell.trim());
+        }
+      }
 
       // Step 4: schedule-table rows (contain " | "). A row that parses whole
       // as a run schedule (parseScheduleRunRow) is harvested as one run;
@@ -295,10 +410,19 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
 
   // Step 5: cross-tile duplicates (10% tile overlap) die here — structures by
   // label, runs by the exact-signature/dual-label rules.
-  return reconcileTakeoff({
+  const reconciled = reconcileTakeoff({
     projectName, jobNumber: '', date: '',
     structures: out.structures, catchbasins, sewers: out.sewers, watermain: out.watermain,
     watermainSpecials: [], watermainValves: [],
     confidence: 1, warnings,
+  });
+
+  // Step 6: partial-miss surfacing — purely additive warnings (assembly-level
+  // here, facts-level from coverage-checks.ts). No fact is created, altered
+  // or removed: an incomplete takeoff must SAY it is incomplete.
+  const coverage = coverageWarningsFor(transcripts, out, reconciled);
+  return appendCoverageWarnings({
+    ...reconciled,
+    warnings: [...reconciled.warnings, ...coverage],
   });
 }

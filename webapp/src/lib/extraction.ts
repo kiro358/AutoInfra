@@ -18,6 +18,7 @@ import { renderTilesFlat, renderPageThumbnails, IMAGE_MIME } from './rasterize';
 import { normalizeLabel, runSignature } from './compare-facts';
 import { assembleTranscriptTakeoff } from './transcript-takeoff';
 import { mergeTakeoffs, dropSpecNoteStructures, dropImplausibleCatchbasinGroups, reconcileTakeoff } from './reconcile';
+import { appendCoverageWarnings } from './coverage-checks';
 import { extractPageText, isTextyPage } from './pdf-text';
 import { verifyStructureProvenance } from './provenance';
 import { assembleTextTakeoff } from './text-takeoff';
@@ -924,6 +925,8 @@ async function extractFromPDFInner(
           facts = reconcileTakeoff(facts);
         }
 
+        // Partial-miss surfacing (warnings only — see coverage-checks.ts).
+        facts = appendCoverageWarnings(facts);
         facts.transcript = transcript;
         facts.locatorIndex = locatorIndex;
         facts.cost = cost;
@@ -960,6 +963,10 @@ async function extractFromPDFInner(
           facts = reconcileTakeoff(facts);
         }
 
+        // Partial-miss surfacing on the MERGED facts (warnings only): a run
+        // endpoint is only "dangling" once both paths' structures are in, so
+        // this runs after the merge, not inside either sub-assembly.
+        facts = appendCoverageWarnings(facts);
         if (transcript.length > 0) facts.transcript = transcript;
         facts.locatorIndex = locatorIndex;
         facts.cost = cost;

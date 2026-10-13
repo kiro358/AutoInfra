@@ -63,6 +63,24 @@ describe('assembleTranscriptTakeoff', () => {
     expect(facts.warnings.length).toBeGreaterThan(0);
   });
 
+  it('admits "#" dialect headers from callout blocks but not from schedule rows', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        // Plan/profile callout block in the "#" dialect (Wigmore): admitted.
+        ['NEW STM MH#1 (1200mmØ)', 'RIM = 140.55', 'S INV. 138.80', 'N INV. 138.77'],
+        // Structure-schedule row (Ultimate Drive): the "#" header cell is not
+        // admitted — schedule numbering runs past the takeoff's scope, and
+        // harvesting it is the schedule-table work's decision.
+        ['STMH #15 | DPSG 701.010, 400 Ø Frame and Cover (Closed) and 600 mm Sump | Top = 214.60 m | N Inv = 212.80 m (200 mm)'],
+        ['CB #7 | DPSG 701.010, 400 Ø Frame and Cover and 600 mm Sump | Parkway 1 | Top = 214.60 m'],
+      ]},
+    ], 'T');
+    expect(facts.structures).toHaveLength(1);
+    expect(facts.structures[0]).toMatchObject({ description: 'MH1', topElevation: 140.55, lowInvert: 138.77 });
+    expect(facts.catchbasins).toHaveLength(0);
+    expect(facts.warnings.some((w) => w.includes('Unparseable schedule row'))).toBe(true);
+  });
+
   it('warns (not guesses) on an unconsumed non-elevation line in a structure block', () => {
     const facts = assembleTranscriptTakeoff([
       { tile: 1, blocks: [

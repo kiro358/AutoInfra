@@ -39,6 +39,38 @@ export interface FactsComparison {
   detectionF1: number;
   /** Field accuracy across all compared fields on matched entities. */
   fieldAccuracy: number;
+  /**
+   * Field accuracy excluding the convention fields (see CONVENTION_FIELDS):
+   * values no drawing prints, which the estimator supplies by convention. The
+   * headline fieldAccuracy keeps scoring them; this companion number says how
+   * well the extraction reads what is actually on the plan. Null when no
+   * non-convention field was scored.
+   */
+  fieldAccuracyExConvention: number | null;
+}
+
+/**
+ * Fields that are estimator conventions, not readings: typeClass is a
+ * near-constant factor keyed to pipe size (a diameter lookup explains ~92% of
+ * truth values), and run depth is a nominal value the estimator writes, not a
+ * rim−invert derivation. They stay in the headline metric — removing them
+ * silently would flatter it — but every report also carries the
+ * convention-excluded number so the two are never conflated.
+ */
+export const CONVENTION_FIELDS: ReadonlySet<string> = new Set(['sewer.typeClass', 'sewer.depth']);
+
+/** Accuracy over a field-score list with convention fields removed. Null when nothing remains. */
+export function fieldAccuracyExcludingConvention(
+  fields: readonly { field: string; matched: number; total: number }[]
+): number | null {
+  let matched = 0;
+  let total = 0;
+  for (const f of fields) {
+    if (CONVENTION_FIELDS.has(f.field)) continue;
+    matched += f.matched;
+    total += f.total;
+  }
+  return total > 0 ? matched / total : null;
 }
 
 // ---- normalization & value matching ----
@@ -122,6 +154,21 @@ function numClose(a: number | null, b: number | null, relTol = 0.05): boolean {
 function exactNum(a: number | null, b: number | null): boolean {
   if (a == null || b == null) return false;
   return a === b;
+}
+
+/**
+ * Absolute tolerances are for quantities stated in absolute units — elevations
+ * above all. A rim at 100.0 m compared with a RELATIVE 5% tolerance passes
+ * anything within ±5 m, which is not a measurement at all: the estimator works
+ * to centimetres. Elevations therefore compare absolutely (±0.10 m), while
+ * lengths/slopes/depths — quantities whose meaningful error scales with size —
+ * keep the relative comparison.
+ */
+export const ELEVATION_ABS_TOL = 0.1;
+
+function absClose(a: number | null, b: number | null, absTol = ELEVATION_ABS_TOL): boolean {
+  if (a == null || b == null) return false;
+  return Math.abs(a - b) <= absTol;
 }
 
 // ---- generic greedy matcher ----
@@ -627,9 +674,23 @@ export function compareFacts(pred: TakeoffFacts, truth: TakeoffFacts): FactsComp
     entities.push({ ...prf(m.matched, pred.structures.length, truth.structures.length), kind: 'structures' });
     fields.push(
       ...scoreFields(m.pairs, [
-        { field: 'structure.topElevation', present: (t) => t.topElevation != null, ok: (p, t) => numClose(p.topElevation, t.topElevation) },
-        { field: 'structure.lowInvert', present: (t) => t.lowInvert != null, ok: (p, t) => numClose(p.lowInvert, t.lowInvert) },
+        // Elevations compare ABSOLUTELY (±0.10 m via absClose), never with the
+        // relative numClose: 5% of a ~100 m rim elevation is ±5 m of free slack.
+        { field: 'structure.topElevation', present: (t) => t.topElevation != null, ok: (p, t) => absClose(p.topElevation, t.topElevation) },
+        { field: 'structure.lowInvert', present: (t) => t.lowInvert != null, ok: (p, t) => absClose(p.lowInvert, t.lowInvert) },
+        // highInvert: predictions emit it, truth workbooks currently never
+        // record it (spec total stays 0 across the golden set) — the spec is
+        // present-gated like every other, so it goes live the moment a
+        // workbook does record it.
+        { field: 'structure.highInvert', present: (t) => t.highInvert != null, ok: (p, t) => absClose(p.highInvert, t.highInvert) },
         { field: 'structure.pipeOutDiameter', present: (t) => t.pipeOutDiameter != null, ok: (p, t) => exactNum(p.pipeOutDiameter, t.pipeOutDiameter) },
+        // structure.depth: truth populates it on most structures, predictions
+        // never emit it — an honest 0% (like sewer.depth) until a derivation
+        // lands. Relative tolerance, as for sewer.depth: it is a depth, not
+        // an elevation. structureType is deliberately NOT scored: verified
+        // across all 26 golden projects, neither truth nor predictions
+        // populate it, so a spec would be dead code measuring nothing.
+        { field: 'structure.depth', present: (t) => t.depth != null, ok: (p, t) => numClose(p.depth, t.depth, 0.1) },
       ])
     );
   }
@@ -686,7 +747,13 @@ export function compareFacts(pred: TakeoffFacts, truth: TakeoffFacts): FactsComp
   const matchedFields = fields.reduce((s, f) => s + f.matched, 0);
   const fieldAccuracy = totalFields > 0 ? matchedFields / totalFields : 1;
 
-  return { entities, fields, detectionF1, fieldAccuracy };
+  return {
+    entities,
+    fields,
+    detectionF1,
+    fieldAccuracy,
+    fieldAccuracyExConvention: fieldAccuracyExcludingConvention(fields),
+  };
 }
 
 export function formatFactsComparison(c: FactsComparison): string {
@@ -701,5 +768,8 @@ export function formatFactsComparison(c: FactsComparison): string {
   }
   out += '  ' + '-'.repeat(56) + '\n';
   out += `  Detection F1: ${(c.detectionF1 * 100).toFixed(1)}%   Field accuracy: ${(c.fieldAccuracy * 100).toFixed(1)}%\n`;
+  if (c.fieldAccuracyExConvention != null) {
+    out += `  Field accuracy (excl. conventions ${[...CONVENTION_FIELDS].join(', ')}): ${(c.fieldAccuracyExConvention * 100).toFixed(1)}%\n`;
+  }
   return out;
 }

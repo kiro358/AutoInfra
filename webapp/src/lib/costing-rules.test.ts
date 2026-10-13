@@ -297,3 +297,92 @@ describe('priceTakeoff — withheld & provenance (PR 8)', () => {
     expect(priceTakeoff(base).withheld!.length).toBeGreaterThan(0); // defaults recorded even for legacy facts
   });
 });
+
+describe('priceTakeoff — derivations (PR 11: drop, typeClass)', () => {
+  const struct = (over: Record<string, unknown> = {}) => ({
+    description: 'MH 1', topElevation: null, lowInvert: null, highInvert: null,
+    pipeOutDiameter: null, structureType: null, depth: null, ...over,
+  }) as never;
+  const dropItems = (out: ReturnType<typeof priceTakeoff>) =>
+    (out.withheld ?? []).filter((w) => w.field === 'drop');
+
+  it('derives drop = highInvert − lowInvert and records it as derived', () => {
+    const out = priceTakeoff(emptyFacts({ structures: [struct({ lowInvert: 100.2, highInvert: 100.5 })] }));
+    expect(out.manholes[0].drop).toBe(0.3);
+    const items = dropItems(out);
+    expect(items).toHaveLength(1);
+    expect(items[0].kind).toBe('derived');
+    expect(items[0].defaultApplied).toEqual({ value: 0.3, source: 'derived: highInvert − lowInvert' });
+  });
+
+  it('derives a zero drop when the inverts agree', () => {
+    const out = priceTakeoff(emptyFacts({ structures: [struct({ lowInvert: 100.2, highInvert: 100.2 })] }));
+    expect(out.manholes[0].drop).toBe(0);
+    expect(dropItems(out)[0].kind).toBe('derived');
+  });
+
+  it('leaves drop blank and asks when the inverts contradict (high below low)', () => {
+    const out = priceTakeoff(emptyFacts({ structures: [struct({ lowInvert: 101, highInvert: 100.5 })] }));
+    expect(out.manholes[0].drop).toBeNull();
+    const items = dropItems(out);
+    expect(items).toHaveLength(1);
+    expect(items[0].kind).toBe('withheld');
+    expect(items[0].defaultApplied).toBeNull();
+    expect(items[0].question).toContain('contradict');
+  });
+
+  it('leaves drop blank and asks when an invert is missing', () => {
+    const onlyLow = priceTakeoff(emptyFacts({ structures: [struct({ lowInvert: 100.2 })] }));
+    expect(onlyLow.manholes[0].drop).toBeNull();
+    expect(dropItems(onlyLow)[0].kind).toBe('withheld');
+    expect(dropItems(onlyLow)[0].question).toContain('high invert was not read');
+    const neither = priceTakeoff(emptyFacts({ structures: [struct({})] }));
+    expect(neither.manholes[0].drop).toBeNull();
+    expect(dropItems(neither)[0].question).toContain('neither invert was read');
+  });
+
+  const run = (over: Record<string, unknown> = {}) => ({
+    runLabel: 'MH1-MH2', isLineItem: false, length: 30, pipeDiameter: 300,
+    typeClass: null, slope: 1, depth: null, ...over,
+  }) as never;
+  const tcItems = (out: ReturnType<typeof priceTakeoff>) =>
+    (out.withheld ?? []).filter((w) => w.field === 'typeClass');
+
+  it('derives an unstated typeClass from the diameter census table', () => {
+    const out = priceTakeoff(emptyFacts({ sewers: [run({ pipeDiameter: 300 }), run({ runLabel: 'MH2-MH3', pipeDiameter: 600 })] }));
+    expect(out.sewers[0].typeClass).toBe(2.35);
+    expect(out.sewers[1].typeClass).toBe(1.3);
+    const items = tcItems(out);
+    expect(items).toHaveLength(2);
+    expect(items.every((w) => w.kind === 'derived')).toBe(true);
+    expect(items[0].defaultApplied?.source).toContain('98% agreement');
+    expect(items[1].defaultApplied?.source).toContain('53% agreement');
+  });
+
+  it('never overwrites a stated typeClass and records nothing for it', () => {
+    const out = priceTakeoff(emptyFacts({ sewers: [run({ typeClass: 1.4 })] }));
+    expect(out.sewers[0].typeClass).toBe(1.4);
+    expect(tcItems(out)).toHaveLength(0);
+  });
+
+  it('leaves the class blank and asks when the diameter is outside the table', () => {
+    const out = priceTakeoff(emptyFacts({ sewers: [run({ pipeDiameter: 1200 })] }));
+    expect(out.sewers[0].typeClass).toBeNull();
+    const items = tcItems(out);
+    expect(items).toHaveLength(1);
+    expect(items[0].kind).toBe('withheld');
+    expect(items[0].defaultApplied).toBeNull();
+  });
+
+  it('does not derive for line items or diameter-less runs', () => {
+    const out = priceTakeoff(emptyFacts({
+      sewers: [
+        run({ runLabel: 'VIDEO', isLineItem: true, pipeDiameter: 300 }),
+        run({ runLabel: 'MH3-MH4', pipeDiameter: null }),
+      ],
+    }));
+    expect(out.sewers[0].typeClass).toBeNull();
+    expect(out.sewers[1].typeClass).toBeNull();
+    expect(tcItems(out)).toHaveLength(0);
+  });
+});

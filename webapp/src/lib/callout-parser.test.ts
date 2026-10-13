@@ -226,6 +226,21 @@ describe('parseWatermainCallout', () => {
   it('rejects sewer callouts', () => {
     expect(parseWatermainCallout('83.7m-375mmØ SAN @ 0.02%')).toBeNull();
   });
+  it('parses the coupled LEN_DIA form when the diameter is written Ø/DIA, not mm (PR 11)', () => {
+    // Milton #13's 300mm main — the only such line in the golden corpus; it
+    // used to be dropped whole (no diameter for DIA_MM_RE to find).
+    expect(parseWatermainCallout('19.0m - 300Ø PVC WATERMAIN')).toEqual({
+      diameterMm: 300, lengthM: 19, material: 'PVC', existing: false,
+    });
+    expect(parseWatermainCallout('45.0m - 200Ø WATERMAIN')!.lengthM).toBe(45);
+    expect(parseWatermainCallout('120.5m of 250 DIA WATERMAIN')!.diameterMm).toBe(250);
+  });
+  it('still refuses a Ø-diameter callout with no coupled length figure', () => {
+    // The fallback only fires on the coupled length+diameter core; a bare
+    // "300Ø WATERMAIN" note states no length in a form the parser may take.
+    expect(parseWatermainCallout('300Ø WATERMAIN')).toBeNull();
+    expect(parseWatermainCallout('PROPOSED 300Ø WM')).toBeNull();
+  });
 });
 
 describe('grammar coverage (Phase 0)', () => {

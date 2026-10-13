@@ -153,6 +153,14 @@ function getGenAI() {
 
 import fs from 'fs';
 
+/**
+ * RETIRED (PR 2, 2026-10): no longer injected into any prompt. dynamic-rules.json
+ * is frozen at the June baseline (34.67%, every accuracyDelta null) and its one
+ * heuristic references fields (invertOut/invertIn) that do not exist in the
+ * facts schema — injecting it taught the model a stale, wrong vocabulary.
+ * Kept only until the file is regenerated from current eval data; do not
+ * re-wire without that regeneration.
+ */
 function getDynamicPromptAdditions(componentFilter?: 'manholes' | 'sewers' | 'watermain', overridePath?: string): string {
   try {
     const filePath = overridePath || path.resolve(__dirname, 'dynamic-rules.json');
@@ -991,7 +999,9 @@ async function extractFromPDFInner(
       cost.tiles = tileParts.length;
 
       const prompt =
-        getSinglePassPrompt(projectName, getDynamicPromptAdditions()) + '\n' +
+        // Dynamic-rules injection retired (see getDynamicPromptAdditions):
+        // the single-pass prompt no longer consumes dynamic-rules.json.
+        getSinglePassPrompt(projectName, '') + '\n' +
         buildFewShotPromptSection(projectName, { name: projectName, hasWatermain: shouldRunWatermain, hasSanitary: shouldRunSewers });
 
       // A single call over many tiles times out / truncates its JSON above ~32
@@ -1239,7 +1249,8 @@ function validateExtraction(data: TakeoffFacts): string[] {
     if (wm.length <= 0) {
       warnings.push(`Watermain ${wm.sizeAndType}: zero or negative length`);
     }
-    if (wm.avgCover < 1.0 || wm.avgCover > 4.0) {
+    // avgCover is null when unstated — an absent cover is not an unusual one.
+    if (wm.avgCover != null && (wm.avgCover < 1.0 || wm.avgCover > 4.0)) {
       warnings.push(
         `Watermain ${wm.sizeAndType}: unusual cover ${wm.avgCover}m (outside 1.0-4.0m)`
       );

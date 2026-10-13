@@ -19,6 +19,7 @@ import { normalizeLabel, runSignature } from './compare-facts';
 import { assembleTranscriptTakeoff } from './transcript-takeoff';
 import { mergeTakeoffs, dropSpecNoteStructures, dropImplausibleCatchbasinGroups, reconcileTakeoff } from './reconcile';
 import { appendCoverageWarnings } from './coverage-checks';
+import { appendPhysicsWarnings } from './physics-checks';
 import { withConfidence } from './confidence';
 import { extractPageText, isTextyPage } from './pdf-text';
 import { verifyStructureProvenance } from './provenance';
@@ -947,6 +948,9 @@ async function extractFromPDFInner(
         facts.transcript = transcript;
         facts.locatorIndex = locatorIndex;
         facts.cost = cost;
+        // Physics surfacing (warnings only — see physics-checks.ts),
+        // appended after the confidence assessment on the final facts.
+        facts = appendPhysicsWarnings(facts);
         console.log(`      [extraction.ts] transcribe: cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);
         return facts;
       }
@@ -991,6 +995,11 @@ async function extractFromPDFInner(
         if (transcript.length > 0) facts.transcript = transcript;
         facts.locatorIndex = locatorIndex;
         facts.cost = cost;
+        // Physics surfacing on the MERGED facts (warnings only — see
+        // physics-checks.ts): a run's endpoints may only both exist once
+        // the two paths are merged, so this runs here, not inside either
+        // sub-assembly alone. Appended after the confidence assessment.
+        facts = appendPhysicsWarnings(facts);
         console.log(`      [extraction.ts] hybrid: ${textyPageNums.size} texty / ${rasterPageNums.length} raster of ${unionPages.length} located page(s). cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);
         return facts;
       }

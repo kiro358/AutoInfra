@@ -63,6 +63,52 @@ describe('assembleTranscriptTakeoff', () => {
     expect(facts.warnings.length).toBeGreaterThan(0);
   });
 
+  it('harvests run-schedule rows as runs under their schedule ids', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [[
+        'ST1 | 29.6 m | 250 mm dia. | PVC DR35 | 1.0%',
+        'ST4A | 41.6 m | 300 mm dia. | PVC DR35 | 0.4%',
+        'SA1 | 10.0 m | 150 mm dia. | PVC DR28 | 2.0%',
+      ]]},
+    ], 'T');
+    expect(facts.sewers).toHaveLength(3);
+    expect(facts.sewers.find((s) => s.runLabel === 'ST1'))
+      .toMatchObject({ length: 29.6, pipeDiameter: 250, slope: 1.0 });
+    expect(facts.sewers.find((s) => s.runLabel === 'ST4A'))
+      .toMatchObject({ length: 41.6, pipeDiameter: 300, slope: 0.4 });
+    expect(facts.sewers.find((s) => s.runLabel === 'SA1'))
+      .toMatchObject({ length: 10.0, pipeDiameter: 150, slope: 2.0 });
+    expect(facts.warnings.filter((w) => w.includes('Unparseable schedule row'))).toHaveLength(0);
+  });
+
+  it('keeps attribute-identical schedule rows distinct, and dedupes a re-read schedule', () => {
+    // Ultimate Drive's schedule lists pairs with identical attributes
+    // (ST1/ST2 are both 29.6m/250mm/1.0%) and is transcribed by two tiles.
+    // The ids are the identity: pairs survive, the duplicate tile collapses.
+    const rows = [
+      'ST1 | 29.6 m | 250 mm dia. | PVC DR35 | 1.0%',
+      'ST2 | 29.6 m | 250 mm dia. | PVC DR35 | 1.0%',
+      'ST16 | 37.6 m | 250 mm dia. | PVC DR35 | 0.5%',
+      'ST16A | 37.6 m | 250 mm dia. | PVC DR35 | 0.5%',
+    ];
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [rows] },
+      { tile: 2, blocks: [rows] },
+    ], 'T');
+    expect(facts.sewers.map((s) => s.runLabel).sort()).toEqual(['ST1', 'ST16', 'ST16A', 'ST2']);
+  });
+
+  it('does not harvest the non-schedule pipe tables a transcript carries', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [[
+        '03 | JAN 27/26 | MC | ADDED SANITARY SERVICE',                    // revision table
+        'MH1 | 1200 | 701.010 | 401.010',                                   // structure schedule
+        'Woodbine Ave | CBMH7 | CBMH10 | 0.11 | 0.90',                     // drainage areas
+      ]]},
+    ], 'T');
+    expect(facts.sewers).toHaveLength(0);
+  });
+
   it('admits "#" dialect headers from callout blocks but not from schedule rows', () => {
     const facts = assembleTranscriptTakeoff([
       { tile: 1, blocks: [

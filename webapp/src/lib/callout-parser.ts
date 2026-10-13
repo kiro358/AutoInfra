@@ -185,6 +185,94 @@ export function parseRunCallout(line: string): ParsedRun | null {
   return buildRun(line, parseFloat(lengthText), parseInt(dia[1], 10));
 }
 
+export interface ParsedScheduleRun {
+  /** Run id as the schedule writes it, normalised: uppercased, glued, footnote
+   *  asterisks stripped ("ST4A", "SA2"). This is the run's identity — the same
+   *  form compare-facts' runSignature reduces the estimator's "ST 4A" to. */
+  id: string;
+  length: number;
+  diameterMm: number;
+  slopePct: number | null;
+  /** The one unclassified text cell (material/class, e.g. "PVC DR35"), when present. */
+  material: string | null;
+}
+
+// A schedule row's id cell: a short series code + number (+ optional letter
+// suffix), with the drafter's footnote asterisks tolerated ("ST7 **"). An
+// "EX" prefix marks an existing pipe; the row is refused, like everywhere else.
+const SCHEDULE_ID_RE = /^\s*(EX\.?\s+)?([A-Za-z]{1,4})\s*#?\s*(\d+)([A-Za-z])?\s*(?:\*{1,2})?\s*$/;
+// The length cell must be ONLY a length ("29.6 m") — a unit is required, so a
+// bare number from some other table (a structure size, an area, a flow) can
+// never pose as one. Same discipline for slope ("1.0%"); the diameter cell is
+// the one cell allowed company ("250 mm dia.").
+const SCHEDULE_LEN_RE = /^(\d+(?:\.\d+)?)\s*m\.?$/i;
+const SCHEDULE_DIA_RE = /^\D{0,12}(\d{3,4})\s*mm\b/i;
+const SCHEDULE_SLOPE_RE = /^(\d+(?:\.\d+)?)\s*%$/;
+// Series codes that head STRUCTURE schedules, not run schedules. A row headed
+// by one of these ("MH1 | 1200 | 701.010 | …") is a structure table — refused
+// here whatever its other cells look like (see the schedule-row guard in
+// transcript-takeoff for the scope reasoning).
+const STRUCTURE_SERIES = new Set([
+  'MH', 'STMH', 'SANMH', 'CBMH', 'DCBMH', 'DICBMH', 'CB', 'DCB', 'DICB',
+  'DDICB', 'HS', 'HW', 'OS', 'OCS', 'FES', 'JF', 'EF',
+]);
+
+/**
+ * Parse one pipe-delimited SCHEDULE row (already split into cells) as a single
+ * sewer run: "ST1 | 29.6 m | 250 mm dia. | PVC DR35 | 1.0%".
+ *
+ * A schedule row is one pipe whose fields live in separate cells — split the
+ * cells apart (transcript-takeoff step 4's fallback) and no cell parses alone,
+ * so the run vanishes. This is the row-level reading. It is deliberately
+ * strict, because pipe-delimited text is everywhere on a drawing (revision
+ * tables, crossing tables, drainage-area tables, fixture schedules) and
+ * almost none of it is a pipe schedule:
+ *  - the first cell must be a bare run id from a non-structure series;
+ *  - exactly one cell may be a bare unit'd length, exactly one a diameter,
+ *    at most one a slope, and at most one further cell (the material) may
+ *    remain unclassified;
+ *  - a row carrying invert/rim cells is a structure row, full stop.
+ * Anything ambiguous returns null and the caller falls back to per-cell
+ * parsing — never a guess.
+ */
+export function parseScheduleRunRow(cells: string[]): ParsedScheduleRun | null {
+  if (cells.length < 4 || cells.length > 6) return null;
+  if (cells.some((c) => /\bINV\b|(?:^|\s)(?:TOP|RIM|T\/?G)\s*=/i.test(c))) return null;
+
+  const idm = SCHEDULE_ID_RE.exec(cells[0]);
+  if (!idm || idm[1]) return null; // no id, or an existing (EX) row
+  const series = idm[2].toUpperCase();
+  if (STRUCTURE_SERIES.has(series)) return null;
+  if (HASH_STRUCTURE_HEADER_RE.test(cells[0])) return null;
+
+  let length: number | null = null;
+  let dia: number | null = null;
+  let slope: number | null = null;
+  const rest: string[] = [];
+  for (const raw of cells.slice(1)) {
+    const cell = raw.trim();
+    const lm = SCHEDULE_LEN_RE.exec(cell);
+    if (lm) { if (length !== null) return null; length = parseFloat(lm[1]); continue; }
+    const dm = SCHEDULE_DIA_RE.exec(cell);
+    if (dm) { if (dia !== null) return null; dia = parseInt(dm[1], 10); continue; }
+    const sm = SCHEDULE_SLOPE_RE.exec(cell);
+    if (sm) { if (slope !== null) return null; slope = parseFloat(sm[1]); continue; }
+    rest.push(cell);
+  }
+  if (length === null || dia === null) return null;
+  if (!(length > 0 && length <= 1000)) return null;
+  if (slope !== null && !(slope > 0 && slope <= 20)) return null;
+  if (rest.length > 1) return null;
+
+  return {
+    id: `${series}${parseInt(idm[3], 10)}${(idm[4] || '').toUpperCase()}`,
+    length,
+    diameterMm: snapToPipeDiameter(dia),
+    slopePct: slope !== null ? normalizeSlope(slope) : null,
+    material: rest.length ? rest[0] : null,
+  };
+}
+
 /**
  * The diameter-first head of a wrapped callout: "300mm PVC STM", "250mmØ PVC SAN",
  * "525mm CONC STM" — a size and a pipe signal, with the slope and/or the length still to

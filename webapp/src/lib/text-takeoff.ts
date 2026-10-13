@@ -13,7 +13,7 @@ import {
 import { reconcileTakeoff } from './reconcile';
 import { normalizeLabel } from './compare-facts';
 import { detectTables, tableToSewers } from './schedule-table';
-import { TakeoffFacts, StructureFact, SewerFact, WatermainFact, CatchbasinGroupFact } from './types';
+import { TakeoffFacts, StructureFact, SewerFact, WatermainFact, CatchbasinGroupFact, FactSource, WithheldItem } from './types';
 
 interface Line { text: string; x: number; y: number; }
 
@@ -59,19 +59,21 @@ function mergeLines(items: PositionedText[]): Line[] {
 export function assembleTextTakeoff(pages: PageText[], projectName: string): TakeoffFacts {
   const structures: StructureFact[] = [];
   const warnings: string[] = [];
+  const withheld: WithheldItem[] = [];
   const catchbasinLabels = new Map<CatchbasinGroupFact['type'], Set<string>>();
+  const catchbasinSource = new Map<CatchbasinGroupFact['type'], FactSource>();
   const sewers: SewerFact[] = [];
   const watermain: WatermainFact[] = [];
 
   for (const page of pages) {
     // Schedule tables first: an endpoint-labelled schedule row is strictly better
     // evidence than the same pipe's dimension callout, and reconcile.ts prefers it.
-    for (const table of detectTables(page)) sewers.push(...tableToSewers(table));
+    for (const table of detectTables(page)) sewers.push(...tableToSewers(table, page.page));
 
     const lines = mergeLines(page.items);
 
     // Step 2: classify each merged line. Step 4 (filter existing) is applied inline.
-    const liveStructures: { parsed: ParsedStructure; x: number; y: number; topElevation: number | null; inverts: number[] }[] = [];
+    const liveStructures: { parsed: ParsedStructure; x: number; y: number; topElevation: number | null; inverts: number[]; evidence: string }[] = [];
     const elevations: { type: 'TG' | 'INV'; value: number; x: number; y: number }[] = [];
 
     for (const line of lines) {
@@ -86,6 +88,7 @@ export function assembleTextTakeoff(pages: PageText[], projectName: string): Tak
             typeClass: run.typeClass,
             slope: run.slopePct,
             depth: null,
+            source: { method: 'text-layer', page: page.page, evidence: line.text },
           });
         }
         continue;
@@ -101,6 +104,7 @@ export function assembleTextTakeoff(pages: PageText[], projectName: string): Tak
             typeClass: null,
             slope: null,
             depth: null,
+            source: { method: 'text-layer', page: page.page, evidence: line.text },
           });
         }
         continue;
@@ -108,7 +112,7 @@ export function assembleTextTakeoff(pages: PageText[], projectName: string): Tak
       const structure = parseStructureLabel(line.text);
       if (structure) {
         if (!structure.existing) {
-          liveStructures.push({ parsed: structure, x: line.x, y: line.y, topElevation: null, inverts: [] });
+          liveStructures.push({ parsed: structure, x: line.x, y: line.y, topElevation: null, inverts: [], evidence: line.text });
         }
         continue;
       }
@@ -124,13 +128,27 @@ export function assembleTextTakeoff(pages: PageText[], projectName: string): Tak
         // line, so requiring a length dropped the pipe entirely — scoring a
         // correct read as a miss. Detection and measurement are separate
         // failures; matchWatermain phase 3 pairs on diameter alone.
+        // ocSc/avgCover are NOT stamped here: the callout never states them,
+        // so the fact says null (unstated) and the estimator defaults are
+        // applied — and recorded as withheld — at pricing (costing-rules.ts).
+        const sizeAndType = `${wm.diameterMm}mm${wm.material ? ` ${wm.material}` : ''}`;
         watermain.push({
-          sizeAndType: `${wm.diameterMm}mm${wm.material ? ` ${wm.material}` : ''}`,
+          sizeAndType,
           length: wm.lengthM ?? 0,
           pipeDiameter: wm.diameterMm,
-          ocSc: 1.1,
-          avgCover: 1.8,
+          ocSc: null,
+          avgCover: null,
+          source: { method: 'text-layer', page: page.page, evidence: line.text },
         });
+        if (wm.lengthM == null) {
+          withheld.push({
+            entity: sizeAndType,
+            field: 'length',
+            kind: 'withheld',
+            question: `Length of the ${sizeAndType} watermain is not stated on the drawing — scale it off the plan. Left blank and not priced.`,
+            defaultApplied: null,
+          });
+        }
       }
     }
 
@@ -153,6 +171,9 @@ export function assembleTextTakeoff(pages: PageText[], projectName: string): Tak
         const labels = catchbasinLabels.get(cbType) ?? new Set<string>();
         labels.add(normalizeLabel(s.parsed.label));
         catchbasinLabels.set(cbType, labels);
+        if (!catchbasinSource.has(cbType)) {
+          catchbasinSource.set(cbType, { method: 'text-layer', page: page.page, evidence: s.evidence });
+        }
       } else {
         structures.push({
           description: structureDescription(s.parsed),
@@ -163,6 +184,7 @@ export function assembleTextTakeoff(pages: PageText[], projectName: string): Tak
           structureType: s.parsed.kind === 'CHAMBER' ? 'CHAMBER' : null,
           depth: null,
           diameter: s.parsed.diameterMm,
+          source: { method: 'text-layer', page: page.page, evidence: s.evidence },
         });
         if (s.parsed.kind === 'CHAMBER') warnings.push(chamberWarning(s.parsed.label, []));
       }
@@ -171,6 +193,7 @@ export function assembleTextTakeoff(pages: PageText[], projectName: string): Tak
 
   const catchbasins: CatchbasinGroupFact[] = Array.from(catchbasinLabels.entries()).map(([type, labels]) => ({
     type, quantity: labels.size, wallThickness: null, depth: null,
+    source: catchbasinSource.get(type),
   }));
 
   // Step 8
@@ -178,6 +201,6 @@ export function assembleTextTakeoff(pages: PageText[], projectName: string): Tak
     projectName, jobNumber: '', date: '',
     structures, catchbasins, sewers, watermain,
     watermainSpecials: [], watermainValves: [],
-    confidence: 1, warnings,
+    confidence: 1, warnings, withheld,
   });
 }

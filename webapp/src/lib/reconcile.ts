@@ -528,24 +528,36 @@ export function dropSpecNoteStructures(structures: StructureFact[]): {
 /**
  * A catchbasin is a physical structure that must be drained by a pipe, so the number
  * of them is bounded by the size of the drainage network the same drawing shows. When
- * a group's quantity is far outside that bound it is a misread number (a station, an
- * elevation, a dimension), not a count — one golden project reports 249 single CBs on
- * a site whose whole extracted network is 16 rows, and 249 catchbasins would flow
- * straight into the priced estimate.
+ * a group's quantity is far outside that bound it is not a takeoff count, and it must
+ * not flow into the priced estimate. Two failure modes produce such quantities:
  *
- * The ceiling is 4x the extracted network (floor 10, so tiny drawings are not squeezed).
- * Across the golden truth set the highest real catchbasins/network ratio is ~1.2, so 4x
- * sits more than three times beyond anything genuine and can only fire on a misread.
+ *  - A misread number (a station, an elevation, a dimension) read as a quantity: one
+ *    golden project reports 249 single CBs on a site whose whole extracted network
+ *    is 16 rows.
+ *  - A site-wide numbering enumeration read as units: Panattoni's grading plan
+ *    numbers every catchbasin on the site (CB0–CB805, a complete sequence; 915 of
+ *    the blocks were transcribed from a single tile), and label-counting assembly
+ *    summed the labels into an 806-unit SINGLE_CB group against an extracted
+ *    network of 246 rows (3.3x) — while the estimator's servicing takeoff for the
+ *    project counts 32 units in scoped groups. The earlier 4x ceiling never fired
+ *    here because the same over-extraction that inflated the count also inflated
+ *    the network it was measured against.
  *
- * The offending group is DROPPED, not clamped: having declared the number unreadable we
- * do not get to substitute a different one. A warning records the loss so the estimator
- * sees a gap rather than a fabricated quantity.
+ * The ceiling is 2x the extracted network (floor 10, so tiny drawings are not
+ * squeezed). Calibration is corpus-bound: the highest genuine per-group ratio in
+ * the golden truths is Eric Smith Way's 27 singles on a 25-row network (~1.1x), so
+ * 2x leaves real headroom above anything genuine — including CB-dense lots whose
+ * network extraction under-reads — while the enumeration failure sits at 3.3x.
+ *
+ * The offending group is DROPPED, not clamped: having declared the number out of
+ * scope we do not get to substitute a different one. A warning records the loss so
+ * the estimator sees a gap rather than a fabricated quantity.
  */
 export function dropImplausibleCatchbasinGroups(
   groups: TakeoffFacts['catchbasins'],
   networkSize: number
 ): { catchbasins: TakeoffFacts['catchbasins']; dropped: { type: string; quantity: number }[] } {
-  const ceiling = 4 * Math.max(networkSize, 10);
+  const ceiling = 2 * Math.max(networkSize, 10);
   const dropped: { type: string; quantity: number }[] = [];
   const kept = groups.filter((g) => {
     if ((g.quantity || 0) <= ceiling) return true;
@@ -697,8 +709,8 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
   for (const d of cb.dropped) {
     warnings.push(
       `Dropped catchbasin group ${d.type} qty ${d.quantity} — implausible against a drainage network of ` +
-        `${note.structures.length + keptSewers.length} rows; the quantity was almost certainly misread. ` +
-        `Count these catchbasins manually.`
+        `${note.structures.length + keptSewers.length} rows; the quantity is a misread or an ` +
+        `out-of-scope enumeration, not a takeoff count. Count these catchbasins manually.`
     );
   }
 

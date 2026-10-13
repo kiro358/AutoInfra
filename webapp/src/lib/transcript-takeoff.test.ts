@@ -54,7 +54,11 @@ describe('assembleTranscriptTakeoff', () => {
       { tile: 1, blocks: [['300mm PVC STM', 'DRAWN BY: ML']] },
     ], 'T');
     expect(facts.sewers).toHaveLength(0);
-    expect(facts.warnings).toHaveLength(0);
+    // No PARSE warnings — but the assembly is empty from a non-empty
+    // transcript, which the coverage check must say out loud (see the
+    // coverage describe block below).
+    expect(facts.warnings.filter((w) => !w.startsWith('Coverage:'))).toHaveLength(0);
+    expect(facts.warnings.some((w) => w.startsWith('Coverage:') && w.includes('nothing could be assembled'))).toBe(true);
   });
 
   it('warns (not guesses) on unparseable schedule rows', () => {
@@ -201,5 +205,90 @@ describe('assembleTranscriptTakeoff — 460 Bayly St E blocks', () => {
   it('lists a chamber system and warns that it needs manual pricing', () => {
     expect(by('902 HD')).toMatchObject({ structureType: 'CHAMBER' });
     expect(facts.warnings.some((w) => w.includes('902 HD') && w.includes('3200'))).toBe(true);
+  });
+});
+
+describe('assembleTranscriptTakeoff — coverage surfacing (PR 7)', () => {
+  const coverage = (warnings: string[]) => warnings.filter((w) => w.startsWith('Coverage:'));
+
+  it('is silent on a complete assembly', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['STMH 4', 'T/G=224.95', 'N INV=223.350'],
+        ['CB 2', 'T/G=224.50'],
+        ['83.7m-375mmØ SAN @ 0.02%'],
+      ]},
+    ], 'T');
+    expect(facts.structures).toHaveLength(1);
+    expect(facts.catchbasins).toEqual([
+      { type: 'SINGLE_CB', quantity: 1, wallThickness: null, depth: null },
+    ]);
+    expect(coverage(facts.warnings)).toEqual([]);
+  });
+
+  it('names a structure whose header was swallowed by another block', () => {
+    // The vision step merged MH 6's header into MH 4's block: the assembler
+    // can only take the first header, so MH 6 used to vanish silently (it
+    // surfaced only as an "unrecognized line"). The coverage check names it.
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['STMH 4', 'T/G=224.95', 'MH 6', 'INV=220.00'],
+      ]},
+    ], 'T');
+    expect(facts.structures).toHaveLength(1);
+    const w = coverage(facts.warnings);
+    expect(w).toHaveLength(1);
+    expect(w[0]).toContain('MH 6');
+    expect(w[0]).toContain('not in this takeoff');
+  });
+
+  it('names schedule-carried structures and CBs the takeoff does not harvest', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['STMH #15 | DPSG 701.010, 400 Ø Frame and Cover (Closed) and 600 mm Sump | Top = 214.60 m | N Inv = 212.80 m (200 mm)'],
+        ['CB #7 | DPSG 701.010, 400 Ø Frame and Cover and 600 mm Sump | Parkway 1 | Top = 214.60 m'],
+      ]},
+    ], 'T');
+    expect(facts.structures).toHaveLength(0);
+    expect(facts.catchbasins).toHaveLength(0);
+    const w = coverage(facts.warnings).join('\n');
+    expect(w).toContain('STMH 15');
+    expect(w).toContain('CB 7');
+  });
+
+  it('does not re-report labels that reconcile deliberately collapsed (phase-suffix echoes)', () => {
+    // Milton shape: a field-bearing MH61 plus its field-empty MH61E echo. The
+    // echo WAS assembled (it is in the sink), then reconcile collapsed it
+    // with its own warning — coverage must stay silent about it.
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['MH61', 'T/G=200.00', 'INV=198.50'],
+        ['MH61E'],
+      ]},
+    ], 'T');
+    expect(facts.structures).toHaveLength(1);
+    expect(coverage(facts.warnings)).toEqual([]);
+  });
+
+  it('does not report existing structures as missing', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['EX SAN MH 02', 'T/G = 311.85', 'SW INV = 310.56'],
+        ['STMH 4', 'T/G=224.95'],
+      ]},
+    ], 'T');
+    expect(coverage(facts.warnings)).toEqual([]);
+  });
+
+  it('flags a transcription that assembled to nothing as missing, not empty', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [] },
+      { tile: 2, blocks: [] },
+      { tile: 3, blocks: [] },
+    ], 'T');
+    const w = coverage(facts.warnings);
+    expect(w).toHaveLength(1);
+    expect(w[0]).toContain('3 tile(s) / 0 block(s)');
+    expect(w[0]).toContain('treat this takeoff as missing');
   });
 });

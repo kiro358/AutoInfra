@@ -202,6 +202,15 @@ export function mergeSewerFact(a: SewerFact, b: SewerFact): SewerFact {
   };
 }
 
+const BARE_RUN_ID_RE = /^[A-Z]{1,4}\d+[A-Z]?$/;
+
+/** The schedule id a bare run label reduces to ("ST 1" -> "ST1"), or null
+ *  when the label is anything richer (endpoint pair, dimension callout). */
+function bareRunId(label: string): string | null {
+  const norm = normalizeLabel(label);
+  return BARE_RUN_ID_RE.test(norm) ? norm : null;
+}
+
 export function canMergeSewerRuns(a: SewerFact, b: SewerFact): boolean {
   if (a === b) return false;
   if (a.isLineItem || b.isLineItem) return false;
@@ -222,6 +231,20 @@ export function canMergeSewerRuns(a: SewerFact, b: SewerFact): boolean {
     if (a.pipeDiameter != null && b.pipeDiameter != null && a.pipeDiameter !== b.pipeDiameter) {
       return false;
     }
+    return true;
+  }
+
+  // 2b. Both runs carry a bare schedule id as their whole label ("ST1",
+  // "SA2"). The id IS the run's identity: a pipe schedule lists
+  // attribute-identical rows on purpose (two legs of the same size, length
+  // and grade are different pipes), so distinct ids never merge — and the
+  // same id re-read from an overlapping tile does, under the same diameter
+  // agreement the endpoint case requires.
+  const idA = bareRunId(a.runLabel);
+  const idB = bareRunId(b.runLabel);
+  if (idA && idB) {
+    if (idA !== idB) return false;
+    if (a.pipeDiameter != null && b.pipeDiameter != null && a.pipeDiameter !== b.pipeDiameter) return false;
     return true;
   }
 

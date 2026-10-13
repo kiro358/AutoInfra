@@ -244,10 +244,17 @@ export function isRunContinuation(line: string): boolean {
 //
 // Group layout (all explicitly captured so label reconstruction doesn't need fragile
 // index math against the original line):
-//   1 = "EX " / "EX." prefix (undefined if absent) -> existing flag
-//   2 = structure kind code as written ("STMH", "CBMH", "MH", ...)
-//   3 = separator between kind and id as written (may be "", " ", "-", " - ") -> whether
-//       the reconstructed label keeps a space (e.g. "STMH 1") or not (e.g. "CBMH1035")
+//   1 = status prefix as written (undefined if absent): "EX " / "EX." marks an existing
+//       structure; "NEW " / "PROP. " / "PR. " mark a proposed one (NOT existing — the
+//       existing flag is derived from the prefix text, not its mere presence). EX may
+//       butt straight against the kind ("EX.MH#4A"), so its trailing space is optional.
+//   2 = structure kind code as written ("STMH", "CBMH", "MH", ...). Two compound
+//       spellings join the alternation: "CB/MH" (catchbasin manhole -> CBMH) and
+//       "DBL/CB" (double catchbasin -> DCB); both are remapped in parseStructureLabel.
+//   3 = separator between kind and id as written (may be "", " ", "-", " - ", "#",
+//       " #") -> whether the reconstructed label keeps a space (e.g. "STMH 1") or not
+//       (e.g. "CBMH1035"). The "#" form is a whole dialect ("MH#3", "CB #1"), not a
+//       typo — several offices number structures that way on every sheet.
 //   4 = id number (may carry a trailing letter, e.g. "104A"; now also hyphenated like "6-3-1")
 //   5 = parenthesized diameter in mm, if present ("(1200Ø)")
 // Two additions: JF/EF joined the kind alternation (junction and end-of-flow structures)
@@ -257,7 +264,7 @@ export function isRunContinuation(line: string): boolean {
 // (Note: the widened (?:^|[\s(]) delimiter applies to every kind, not just JF.)
 // OCS (outlet control structure), HW (headwall) and FES (flared end section) are the
 // abbreviated spellings; their written-out forms go through NAMED_STRUCTURES below.
-const STRUCT_RE = /(?:^|[\s(])(EX\.?\s+)?(?:(?:SAN(?:ITARY)?|STM|STORM)\s+)?(DDICB|DCBMH|DICB|CBMH|DCB|STMH|SANMH|OCS|FES|CB|MH|HS|HW|OS|JF|EF)(\s?-?\s?)(\d+(?:-\d+)*[A-Z]?)\s*(?:\((\d{3,4})\s*(?:MM)?\s*[ØO]?\))?/i;
+const STRUCT_RE = /(?:^|[\s(])(EX\.?\s*|(?:NEW|PROP(?:OSED)?|PR)\.?\s+)?(?:(?:SAN(?:ITARY)?|STM|STORM)\s+)?(DDICB|DCBMH|DICB|CB\/MH|DBL\/CB|CBMH|DCB|STMH|SANMH|OCS|FES|CB|MH|HS|HW|OS|JF|EF)(\s?-?\s?|\s?#\s?)(\d+(?:-\d+)*[A-Z]?)\s*(?:\((\d{3,4})\s*(?:MM)?\s*[ØO]?\))?/i;
 // Global copy for matchAll iteration. matchAll clones the regex internally, so no shared
 // lastIndex state leaks between calls (do NOT add 'g' to STRUCT_RE itself and call exec in a loop).
 const STRUCT_RE_G = new RegExp(STRUCT_RE.source, 'gi');
@@ -265,6 +272,41 @@ const STRUCT_RE_G = new RegExp(STRUCT_RE.source, 'gi');
 // Chambers are written id-first ("C100 CHAMBER", "OGS100 CHAMBER"), so they need
 // their own pattern rather than another alternation branch.
 const CHAMBER_RE = /(?:^|\s)(EX\.?\s+)?([A-Z]{1,4}\d+[A-Z]?)\s+CHAMBER\b/i;
+
+// Compound kind spellings remapped to the canonical kind + label code:
+// "CB/MH" is a catchbasin manhole (written out as CBMH everywhere else) and
+// "DBL/CB" is a double catchbasin (DCB). Keyed by the uppercased group-2 text.
+const COMPOUND_KINDS: Record<string, { kind: ParsedStructure['kind']; code: string }> = {
+  'CB/MH': { kind: 'CBMH', code: 'CBMH' },
+  'DBL/CB': { kind: 'DCB', code: 'DCB' },
+};
+
+/**
+ * A bare structure header in the "#" dialect and nothing else: "STMH #1",
+ * "PROP. CB #2", "CB #4A". Anchored to the whole string, unlike STRUCT_RE —
+ * this exists so callers that split schedule-table rows into cells
+ * (transcript-takeoff step 4) can recognise when a cell is one of these.
+ * Schedule rows are a separate input class from callout blocks: their
+ * numbering series runs past the takeoff's scope (Ultimate Drive's structure
+ * schedule lists STMH #1..#24 against 13 taken-off manholes), so whether to
+ * harvest them is the schedule-table work's decision, not the block
+ * grammar's. Keep the kind alternation in step with STRUCT_RE's.
+ */
+export const HASH_STRUCTURE_HEADER_RE = /^\s*(?:EX\.?\s*|(?:NEW|PROP(?:OSED)?|PR)\.?\s+)?(?:(?:SAN(?:ITARY)?|STM|STORM)\s+)?(?:DDICB|DCBMH|DICB|CB\/MH|DBL\/CB|CBMH|DCB|STMH|SANMH|OCS|FES|CB|MH|HS|HW|OS|JF|EF)\s*#\s*\d+(?:-\d+)*[A-Z]?\s*(?:\(\d{3,4}\s*(?:MM)?\s*[ØO]?\))?\s*$/i;
+
+// Id-first headers: "SA3 (MH)", "ST1 (CBMH)", "ST3 (CB)" — the structure's id leads
+// and its kind trails in parentheses, prefixed by a two-letter system code (SA =
+// sanitary, ST = storm). The same structure is often drawn twice (plan + profile)
+// with the profile copy carrying a trailing asterisk ("ST1* (CBMH)"), so a single
+// optional "*" is tolerated after the id; the label is unchanged, and dedupe
+// collapses the pair. Anchored to the line start: mid-text, "SA3" is just a
+// schedule/run id. The parenthesised code must be a real structure kind —
+// "ST8 (FD-4 OGS)" names an OGS unit model, not a structure, and stays unparsed.
+//   1 = status prefix (same convention as STRUCT_RE group 1)
+//   2 = system code ("SA" | "ST")
+//   3 = id (same shape as STRUCT_RE group 4)
+//   4 = kind code as written
+const ID_FIRST_RE = /^\s*(EX\.?\s*|(?:NEW|PROP(?:OSED)?|PR)\.?\s+)?(SA|ST)(\d+(?:-\d+)*[A-Z]?)\*?\s*\((DDICB|DCBMH|DICB|CBMH|DCB|CB|MH|HS|HW|OS)\)/i;
 
 // Structures the drawing spells out in words. These carry no kind code and often no id at
 // all ("DOUBLE CHECK VALVE VAULT"), so — unlike STRUCT_RE, which is anchored by its id —
@@ -374,7 +416,9 @@ export function parseStructureLabel(line: string): ParsedStructure | null {
   // in the same line (e.g., hyphenated JF ids in parentheses after the model code).
   for (const m of line.matchAll(STRUCT_RE_G)) {
     const rawKind = m[2].toUpperCase();
-    const kind = (rawKind === 'STMH' || rawKind === 'SANMH' ? 'MH' : rawKind) as ParsedStructure['kind'];
+    const compound = COMPOUND_KINDS[rawKind];
+    const kind = (compound ? compound.kind
+      : rawKind === 'STMH' || rawKind === 'SANMH' ? 'MH' : rawKind) as ParsedStructure['kind'];
 
     // JF ids must be hyphenated to distinguish real structures (JF 6-3-1) from Jellyfish
     // product model numbers (JF1000, JF2000). EF ids are not hyphenated in the corpus.
@@ -382,17 +426,40 @@ export function parseStructureLabel(line: string): ParsedStructure | null {
       continue; // Try the next candidate match, not this one
     }
 
+
+
     // Preserve the drawing's own kind-code text in the label (normalizeLabel handles
     // matching later); whether a space separates code from id follows what was on the
-    // drawing, captured verbatim in group 3.
+    // drawing, captured verbatim in group 3. Compound kinds label under their
+    // canonical code ("CB/MH #1" -> "CBMH 1"), since that is what every other
+    // dialect — and the estimator — calls the same structure.
     const hadSpace = /\s/.test(m[3]);
-    const label = `${m[2].toUpperCase()}${hadSpace ? ' ' : ''}${m[4].toUpperCase()}`;
+    const label = `${compound ? compound.code : m[2].toUpperCase()}${hadSpace ? ' ' : ''}${m[4].toUpperCase()}`;
     return {
       label,
       kind,
       diameterMm: m[5] ? parseInt(m[5], 10) : null,
-      existing: Boolean(m[1]) || LEADING_EX_RE.test(line),
+      // Group 1 now carries proposed prefixes too ("NEW ", "PROP. "), so the
+      // existing flag comes from the prefix TEXT, not its presence.
+      existing: (m[1] ? /^EX/i.test(m[1]) : false) || LEADING_EX_RE.test(line),
       system: structureSystem(line.slice(0, (m.index ?? 0) + m[0].length), rawKind) ?? undefined,
+    };
+  }
+
+  // Id-first dialect ("SA3 (MH)"): kind-first grammar above cannot see these —
+  // the leading token is a run-style id, and the parenthesised kind alone has no
+  // id after it. The label is rebuilt kind-first ("MH 3") with the system the
+  // two-letter prefix names, so it lands in the same identity space as every
+  // other dialect.
+  const idFirst = ID_FIRST_RE.exec(line);
+  if (idFirst) {
+    const kind = idFirst[4].toUpperCase() as ParsedStructure['kind'];
+    return {
+      label: `${kind} ${idFirst[3].toUpperCase()}`,
+      kind,
+      diameterMm: null,
+      existing: (idFirst[1] ? /^EX/i.test(idFirst[1]) : false) || LEADING_EX_RE.test(line),
+      system: idFirst[2].toUpperCase() === 'SA' ? 'SAN' : 'STM',
     };
   }
 

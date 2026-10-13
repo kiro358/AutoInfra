@@ -11,7 +11,7 @@
  */
 import {
   parseRunCallout, parseStructureLabel, parseElevation, parseWatermainCallout,
-  structureDescription, chamberWarning,
+  structureDescription, chamberWarning, HASH_STRUCTURE_HEADER_RE,
   isDanglingRunHead, isRunContinuation, ParsedStructure, ParsedRun,
 } from './callout-parser';
 import { reconcileTakeoff } from './reconcile';
@@ -240,10 +240,19 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
       // Step 4: schedule-table rows (contain " | ") are split on the delimiter
       // and each cell tried against the parsers, independent of the rest of
       // the block. An all-cells-unparseable row is logged, never guessed.
+      // One exclusion: a header cell in the "#" dialect ("STMH #1") is NOT
+      // admitted from a schedule row. Callout blocks in that dialect are the
+      // block grammar's business, but a structure schedule's numbering runs
+      // past the takeoff's scope (Ultimate Drive: STMH #1..#24 scheduled,
+      // 13 taken off) — harvesting schedule structures is the schedule-table
+      // work's call, with its own scope rules. Dropping the cell reproduces
+      // the row's pre-"#"-grammar fate: its other cells are still tried, and
+      // if nothing parses the row is logged below.
       const remaining: string[] = [];
       for (const line of joined) {
         if (line.includes(' | ')) {
-          const cells = line.split(' | ').map((c) => c.trim());
+          const cells = line.split(' | ').map((c) => c.trim())
+            .filter((c) => !HASH_STRUCTURE_HEADER_RE.test(c));
           const matched = processLines(cells, out, warnings);
           if (!matched) warnings.push(`Unparseable schedule row: "${line}"`);
         } else {

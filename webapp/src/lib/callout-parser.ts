@@ -623,16 +623,34 @@ const WM_MATERIAL_RE = /\b(PVC|HDPE|CONC|DICL|DI|CPP|CSP|(?:S?DR)[\s-]*\d{1,3})\
 
 export function parseWatermainCallout(line: string): ParsedWatermain | null {
   if (!WM_RE.test(line)) return null;
+  let diameterMm: number;
+  let lengthM: number | null;
   const dia = DIA_MM_RE.exec(line);
-  if (!dia) return null;
-  const len = /(\d+(?:\.\d+)?)\s*m\b(?!m)/i.exec(line);
+  if (dia) {
+    diameterMm = parseInt(dia[1], 10);
+    const len = /(\d+(?:\.\d+)?)\s*m\b(?!m)/i.exec(line);
+    lengthM = len ? parseFloat(len[1]) : null;
+  } else {
+    // Canonical run-callout form with the diameter written as Ø/DIA instead of
+    // "mm" ("19.0m - 300Ø PVC WATERMAIN"): length and diameter arrive as one
+    // coupled figure (LEN_DIA_RE — the same core parseRunCallout trusts).
+    // Without this fallback the callout was dropped whole — no diameter, no
+    // length — even though the drawing dimensions the main exactly like a
+    // sewer run (Milton #13's 300mm main; the only such line in the golden
+    // corpus, verified by census in PR 11). Lines that parse today are
+    // untouched: this branch runs only where DIA_MM_RE found nothing.
+    const core = LEN_DIA_RE.exec(line);
+    if (!core) return null;
+    lengthM = parseFloat(core[1]);
+    diameterMm = parseInt(core[2], 10);
+  }
   const mat = WM_MATERIAL_RE.exec(line);
   const service = /\bHYD(?:RANT)?\s+LEAD\b/i.test(line) ? 'HYDRANT_LEAD' as const
     : /\bFIRE\b/i.test(line) ? 'FIRE' as const
       : /\bDOMESTIC\b/i.test(line) ? 'DOMESTIC' as const : undefined;
   return {
-    diameterMm: parseInt(dia[1], 10),
-    lengthM: len ? parseFloat(len[1]) : null,
+    diameterMm,
+    lengthM,
     material: mat ? mat[1].replace(/\s+/g, ' ').trim().toUpperCase() : null,
     existing: EX_RE.test(line),
     service,

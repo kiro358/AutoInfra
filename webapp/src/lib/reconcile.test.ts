@@ -846,3 +846,43 @@ describe('reconcileTakeoff — surface catchbasin routing', () => {
     expect(r.warnings.some((x) => x.includes('implausible'))).toBe(false);
   });
 });
+
+describe('stitchSewerRuns — bare schedule ids', () => {
+  it('never merges distinct schedule ids, however identical their attributes', () => {
+    // A run schedule lists attribute-identical rows on purpose (Ultimate
+    // Drive ST1/ST2: same length, diameter, slope — different pipes).
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: 'ST1', length: 29.6, pipeDiameter: 250, slope: 1.0 }),
+        run({ runLabel: 'ST2', length: 29.6, pipeDiameter: 250, slope: 1.0 }),
+        run({ runLabel: 'ST16', length: 37.6, pipeDiameter: 250, slope: 0.5 }),
+        run({ runLabel: 'ST16A', length: 37.6, pipeDiameter: 250, slope: 0.5 }),
+      ],
+    });
+    expect(reconcileTakeoff(facts).sewers).toHaveLength(4);
+  });
+
+  it('merges the same schedule id re-read from an overlapping tile', () => {
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: 'ST1', length: 29.6, pipeDiameter: 250, slope: 1.0 }),
+        run({ runLabel: 'ST 1', length: 29.6, pipeDiameter: 250, slope: 1.0 }),
+      ],
+    });
+    const r = reconcileTakeoff(facts);
+    expect(r.sewers).toHaveLength(1);
+    expect(r.sewers[0].length).toBe(29.6);
+  });
+
+  it('does not let a bare id swallow a distinct dimension callout of the same pipe size', () => {
+    // Mixed evidence stays on the attribute path: a schedule row and an
+    // endpoint-labelled run are different label classes, not bare-id twins.
+    const facts = emptyFacts({
+      sewers: [
+        run({ runLabel: 'ST1', length: 29.6, pipeDiameter: 250, slope: 1.0 }),
+        run({ runLabel: 'MH 1-MH 2', length: 40.0, pipeDiameter: 300, slope: 0.8 }),
+      ],
+    });
+    expect(reconcileTakeoff(facts).sewers).toHaveLength(2);
+  });
+});

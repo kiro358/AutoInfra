@@ -398,11 +398,24 @@ describe('dropImplausibleCatchbasinGroups — misread quantities', () => {
     expect(dropImplausibleCatchbasinGroups(groups, 25).dropped).toEqual([]);
     // Panattoni: 28 double-ditch-inlets on a large network.
     expect(dropImplausibleCatchbasinGroups([grp('DOUBLE_DITCH_INLET_CB', 28)], 174).dropped).toEqual([]);
+    // A CB-dense lot whose network under-reads: 30 singles drained by an 18-row
+    // extracted network (1.7x) is unusual but genuine — it must survive too.
+    expect(dropImplausibleCatchbasinGroups([grp('SINGLE_CB', 30)], 18).dropped).toEqual([]);
+  });
+
+  it('drops a site-wide numbering enumeration counted as units (Panattoni)', () => {
+    // The grading plan numbers every catchbasin CB0-CB805 and label-counting assembly
+    // summed them into one group. 806 against an extracted network of 246 rows (3.3x)
+    // is beyond twice the network — out of scope, not a takeoff count. The small
+    // genuine group alongside it is untouched.
+    const r = dropImplausibleCatchbasinGroups([grp('SINGLE_CB', 806), grp('DOUBLE_CB', 4)], 246);
+    expect(r.catchbasins).toEqual([grp('DOUBLE_CB', 4)]);
+    expect(r.dropped).toEqual([{ type: 'SINGLE_CB', quantity: 806 }]);
   });
 
   it('does not squeeze a tiny drawing (floor of 10 network rows)', () => {
-    expect(dropImplausibleCatchbasinGroups([grp('SINGLE_CB', 40)], 0).dropped).toEqual([]);
-    expect(dropImplausibleCatchbasinGroups([grp('SINGLE_CB', 41)], 0).dropped).toHaveLength(1);
+    expect(dropImplausibleCatchbasinGroups([grp('SINGLE_CB', 20)], 0).dropped).toEqual([]);
+    expect(dropImplausibleCatchbasinGroups([grp('SINGLE_CB', 21)], 0).dropped).toHaveLength(1);
   });
 
   it('drops through reconcileTakeoff and warns, without inventing a replacement count', () => {

@@ -14,6 +14,14 @@
  * dense with FROM/TO/GRADE tokens is a general-notes sheet where those words
  * appear inside prose. Recovering Ultimate Drive needs geometric association
  * of an id with a nearby length callout, which is not this module.
+ *
+ * Update (PR 4): the schedule DOES reach the pipeline — through the vision
+ * transcripts, not the text layer. Ultimate Drive's transcripts carry the
+ * run schedule as pipe-delimited rows ("ST1 | 29.6 m | 250 mm dia. | …"),
+ * harvested row-wise by parseScheduleRunRow (callout-parser.ts) in
+ * transcript-takeoff step 4. This positioned-text module remains dormant on
+ * the corpus (re-verified: detectTables fires on zero texty pages of all
+ * 26 golden projects) and is unchanged.
  */
 import { PageText, PositionedText } from './pdf-text';
 import { snapToPipeDiameter, normalizeSlope } from './geometry';

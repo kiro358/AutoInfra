@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   parseRunCallout, parseStructureLabel, parseElevation, parseWatermainCallout,
   isDanglingRunHead, isRunContinuation, parseSubdrainCallout, HASH_STRUCTURE_HEADER_RE,
+  parseScheduleRunRow,
 } from './callout-parser';
 
 describe('parseRunCallout', () => {
@@ -752,5 +753,61 @@ describe('Odan/Detech callout style (460 Bayly St E)', () => {
   it('recognizes Cultec chambers named by product', () => {
     expect(parseStructureLabel('RECHARGER 902HD')).toEqual({ label: '902 HD', kind: 'CHAMBER', diameterMm: null, existing: false });
     expect(parseStructureLabel('CONTACTOR 100HD')!.label).toBe('100 HD');
+  });
+});
+
+describe('parseScheduleRunRow', () => {
+  it('parses the Ultimate Drive schedule shape (id | length | dia | material | slope)', () => {
+    expect(parseScheduleRunRow(['ST1', '29.6 m', '250 mm dia.', 'PVC DR35', '1.0%']))
+      .toEqual({ id: 'ST1', length: 29.6, diameterMm: 250, slopePct: 1.0, material: 'PVC DR35' });
+    expect(parseScheduleRunRow(['ST6', '29.1 m', '300 mm dia.', 'Corrugated Dual Wall HDPE', '0.5%']))
+      .toEqual({ id: 'ST6', length: 29.1, diameterMm: 300, slopePct: 0.5, material: 'Corrugated Dual Wall HDPE' });
+  });
+
+  it('keeps letter-suffixed ids and strips footnote asterisks from the id', () => {
+    expect(parseScheduleRunRow(['ST4A', '41.6 m', '300 mm dia.', 'PVC DR35', '0.4%'])!.id).toBe('ST4A');
+    expect(parseScheduleRunRow(['ST7 **', '4.0 m', '375 mm dia.', 'PVC DR35', '1.3%'])!.id).toBe('ST7');
+    expect(parseScheduleRunRow(['SA2 *', '10.7 m', '150 mm dia.', 'PVC DR28', '2.0%'])!.id).toBe('SA2');
+  });
+
+  it('accepts a row with no material cell and a row with no slope', () => {
+    expect(parseScheduleRunRow(['ST5', '4.0 m', '250 mm dia.', '0.5%']))
+      .toEqual({ id: 'ST5', length: 4.0, diameterMm: 250, slopePct: 0.5, material: null });
+    expect(parseScheduleRunRow(['ST5', '4.0 m', '250 mm dia.', 'PVC DR35']))
+      .toEqual({ id: 'ST5', length: 4.0, diameterMm: 250, slopePct: null, material: 'PVC DR35' });
+  });
+
+  it('refuses structure-schedule rows, with or without elevations', () => {
+    // Orillia/Milton structure schedule: id + bare size + spec refs, no units.
+    expect(parseScheduleRunRow(['MH1', '1200', '701.010', '401.010'])).toBeNull();
+    expect(parseScheduleRunRow(['CB1', '600X600', '705.010', '400.020'])).toBeNull();
+    // Ultimate structure schedule: spec text + Top/Inv cells.
+    expect(parseScheduleRunRow(['STMH #1', 'DPSG 701.010, 400 Ø Frame and Cover (Closed) and 600 mm Sump', 'Top = 214.60 m', 'N Inv = 212.80 m (200 mm)'])).toBeNull();
+    expect(parseScheduleRunRow(['CB #7', 'DPSG 701.010', 'Top = 214.60 m', 'N Inv = 212.80 m (200 mm)'])).toBeNull();
+  });
+
+  it('refuses the other pipe-delimited tables a drawing carries', () => {
+    // Revision table (King Forest).
+    expect(parseScheduleRunRow(['03', 'JAN 27/26', 'MC', 'ADDED SANITARY SERVICE'])).toBeNull();
+    // Drainage-area table (Woodbine): endpoints and areas, no unit'd length.
+    expect(parseScheduleRunRow(['Woodbine Ave', 'CBMH7', 'CBMH10', '0.11', '0.90'])).toBeNull();
+    // Utility crossing row (Milton): an id and a clearance, but no diameter.
+    expect(parseScheduleRunRow(['C1', 'STM 192.54', 'WM 192.00', '0.54m'])).toBeNull();
+    // Plumbing fixture schedule (Walmart): inch sizes are not a sewer schedule.
+    expect(parseScheduleRunRow(['P1', 'PRODUCE', 'HAND SINK', '1/2"', '1/2"'])).toBeNull();
+  });
+
+  it('refuses ambiguous or unit-less rows rather than guessing', () => {
+    // Bare numbers carry no evidence of which is length and which is diameter.
+    expect(parseScheduleRunRow(['ST11', '42.3', '300', '1.0%'])).toBeNull();
+    // Two length cells / two diameter cells: the row does not say which counts.
+    expect(parseScheduleRunRow(['ST1', '29.6 m', '30.1 m', '250 mm dia.', '1.0%'])).toBeNull();
+    expect(parseScheduleRunRow(['ST1', '29.6 m', '250 mm dia.', '300 mm dia.', '1.0%'])).toBeNull();
+    // Endpoint (FROM | TO) schedules are a different shape — not this parser.
+    expect(parseScheduleRunRow(['ST1', 'MH1', 'MH2', '29.6 m', '250 mm dia.'])).toBeNull();
+    // Existing rows are excluded, like everywhere else in the grammar.
+    expect(parseScheduleRunRow(['EX ST1', '29.6 m', '250 mm dia.', 'PVC DR35', '1.0%'])).toBeNull();
+    // Implausible slope.
+    expect(parseScheduleRunRow(['ST1', '29.6 m', '250 mm dia.', 'PVC DR35', '55%'])).toBeNull();
   });
 });

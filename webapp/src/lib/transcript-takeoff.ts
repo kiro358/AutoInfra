@@ -11,6 +11,7 @@
  */
 import {
   parseRunCallout, parseStructureLabel, parseElevation, parseWatermainCallout,
+  parseScheduleRunRow,
   structureDescription, chamberWarning, HASH_STRUCTURE_HEADER_RE,
   isDanglingRunHead, isRunContinuation, ParsedStructure, ParsedRun,
 } from './callout-parser';
@@ -237,9 +238,11 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
     for (const block of validBlocks) {
       const joined = joinBlockLines(block);
 
-      // Step 4: schedule-table rows (contain " | ") are split on the delimiter
-      // and each cell tried against the parsers, independent of the rest of
-      // the block. An all-cells-unparseable row is logged, never guessed.
+      // Step 4: schedule-table rows (contain " | "). A row that parses whole
+      // as a run schedule (parseScheduleRunRow) is harvested as one run;
+      // every other row is split on the delimiter and each cell tried against
+      // the parsers, independent of the rest of the block. An
+      // all-cells-unparseable row is logged, never guessed.
       // One exclusion: a header cell in the "#" dialect ("STMH #1") is NOT
       // admitted from a schedule row. Callout blocks in that dialect are the
       // block grammar's business, but a structure schedule's numbering runs
@@ -251,7 +254,30 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
       const remaining: string[] = [];
       for (const line of joined) {
         if (line.includes(' | ')) {
-          const cells = line.split(' | ').map((c) => c.trim())
+          const rawCells = line.split(' | ').map((c) => c.trim());
+          // Run-schedule rows first: a row shaped (id | length | diameter |
+          // material | slope) is ONE pipe whose fields live in separate
+          // cells. Split apart below, no cell parses alone and the run is
+          // lost — the schedule never fires. The row parser is strict about
+          // the shape (see parseScheduleRunRow); anything it refuses falls
+          // through to the per-cell reading unchanged. The harvested run
+          // keeps its schedule id as its label: the id is its identity,
+          // which reconcile's stitching honours (distinct ids never merge,
+          // however identical their attributes).
+          const sched = parseScheduleRunRow(rawCells);
+          if (sched) {
+            out.sewers.push({
+              runLabel: sched.id,
+              isLineItem: false,
+              length: sched.length,
+              pipeDiameter: sched.diameterMm,
+              typeClass: null,
+              slope: sched.slopePct,
+              depth: null,
+            });
+            continue;
+          }
+          const cells = rawCells
             .filter((c) => !HASH_STRUCTURE_HEADER_RE.test(c));
           const matched = processLines(cells, out, warnings);
           if (!matched) warnings.push(`Unparseable schedule row: "${line}"`);

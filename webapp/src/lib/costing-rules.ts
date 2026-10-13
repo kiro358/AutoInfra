@@ -102,6 +102,49 @@ export const DEFAULT_COSTING: CostingRules = {
   },
 };
 
+/**
+ * Sewer type/class factor by pipe diameter — an estimator convention, not a
+ * reading (PR 2's experiment H2): across the golden truths, a
+ * majority-per-diameter lookup explains 92.0% of stated typeClass values
+ * (573/623 runs), so when a run's class is unstated it is derived from this
+ * table at pricing and recorded on the AUDIT sheet as `derived`. Agreement
+ * is per-diameter — the small diameters are unanimous, the trunk sizes are
+ * bare majorities — and the agreement travels with each derived value so
+ * the estimator can see how far to trust it. Every diameter in the table
+ * holds a strict majority of its census runs; a diameter outside the table
+ * gets NO value (the class stays blank and the run is recorded as a
+ * withheld question instead). A class stated on the drawing always wins:
+ * the table only fills nulls.
+ *
+ * Census: truth workbooks of all 26 golden projects (PR 11, 2026-10-13) —
+ * the same cross-tab as H2, reproduced exactly (573/623 = 92.0%).
+ */
+export interface TypeClassTableEntry {
+  typeClass: number;
+  /** Truth runs at this diameter that stated a class. */
+  censusRuns: number;
+  /** Share of those runs whose stated class equals the table value. */
+  agreement: number;
+}
+
+export const TYPECLASS_BY_DIAMETER: Readonly<Record<number, TypeClassTableEntry>> = {
+  100: { typeClass: 2.35, censusRuns: 9, agreement: 1 },
+  150: { typeClass: 2.35, censusRuns: 60, agreement: 1 },
+  200: { typeClass: 2.35, censusRuns: 93, agreement: 1 },
+  250: { typeClass: 2.35, censusRuns: 125, agreement: 1 },
+  300: { typeClass: 2.35, censusRuns: 112, agreement: 0.982 },
+  375: { typeClass: 2.35, censusRuns: 59, agreement: 0.966 },
+  450: { typeClass: 2.35, censusRuns: 43, agreement: 0.744 },
+  525: { typeClass: 1.3, censusRuns: 43, agreement: 0.651 },
+  600: { typeClass: 1.3, censusRuns: 32, agreement: 0.531 },
+  675: { typeClass: 1.3, censusRuns: 20, agreement: 0.85 },
+  750: { typeClass: 1.3, censusRuns: 11, agreement: 0.818 },
+  825: { typeClass: 1.3, censusRuns: 10, agreement: 1 },
+  975: { typeClass: 1.4, censusRuns: 1, agreement: 1 },
+  1050: { typeClass: 1.3, censusRuns: 3, agreement: 1 },
+  1500: { typeClass: 1.3, censusRuns: 2, agreement: 1 },
+};
+
 /** The standard per-project sewer fees, in the order they are appended. */
 export const STANDARD_FEE_KINDS = ['VIDEO', 'LAYOUT', 'AS BUILT'] as const;
 export type StandardFeeKind = (typeof STANDARD_FEE_KINDS)[number];
@@ -174,12 +217,41 @@ export function priceTakeoff(
         addMaterials = rules.pipeAddOns.wye.mtrl;
       }
     }
+    // Type/class factor: the workbooks state it by diameter convention (H2),
+    // not as an independent reading. A stated class passes through untouched
+    // and unrecorded; an unstated one is derived from the census table when
+    // the diameter is in it, and recorded either way it resolves — a derived
+    // value with its census agreement, or a withheld question when the
+    // diameter is outside the calibrated table.
+    let typeClass = s.typeClass;
+    if (typeClass == null && !s.isLineItem && s.pipeDiameter != null) {
+      const entry = TYPECLASS_BY_DIAMETER[s.pipeDiameter];
+      const entity = s.runLabel || `Sewer run ${i + 1}`;
+      if (entry) {
+        typeClass = entry.typeClass;
+        withheld.push({
+          entity,
+          field: 'typeClass',
+          kind: 'derived',
+          question: `Pipe class factor not stated for this run; taken from the diameter convention table (Ø${s.pipeDiameter}mm → ${entry.typeClass}). Confirm.`,
+          defaultApplied: { value: entry.typeClass, source: `derived: typeClass-by-diameter census table (Ø${s.pipeDiameter}mm: ${entry.censusRuns} truth runs, ${Math.round(entry.agreement * 100)}% agreement)` },
+        });
+      } else {
+        withheld.push({
+          entity,
+          field: 'typeClass',
+          kind: 'withheld',
+          question: `Pipe class factor not stated for this Ø${s.pipeDiameter}mm run, and the diameter is outside the calibrated convention table — left blank. Confirm the class.`,
+          defaultApplied: null,
+        });
+      }
+    }
     return {
       item: i + 1,
       runLabel: s.runLabel,
       length: s.length,
       pipeDiameter: s.pipeDiameter,
-      typeClass: s.typeClass,
+      typeClass,
       slope: s.slope,
       depth: s.depth,
       addMaterials,
@@ -291,6 +363,49 @@ export function priceTakeoff(
       }
     }
 
+    // Manhole drop — the fall through the structure, high invert − low
+    // invert. Both inverts are read values when present, so the drop is a
+    // derivation and is recorded as one. When the readings contradict each
+    // other (high below low — the same condition the physics checks flag)
+    // or an invert was not read, no number is invented: the cell stays
+    // blank and the absence is recorded as a withheld question.
+    let drop: number | null = null;
+    if (st.lowInvert !== null && st.highInvert !== null) {
+      const rawDrop = Math.round((st.highInvert - st.lowInvert) * 100) / 100;
+      if (rawDrop >= 0) {
+        drop = rawDrop;
+        withheld.push({
+          entity: st.description,
+          field: 'drop',
+          kind: 'derived',
+          question: `Drop not stated as such; computed from the read high and low inverts (high − low).`,
+          defaultApplied: { value: rawDrop, source: 'derived: highInvert − lowInvert' },
+        });
+      } else {
+        withheld.push({
+          entity: st.description,
+          field: 'drop',
+          kind: 'withheld',
+          question: `Drop cannot be computed: the read high invert (${st.highInvert}) sits below the low invert (${st.lowInvert}) — the invert readings contradict each other; verify them against the profile.`,
+          defaultApplied: null,
+        });
+      }
+    } else {
+      const missing =
+        st.lowInvert === null && st.highInvert === null
+          ? 'neither invert was read'
+          : st.lowInvert === null
+          ? 'the low invert was not read'
+          : 'the high invert was not read';
+      withheld.push({
+        entity: st.description,
+        field: 'drop',
+        kind: 'withheld',
+        question: `Drop not shown: ${missing} for this structure, so no drop can be computed — left blank.`,
+        defaultApplied: null,
+      });
+    }
+
     return {
       item: i + 1,
       description: st.description,
@@ -302,7 +417,7 @@ export function priceTakeoff(
       addMaterials,
       addLE,
       depth,
-      drop: null,
+      drop,
       diameter,
       source: st.source,
     };

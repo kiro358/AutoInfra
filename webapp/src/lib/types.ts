@@ -135,8 +135,14 @@ export interface WatermainFact {
   sizeAndType: string;
   length: number;
   pipeDiameter: number;
-  ocSc: number;
-  avgCover: number;
+  /**
+   * Estimator conventions (overburden / average cover). Null when unstated:
+   * the extraction never observed them on the drawing, and the truth reader
+   * must not invent them either. The estimator defaults (1.1 / 1.8) are
+   * applied where they belong — at pricing time in costing-rules.
+   */
+  ocSc: number | null;
+  avgCover: number | null;
 }
 
 export interface WatermainSpecialFact {

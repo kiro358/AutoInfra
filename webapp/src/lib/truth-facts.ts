@@ -126,8 +126,13 @@ export async function readTruthFacts(xlsxPath: string, projectName: string): Pro
           sizeAndType: size != null && String(size) !== '' ? String(size) : (dia != null ? `${dia}mm` : ''),
           length: length ?? 0,
           pipeDiameter: dia ?? 0,
-          ocSc: num(cell(ws, `F${r}`)) ?? 1.1,
-          avgCover: num(cell(ws, `J${r}`)) ?? 1.8,
+          // Blank stays null (unstated). The reader used to substitute the
+          // estimator defaults (1.1 / 1.8) here, which wrote invented values
+          // into "truth" — a prediction could then never disagree with a
+          // default nobody observed. Defaults belong at pricing time
+          // (costing-rules), not in ground truth.
+          ocSc: num(cell(ws, `F${r}`)),
+          avgCover: num(cell(ws, `J${r}`)),
         });
       }
     }

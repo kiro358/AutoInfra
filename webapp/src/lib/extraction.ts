@@ -1167,7 +1167,8 @@ async function extractFromPDFInner(
           for (const d of cb.dropped) {
             facts.warnings.push(
               `Dropped catchbasin group ${d.type} qty ${d.quantity} — implausible against a drainage network ` +
-                `of ${networkSize} rows; the quantity was almost certainly misread. Count these catchbasins manually.`
+                `of ${networkSize} rows; the quantity is a misread or an out-of-scope enumeration, ` +
+                `not a takeoff count. Count these catchbasins manually.`
             );
             console.log(`      [extraction.ts] dropped implausible catchbasin group ${d.type} x${d.quantity}.`);
           }

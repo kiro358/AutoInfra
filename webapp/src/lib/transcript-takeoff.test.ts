@@ -221,7 +221,8 @@ describe('assembleTranscriptTakeoff — coverage surfacing (PR 7)', () => {
     ], 'T');
     expect(facts.structures).toHaveLength(1);
     expect(facts.catchbasins).toEqual([
-      { type: 'SINGLE_CB', quantity: 1, wallThickness: null, depth: null },
+      { type: 'SINGLE_CB', quantity: 1, wallThickness: null, depth: null,
+        source: { method: 'transcript', tile: 1, evidence: 'CB 2' } },
     ]);
     expect(coverage(facts.warnings)).toEqual([]);
   });
@@ -290,5 +291,55 @@ describe('assembleTranscriptTakeoff — coverage surfacing (PR 7)', () => {
     expect(w).toHaveLength(1);
     expect(w[0]).toContain('3 tile(s) / 0 block(s)');
     expect(w[0]).toContain('treat this takeoff as missing');
+  });
+});
+
+describe('assembleTranscriptTakeoff — provenance & withheld (PR 8)', () => {
+  it('attaches transcript source (tile + evidence) to structures, runs and watermain', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 7, blocks: [
+        ['STMH 4', 'T/G=224.95', 'N INV=223.350', 'S INV=223.250'],
+        ['83.7m-375mmØ SAN @ 0.02%'],
+        ['200mmØ PVC WATERMAIN 120.0m'],
+      ]},
+    ], 'T');
+    expect(facts.structures[0].source).toEqual({ method: 'transcript', tile: 7, evidence: 'STMH 4' });
+    expect(facts.sewers[0].source).toEqual({ method: 'transcript', tile: 7, evidence: '83.7m-375mmØ SAN @ 0.02%' });
+    expect(facts.watermain[0].source).toEqual({ method: 'transcript', tile: 7, evidence: '200mmØ PVC WATERMAIN 120.0m' });
+  });
+
+  it('marks schedule-harvested runs with method schedule', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 3, blocks: [[
+        'ST1 | 29.6 m | 250 mm dia. | PVC DR35 | 1.0%',
+        'ST4A | 41.6 m | 300 mm dia. | PVC DR35 | 0.4%',
+      ]]},
+    ], 'T');
+    const run = facts.sewers.find((s) => s.runLabel === 'ST1');
+    expect(run).toBeDefined();
+    expect(run!.source?.method).toBe('schedule');
+    expect(run!.source?.tile).toBe(3);
+    expect(run!.source?.evidence).toContain('ST1');
+  });
+
+  it('leaves watermain ocSc/avgCover unstated (null) and withholds an unmeasured length', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [['200mmØ PVC WATERMAIN']] },
+    ], 'T');
+    expect(facts.watermain).toHaveLength(1);
+    expect(facts.watermain[0].ocSc).toBeNull();
+    expect(facts.watermain[0].avgCover).toBeNull();
+    expect(facts.withheld ?? []).toEqual([
+      expect.objectContaining({ entity: '200mm PVC', field: 'length', kind: 'withheld', defaultApplied: null }),
+    ]);
+  });
+
+  it('gives catchbasin groups the source of their first label', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 5, blocks: [['CB 1'], ['CB 2']] },
+    ], 'T');
+    const group = facts.catchbasins.find((g) => g.type === 'SINGLE_CB');
+    expect(group).toBeDefined();
+    expect(group!.source).toEqual({ method: 'transcript', tile: 5, evidence: 'CB 1' });
   });
 });

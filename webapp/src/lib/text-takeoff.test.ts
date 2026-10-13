@@ -133,3 +133,32 @@ describe('assembleTextTakeoff', () => {
     expect(mh1).toBeDefined();
   });
 });
+
+describe('assembleTextTakeoff — provenance & withheld (PR 8)', () => {
+  it('attaches text-layer source (page + evidence) to structures, runs and watermain', () => {
+    const facts = assembleTextTakeoff([{
+      page: 4, width: 2592, height: 1728,
+      items: [
+        { text: 'STMH 1', x: 400, y: 500, width: 50, height: 8 },
+        { text: 'T/G=224.95', x: 402, y: 490, width: 50, height: 8 },
+        { text: '83.7m-375mmØ SAN @ 0.02%', x: 100, y: 800, width: 50, height: 8 },
+        { text: '200mmØ PVC WATERMAIN 120.0m', x: 100, y: 300, width: 50, height: 8 },
+      ],
+    }], 'T');
+    expect(facts.structures[0].source).toEqual({ method: 'text-layer', page: 4, evidence: 'STMH 1' });
+    expect(facts.sewers[0].source).toEqual({ method: 'text-layer', page: 4, evidence: '83.7m-375mmØ SAN @ 0.02%' });
+    expect(facts.watermain[0].source).toEqual({ method: 'text-layer', page: 4, evidence: '200mmØ PVC WATERMAIN 120.0m' });
+    expect(facts.watermain[0].ocSc).toBeNull();
+    expect(facts.watermain[0].avgCover).toBeNull();
+  });
+
+  it('withholds the length of an unmeasured watermain callout', () => {
+    const facts = assembleTextTakeoff([page([
+      { text: '200mmØ PVC WATERMAIN', x: 100, y: 300 },
+    ])], 'T');
+    expect(facts.watermain).toHaveLength(1);
+    expect(facts.withheld ?? []).toEqual([
+      expect.objectContaining({ field: 'length', kind: 'withheld', defaultApplied: null }),
+    ]);
+  });
+});

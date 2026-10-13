@@ -13,6 +13,8 @@ export interface Manhole {
   depth: number | null;
   drop: number | null;
   diameter: number | null;
+  /** Carried through from the originating fact, when it recorded one. */
+  source?: FactSource;
 }
 
 export interface CatchbasinGroup {
@@ -22,6 +24,7 @@ export interface CatchbasinGroup {
   depth: number;
   grateEach: number;
   addMaterials: number;
+  source?: FactSource;
 }
 
 export interface CatchbasinSummary {
@@ -46,6 +49,7 @@ export interface SewerRun {
   addLE: number;
   isLineItem: boolean;
   lineItemType?: string;
+  source?: FactSource;
 }
 
 export interface WatermainRun {
@@ -57,6 +61,7 @@ export interface WatermainRun {
   addMaterials: number;
   addLE: number;
   avgCover: number;
+  source?: FactSource;
 }
 
 export interface WatermainSpecial {
@@ -92,6 +97,9 @@ export interface ExtractionResult {
   watermainValves: WatermainValve[];
   confidence: number;
   warnings: string[];
+  /** Carried from the facts and extended at pricing with every default /
+   *  derivation actually applied — rendered on the workbook's AUDIT sheet. */
+  withheld?: WithheldItem[];
   locatorIndex?: { manholePages: number[]; sewerPages: number[]; watermainPages: number[] } | null;
 }
 
@@ -99,6 +107,46 @@ export interface ExtractionResult {
 // Facts that are physically present on the drawings. The LLM is ONLY asked for
 // these — never for dollar amounts, labor rates, or fees. Pricing/judgment is
 // applied deterministically afterwards by priceTakeoff() (see costing-rules.ts).
+
+/**
+ * Per-fact provenance: where a fact was read from. Attached at creation by the
+ * assembly paths that know the answer (text layer knows its page, the
+ * transcript assembler knows its tile, the schedule harvester knows its row).
+ * OPTIONAL everywhere: facts from legacy / single-pass paths carry none and
+ * remain valid — absence means "origin not recorded", never an error.
+ */
+export interface FactSource {
+  method: 'text-layer' | 'transcript' | 'schedule' | 'vector' | 'single-pass' | 'derived' | 'convention-default';
+  /** 1-based drawing page, when the producing path knows it (text layer). */
+  page?: number;
+  /** Transcript tile number, when the producing path knows it (transcript). */
+  tile?: number;
+  /** The raw callout / line / schedule-row text the fact was read from. */
+  evidence?: string;
+}
+
+/**
+ * A value the estimator needs that was NOT read off the drawings — the
+ * withheld-as-questions record. `kind` separates the three cases:
+ *  - 'withheld':  absent, nothing applied (left blank) — a pure question.
+ *  - 'defaulted': absent, but a convention default was applied at pricing so
+ *                 the estimate could proceed — the question AND the value used.
+ *  - 'derived':   computed at pricing from values that WERE read (e.g. a
+ *                 manhole diameter snapped from the largest connected pipe).
+ * Rendered on the workbook's AUDIT sheet (see spreadsheet.ts). Nothing in
+ * here changes any number — it makes visible what used to be silent.
+ */
+export interface WithheldItem {
+  /** Human label of the entity the value belongs to (structure, run, CB group, watermain size). */
+  entity: string;
+  /** The fact/pricing field in question ('wallThickness', 'ocSc', 'diameter', …). */
+  field: string;
+  kind: 'withheld' | 'defaulted' | 'derived';
+  /** The question (or derivation note) shown to the estimator. */
+  question: string;
+  /** The value actually used in pricing, and where it came from — null when left blank. */
+  defaultApplied?: { value: number | string; source: string } | null;
+}
 
 export interface StructureFact {
   description: string;
@@ -111,6 +159,7 @@ export interface StructureFact {
   /** Structure size as stated on the drawing ("MH 2 (1800mmØ)"), in mm. When present it
    *  beats the size inferred from connected pipes. */
   diameter?: number | null;
+  source?: FactSource;
 }
 
 export interface CatchbasinGroupFact {
@@ -118,6 +167,7 @@ export interface CatchbasinGroupFact {
   quantity: number;
   wallThickness: number | null;
   depth: number | null;
+  source?: FactSource;
 }
 
 export interface SewerFact {
@@ -129,6 +179,7 @@ export interface SewerFact {
   typeClass: number | null;
   slope: number | null;
   depth: number | null;
+  source?: FactSource;
 }
 
 export interface WatermainFact {
@@ -143,6 +194,7 @@ export interface WatermainFact {
    */
   ocSc: number | null;
   avgCover: number | null;
+  source?: FactSource;
 }
 
 export interface WatermainSpecialFact {
@@ -167,6 +219,9 @@ export interface TakeoffFacts {
   watermainValves: WatermainValveFact[];
   confidence: number;
   warnings: string[];
+  /** Values not read off the drawings that pricing had to default, derive, or
+   *  leave blank — see WithheldItem. Optional: legacy facts carry none. */
+  withheld?: WithheldItem[];
   locatorIndex?: { manholePages: number[]; sewerPages: number[]; watermainPages: number[] } | null;
   // Cost telemetry for a single extraction (all LLM calls summed): lets the eval
   // report tokens/tiles per project so cost changes (DPI, tile budget) are measurable.

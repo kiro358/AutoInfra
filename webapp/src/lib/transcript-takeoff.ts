@@ -18,7 +18,7 @@ import {
 import { reconcileTakeoff } from './reconcile';
 import { appendCoverageWarnings } from './coverage-checks';
 import { normalizeLabel } from './compare-facts';
-import { TakeoffFacts, StructureFact, SewerFact, WatermainFact, CatchbasinGroupFact, TileTranscript } from './types';
+import { TakeoffFacts, StructureFact, SewerFact, WatermainFact, CatchbasinGroupFact, TileTranscript, FactSource, WithheldItem } from './types';
 
 function cbKindType(kind: ParsedStructure['kind']): CatchbasinGroupFact['type'] | null {
   switch (kind) {
@@ -33,8 +33,12 @@ function cbKindType(kind: ParsedStructure['kind']): CatchbasinGroupFact['type'] 
 interface Sink {
   structures: StructureFact[];
   catchbasinLabels: Map<CatchbasinGroupFact['type'], Set<string>>;
+  /** Provenance of the first label seen per CB type — the group's source. */
+  catchbasinFirstSource: Map<CatchbasinGroupFact['type'], FactSource>;
   sewers: SewerFact[];
   watermain: WatermainFact[];
+  /** Values the transcripts never stated (see WithheldItem in types.ts). */
+  withheld: WithheldItem[];
   /**
    * Coverage bookkeeping (see coverageWarningsFor): every structure/CB label
    * the grammar can see in the transcripts, keyed by normalized label with
@@ -213,7 +217,7 @@ function joinBlockLines(block: string[]): string[] {
 // unparseable schedule row deserves a warning).
 const STANDALONE_SIZE_RE = /^\s*\(?\s*(\d{3,4})\s*(?:MM)?\s*[ØO]\s*\)?\s*$/i;
 
-function processLines(lines: string[], out: Sink, warnings: string[]): boolean {
+function processLines(lines: string[], out: Sink, warnings: string[], tile: number): boolean {
   const structureLine = lines.find((l) => parseStructureLabel(l));
   if (structureLine) {
     const parsed = parseStructureLabel(structureLine)!;
@@ -252,6 +256,9 @@ function processLines(lines: string[], out: Sink, warnings: string[]): boolean {
       const labels = out.catchbasinLabels.get(cbType) ?? new Set<string>();
       labels.add(normalizeLabel(parsed.label));
       out.catchbasinLabels.set(cbType, labels);
+      if (!out.catchbasinFirstSource.has(cbType)) {
+        out.catchbasinFirstSource.set(cbType, { method: 'transcript', tile, evidence: structureLine });
+      }
     } else {
       out.structures.push({
         description: structureDescription(parsed),
@@ -262,6 +269,7 @@ function processLines(lines: string[], out: Sink, warnings: string[]): boolean {
         structureType: parsed.kind === 'CHAMBER' ? 'CHAMBER' : null,
         depth: null,
         diameter: diameterMm,
+        source: { method: 'transcript', tile, evidence: structureLine },
       });
       if (parsed.kind === 'CHAMBER') warnings.push(chamberWarning(parsed.label, lines));
     }
@@ -282,6 +290,7 @@ function processLines(lines: string[], out: Sink, warnings: string[]): boolean {
           typeClass: run.typeClass,
           slope: run.slopePct,
           depth: null,
+          source: { method: 'transcript', tile, evidence: line },
         });
       }
       continue;
@@ -297,14 +306,28 @@ function processLines(lines: string[], out: Sink, warnings: string[]): boolean {
       // reconcileTakeoff sums the sizes, so an unmeasured callout that sits
       // alongside a measured one of the same diameter contributes nothing.
       // Same rule as assembleTextTakeoff — keep the two assemblers in step.
+      // ocSc/avgCover are NOT stamped here either: unstated means null, and
+      // the estimator defaults are applied — and recorded as withheld — at
+      // pricing (costing-rules.ts).
       if (!wm.existing) {
+        const sizeAndType = `${wm.diameterMm}mm${wm.material ? ` ${wm.material}` : ''}`;
         out.watermain.push({
-          sizeAndType: `${wm.diameterMm}mm${wm.material ? ` ${wm.material}` : ''}`,
+          sizeAndType,
           length: wm.lengthM ?? 0,
           pipeDiameter: wm.diameterMm,
-          ocSc: 1.1,
-          avgCover: 1.8,
+          ocSc: null,
+          avgCover: null,
+          source: { method: 'transcript', tile, evidence: line },
         });
+        if (wm.lengthM == null) {
+          out.withheld.push({
+            entity: sizeAndType,
+            field: 'length',
+            kind: 'withheld',
+            question: `Length of the ${sizeAndType} watermain is not stated on the drawing — scale it off the plan. Left blank and not priced.`,
+            defaultApplied: null,
+          });
+        }
       }
     }
   }
@@ -315,8 +338,10 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
   const out: Sink = {
     structures: [],
     catchbasinLabels: new Map(),
+    catchbasinFirstSource: new Map(),
     sewers: [],
     watermain: [],
+    withheld: [],
     mentionedStructures: new Map(),
     mentionedCatchbasins: new Map(),
     mentionedExisting: new Set(),
@@ -389,23 +414,25 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
               typeClass: null,
               slope: sched.slopePct,
               depth: null,
+              source: { method: 'schedule', tile: tile.tile, evidence: line },
             });
             continue;
           }
           const cells = rawCells
             .filter((c) => !HASH_STRUCTURE_HEADER_RE.test(c));
-          const matched = processLines(cells, out, warnings);
+          const matched = processLines(cells, out, warnings, tile.tile);
           if (!matched) warnings.push(`Unparseable schedule row: "${line}"`);
         } else {
           remaining.push(line);
         }
       }
-      if (remaining.length > 0) processLines(remaining, out, warnings);
+      if (remaining.length > 0) processLines(remaining, out, warnings, tile.tile);
     }
   }
 
   const catchbasins: CatchbasinGroupFact[] = Array.from(out.catchbasinLabels.entries()).map(([type, labels]) => ({
     type, quantity: labels.size, wallThickness: null, depth: null,
+    source: out.catchbasinFirstSource.get(type),
   }));
 
   // Step 5: cross-tile duplicates (10% tile overlap) die here — structures by
@@ -414,7 +441,7 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
     projectName, jobNumber: '', date: '',
     structures: out.structures, catchbasins, sewers: out.sewers, watermain: out.watermain,
     watermainSpecials: [], watermainValves: [],
-    confidence: 1, warnings,
+    confidence: 1, warnings, withheld: out.withheld,
   });
 
   // Step 6: partial-miss surfacing — purely additive warnings (assembly-level

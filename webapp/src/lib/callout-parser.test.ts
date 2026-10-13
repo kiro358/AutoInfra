@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseRunCallout, parseStructureLabel, parseElevation, parseWatermainCallout,
-  isDanglingRunHead, isRunContinuation, parseSubdrainCallout,
+  isDanglingRunHead, isRunContinuation, parseSubdrainCallout, HASH_STRUCTURE_HEADER_RE,
 } from './callout-parser';
 
 describe('parseRunCallout', () => {
@@ -116,6 +116,88 @@ describe('parseStructureLabel', () => {
     expect(parseStructureLabel('CB')).toBeNull();
     expect(parseStructureLabel('WM')).toBeNull();
     expect(parseStructureLabel('CB 10')!.kind).toBe('CB');
+  });
+});
+
+describe('parseStructureLabel — header dialects (Phase 1.1)', () => {
+  it('parses "#" separators, glued or spaced (Wigmore / Ecole / Woodbine)', () => {
+    expect(parseStructureLabel('NEW STM MH#1 (1200mmØ)')).toEqual({
+      label: 'MH1', kind: 'MH', diameterMm: 1200, existing: false, system: 'STM',
+    });
+    expect(parseStructureLabel('NEW SAN MH#2 (1200mmØ)')).toEqual({
+      label: 'MH2', kind: 'MH', diameterMm: 1200, existing: false, system: 'SAN',
+    });
+    expect(parseStructureLabel('NEW STM CBMH#3 (1200mmØ)')!.kind).toBe('CBMH');
+    expect(parseStructureLabel('CBMH#11')!.label).toBe('CBMH11');
+    expect(parseStructureLabel('CB#7')!.kind).toBe('CB');
+    expect(parseStructureLabel('DCB#6')!.kind).toBe('DCB');
+    expect(parseStructureLabel('DCBMH#5 (1500Ø)')).toMatchObject({ kind: 'DCBMH', diameterMm: 1500 });
+    expect(parseStructureLabel('MH #101')!.label).toBe('MH 101');
+    expect(parseStructureLabel('STMH #16A')!.label).toBe('STMH 16A');
+  });
+
+  it('parses hyphenated ids behind a "#" separator (Stevenson)', () => {
+    expect(parseStructureLabel('STORM MH#1-3')!.label).toBe('MH1-3');
+    expect(parseStructureLabel('MH#1-2')!.label).toBe('MH1-2');
+  });
+
+  it('treats NEW / PROP. / PR. prefixes as proposed, never existing', () => {
+    expect(parseStructureLabel('NEW STM MH#4')!.existing).toBe(false);
+    expect(parseStructureLabel('PROP. CB #2')).toMatchObject({ label: 'CB 2', kind: 'CB', existing: false });
+    expect(parseStructureLabel('PROP. DCB#4')!.kind).toBe('DCB');
+    expect(parseStructureLabel('PROP. SANITARY MH#2')).toMatchObject({ existing: false, system: 'SAN' });
+    // ...while a glued EX. prefix still marks existing (New Tottenham).
+    expect(parseStructureLabel('EX MH#74 (INSPECTION MH)')!.existing).toBe(true);
+    expect(parseStructureLabel('EX.MH#4A')).toMatchObject({ label: 'MH4A', existing: true });
+  });
+
+  it('remaps compound kinds CB/MH and DBL/CB to their canonical codes (Stevenson)', () => {
+    expect(parseStructureLabel('PROP. CB/MH #1')).toMatchObject({ label: 'CBMH 1', kind: 'CBMH' });
+    expect(parseStructureLabel('PROP. DBL/CB #5')).toMatchObject({ label: 'DCB 5', kind: 'DCB' });
+  });
+
+  it('parses id-first headers with the kind in parentheses (Holiday Inn)', () => {
+    expect(parseStructureLabel('SA3 (MH)')).toEqual({
+      label: 'MH 3', kind: 'MH', diameterMm: null, existing: false, system: 'SAN',
+    });
+    expect(parseStructureLabel('ST1 (CBMH)')).toEqual({
+      label: 'CBMH 1', kind: 'CBMH', diameterMm: null, existing: false, system: 'STM',
+    });
+    expect(parseStructureLabel('ST3 (CB)')!.kind).toBe('CB');
+    // The profile copy of the same structure carries an asterisk; same label.
+    expect(parseStructureLabel('ST1* (CBMH)')!.label).toBe('CBMH 1');
+  });
+
+  it('still rejects lines that merely mention a structure', () => {
+    // Parenthesised non-kind: an OGS unit model, not a structure kind.
+    expect(parseStructureLabel('ST8 (FD-4 OGS)')).toBeNull();
+    // Bare id-first tokens with no parenthesised kind are run/schedule ids.
+    expect(parseStructureLabel('SA3')).toBeNull();
+    expect(parseStructureLabel('ST1')).toBeNull();
+    // Legend entries and notes carry no id.
+    expect(parseStructureLabel('SAN-MH O - EXISTING SANITARY MANHOLE')).toBeNull();
+    expect(parseStructureLabel('MH TO BE REBENCHED AS')).toBeNull();
+    expect(parseStructureLabel('TO CONNECT TO EX. SAN MH')).toBeNull();
+    expect(parseStructureLabel('CORE INTO EX. SAN MH AND')).toBeNull();
+    expect(parseStructureLabel('EX. STM MH')).toBeNull();
+    expect(parseStructureLabel('MH # (1200Ø)')).toBeNull();
+    expect(parseStructureLabel('T/CB = 84.26')).toBeNull();
+    expect(parseStructureLabel('1200mmØ MH PER OPSD 701.010')).toBeNull();
+    // Proposed prefixes on non-structure lines mint nothing.
+    expect(parseStructureLabel('NEW Ø200 SANITARY SEWER.')).toBeNull();
+    expect(parseStructureLabel('PROP. 300mmØ STM SEWER')).toBeNull();
+    expect(parseStructureLabel('PROP STM 2.8m - 200mmØ DR 35 @ 1.50%')).toBeNull();
+    expect(parseStructureLabel('NEW CURB & GUTTER (BY DEVELOPER)')).toBeNull();
+  });
+
+  it('HASH_STRUCTURE_HEADER_RE recognises only bare "#" header cells', () => {
+    expect(HASH_STRUCTURE_HEADER_RE.test('STMH #1')).toBe(true);
+    expect(HASH_STRUCTURE_HEADER_RE.test('PROP. CB #2')).toBe(true);
+    expect(HASH_STRUCTURE_HEADER_RE.test('CB #4A')).toBe(true);
+    expect(HASH_STRUCTURE_HEADER_RE.test('MH#3')).toBe(true);
+    expect(HASH_STRUCTURE_HEADER_RE.test('STMH 1')).toBe(false);
+    expect(HASH_STRUCTURE_HEADER_RE.test('STMH #1 | DPSG 701.010')).toBe(false);
+    expect(HASH_STRUCTURE_HEADER_RE.test('83.7m-375mmØ SAN @ 0.02%')).toBe(false);
   });
 });
 

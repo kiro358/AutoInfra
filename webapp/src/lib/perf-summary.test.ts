@@ -117,3 +117,27 @@ describe('summarizePerformance', () => {
     expect(s.entities).toEqual([]);
   });
 });
+
+describe('convention-excluded field accuracy (PR2)', () => {
+  const fields = [
+    { field: 'sewer.length', matched: 8, total: 10 },
+    { field: 'sewer.typeClass', matched: 0, total: 10 },
+    { field: 'sewer.depth', matched: 0, total: 10 },
+  ];
+
+  it('computes per-project and mean ex-convention accuracy from the per-field breakdown', () => {
+    const s = summarizePerformance([
+      row({ folder: '2026-001 A', fields }),
+      row({ folder: '2026-002 B' }), // no breakdown -> contributes nothing
+    ]);
+    const a = s.projects.find((p) => p.folder === '2026-001 A')!;
+    expect(a.fieldAccExConvention).toBeCloseTo(0.8); // length only: 8/10
+    expect(s.meanFieldAccExConvention).toBeCloseTo(0.8);
+  });
+
+  it('is null when no row carries a per-field breakdown', () => {
+    const s = summarizePerformance([row({})]);
+    expect(s.projects[0].fieldAccExConvention).toBeNull();
+    expect(s.meanFieldAccExConvention).toBeNull();
+  });
+});

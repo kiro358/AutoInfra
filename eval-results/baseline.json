@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-10-12T23:10:58.007Z",
+  "generatedAt": "2026-10-13T14:03:50.767Z",
   "layer": "text",
   "projects": [
     {
@@ -43,7 +43,7 @@
       "textyPages": 4,
       "totalPages": 4,
       "detectionF1": 12.31,
-      "fieldAccuracy": 100,
+      "fieldAccuracy": 0,
       "llmCachedF1": 31.91
     },
     {
@@ -53,7 +53,7 @@
       "textyPages": 2,
       "totalPages": 5,
       "detectionF1": 78.21,
-      "fieldAccuracy": 48.21,
+      "fieldAccuracy": 44.26,
       "llmCachedF1": 72.6
     },
     {
@@ -71,7 +71,7 @@
       "textyPages": 4,
       "totalPages": 9,
       "detectionF1": 68.42,
-      "fieldAccuracy": 44.12,
+      "fieldAccuracy": 39.47,
       "llmCachedF1": 85.09
     },
     {
@@ -89,7 +89,7 @@
       "textyPages": 4,
       "totalPages": 6,
       "detectionF1": 78.59,
-      "fieldAccuracy": 40.54,
+      "fieldAccuracy": 35.71,
       "llmCachedF1": 78.59
     },
     {
@@ -115,7 +115,7 @@
       "textyPages": 7,
       "totalPages": 9,
       "detectionF1": 45,
-      "fieldAccuracy": 100,
+      "fieldAccuracy": 0,
       "llmCachedF1": 55.37
     },
     {
@@ -159,7 +159,7 @@
       "textyPages": 3,
       "totalPages": 5,
       "detectionF1": 67.08,
-      "fieldAccuracy": 41.3,
+      "fieldAccuracy": 39.58,
       "llmCachedF1": 54.54
     },
     {
@@ -187,7 +187,7 @@
       "textyPages": 5,
       "totalPages": 17,
       "detectionF1": 34.88,
-      "fieldAccuracy": 50,
+      "fieldAccuracy": 36.36,
       "llmCachedF1": 20
     },
     {
@@ -213,7 +213,7 @@
       "textyPages": 2,
       "totalPages": 5,
       "detectionF1": 27.88,
-      "fieldAccuracy": 100,
+      "fieldAccuracy": 0,
       "llmCachedF1": 69.2
     },
     {
@@ -236,6 +236,6 @@
   "aggregate": {
     "scoredProjects": 11,
     "detectionF1": 41.12,
-    "fieldAccuracy": 43.66
+    "fieldAccuracy": 36.91
   }
 }

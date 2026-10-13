@@ -331,10 +331,12 @@ export function priceTakeoff(
     sizeAndType: w.sizeAndType,
     length: w.length,
     pipeDiameter: w.pipeDiameter,
-    ocSc: w.ocSc,
+    // Facts carry null when the drawing/truth never stated these; the
+    // estimator defaults live HERE, at pricing, where they always belonged.
+    ocSc: w.ocSc ?? 1.1,
     addMaterials: 0,
     addLE: 0,
-    avgCover: w.avgCover,
+    avgCover: w.avgCover ?? 1.8,
   }));
 
   const watermainSpecials: WatermainSpecial[] = facts.watermainSpecials.map((sp, i) => ({

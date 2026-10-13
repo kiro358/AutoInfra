@@ -160,6 +160,8 @@ interface Summary {
   runM: number; runT: number;           // runM = mean matched across repeats
   runMLo: number; runMHi: number;       // min/max matched runs (the noisiest metric)
   fieldM: number; fieldT: number;
+  /** Per-field breakdown (PR 2): matched = mean across repeats, total from the first repeat — same convention as fieldM/fieldT. Optional: older persisted results lack it. */
+  fields?: { field: string; matched: number; total: number }[];
   cellAcc: number | null;               // mean
 }
 
@@ -169,6 +171,7 @@ interface RepMetrics {
   detF1: number; structM: number; structT: number; runM: number; runT: number;
   structP: number; runP: number; // predicted counts (to detect empty/transport-failed repeats)
   fieldM: number; fieldT: number; cellAcc: number | null;
+  fields: { field: string; matched: number; total: number }[];
 }
 function factsToMetrics(facts: FactsComparison, cell: CompareResult | null): RepMetrics {
   const st = facts.entities.find((e) => e.kind === 'structures');
@@ -181,6 +184,7 @@ function factsToMetrics(facts: FactsComparison, cell: CompareResult | null): Rep
     runM: sw?.matched ?? 0, runT: sw?.truthCount ?? 0,
     structP: st?.predCount ?? 0, runP: sw?.predCount ?? 0,
     fieldM, fieldT, cellAcc: cell ? cell.overallAccuracy : null,
+    fields: facts.fields.map((f) => ({ field: f.field, matched: f.matched, total: f.total })),
   };
 }
 
@@ -206,6 +210,11 @@ function buildSummary(folder: string, label: string, reps: RepMetrics[]): Summar
     runM: mean(runs), runT: reps[0].runT,
     runMLo: Math.min(...runs), runMHi: Math.max(...runs),
     fieldM: mean(reps.map((r) => r.fieldM)), fieldT: reps[0].fieldT,
+    fields: reps[0].fields.map((f) => ({
+      field: f.field,
+      matched: mean(reps.map((r) => r.fields.find((x) => x.field === f.field)?.matched ?? 0)),
+      total: f.total,
+    })),
     cellAcc: cells.length ? mean(cells) : null,
   };
 }

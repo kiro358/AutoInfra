@@ -84,6 +84,9 @@ async function main() {
         truthCount: e.truthCount,
         predCount: e.predCount,
       })),
+      // Per-field breakdown (PR 2): the dashboard's convention-excluded field
+      // accuracy is computed from this in perf-summary.
+      fields: c.fields.map((f) => ({ field: f.field, matched: f.matched, total: f.total })),
       // An extraction that produced nothing at all is a failed run, not a 0%-accurate
       // model — the dashboard reports those separately so they can't be read as accuracy.
       status: predTotal === 0 ? 'empty' : 'ok',
@@ -111,6 +114,9 @@ async function main() {
   console.log(`  mean detF1 (scored runs only)  ${pct(summary.meanDetF1)}   over ${summary.projectsScored} projects`);
   console.log(`  mean detF1 (failures as zero)  ${pct(summary.meanDetF1WithFailures)}   over ${summary.projectsTotal} projects`);
   console.log(`  mean field accuracy            ${pct(summary.meanFieldAcc)}`);
+  if (summary.meanFieldAccExConvention != null) {
+    console.log(`  mean field acc (ex-convention) ${pct(summary.meanFieldAccExConvention)}   (excl. sewer.typeClass, sewer.depth)`);
+  }
   if (summary.projectsFailed) console.log(`  failed extractions             ${summary.projectsFailed} (no entities returned)`);
   console.log('\n  ENTITY          recall  precision      F1   truth   pred');
   for (const e of summary.entities) {

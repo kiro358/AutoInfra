@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compareFacts, normalizeLabel, runSignature } from './compare-facts';
+import { compareFacts, formatFactsComparison, normalizeLabel, runSignature } from './compare-facts';
 import { TakeoffFacts } from './types';
 
 function facts(overrides: Partial<TakeoffFacts> = {}): TakeoffFacts {
@@ -604,5 +604,79 @@ describe('structure matching — outfalls/headwalls, drop manholes, chamber & ta
     const pred = facts({ structures: [struct('WATER METER CHAMBER 1')] });
     const truth = facts({ structures: [struct('VALVE CHAMBER 1')] });
     expect(structEntity(pred, truth).matched).toBe(0);
+  });
+});
+
+describe('PR2 ruler fixes — absolute elevation tolerance, new fields, ex-convention', () => {
+  const sFact = (o: Partial<TakeoffFacts['structures'][number]> = {}): TakeoffFacts['structures'][number] => ({
+    description: 'MH 1', topElevation: null, lowInvert: null, highInvert: null,
+    pipeOutDiameter: null, structureType: null, depth: null, ...o,
+  });
+  const field = (c: ReturnType<typeof compareFacts>, name: string) => c.fields.find((f) => f.field === name)!;
+
+  it('compares structure elevations ABSOLUTELY (±0.10 m), not relatively', () => {
+    const truth = facts({ structures: [sFact({ topElevation: 100.0, lowInvert: 285.0 })] });
+    // 0.4 m off: a relative 5% tolerance (±5 m / ±14 m) would pass both; absolute must fail both.
+    const predOff = facts({ structures: [sFact({ topElevation: 100.4, lowInvert: 285.4 })] });
+    const cOff = compareFacts(predOff, truth);
+    expect(field(cOff, 'structure.topElevation')).toMatchObject({ matched: 0, total: 1 });
+    expect(field(cOff, 'structure.lowInvert')).toMatchObject({ matched: 0, total: 1 });
+    // 0.08 m off: inside the absolute band.
+    const predOn = facts({ structures: [sFact({ topElevation: 100.08, lowInvert: 284.95 })] });
+    const cOn = compareFacts(predOn, truth);
+    expect(field(cOn, 'structure.topElevation').matched).toBe(1);
+    expect(field(cOn, 'structure.lowInvert').matched).toBe(1);
+  });
+
+  it('scores structure.highInvert when truth records it', () => {
+    const truth = facts({ structures: [sFact({ highInvert: 97.5 })] });
+    expect(field(compareFacts(facts({ structures: [sFact({ highInvert: 97.55 })] }), truth), 'structure.highInvert'))
+      .toMatchObject({ matched: 1, total: 1 });
+    expect(field(compareFacts(facts({ structures: [sFact({ highInvert: 98.2 })] }), truth), 'structure.highInvert'))
+      .toMatchObject({ matched: 0, total: 1 });
+  });
+
+  it('scores structure.depth (relative, like sewer.depth) and counts a null prediction as a miss', () => {
+    const truth = facts({ structures: [sFact({ depth: 2.0 })] });
+    expect(field(compareFacts(facts({ structures: [sFact({ depth: 2.15 })] }), truth), 'structure.depth'))
+      .toMatchObject({ matched: 1, total: 1 }); // within 10%
+    expect(field(compareFacts(facts({ structures: [sFact({ depth: null })] }), truth), 'structure.depth'))
+      .toMatchObject({ matched: 0, total: 1 });
+  });
+
+  it('does not score fields whose truth value is null', () => {
+    const truth = facts({ structures: [sFact({})] }); // every field null
+    const pred = facts({ structures: [sFact({ topElevation: 100, highInvert: 97, depth: 2 })] });
+    const c = compareFacts(pred, truth);
+    for (const name of ['structure.topElevation', 'structure.highInvert', 'structure.depth']) {
+      expect(field(c, name).total).toBe(0);
+    }
+  });
+
+  it('reports field accuracy excluding the convention fields alongside the headline', () => {
+    const truth = facts({
+      sewers: [run({ runLabel: 'MH 1-MH 2', length: 50, pipeDiameter: 300, typeClass: 2.35, slope: null, depth: 3 })],
+    });
+    const pred = facts({
+      sewers: [run({ runLabel: 'MH 1-MH 2', length: 51, pipeDiameter: 300, typeClass: null, slope: null, depth: null })],
+    });
+    const c = compareFacts(pred, truth);
+    // Scored: length ✓, pipeDiameter ✓, typeClass ✗, depth ✗ -> headline 2/4.
+    expect(c.fieldAccuracy).toBe(0.5);
+    // Excluding the two convention fields, the drawing-reading fields are 2/2.
+    expect(c.fieldAccuracyExConvention).toBe(1);
+    expect(formatFactsComparison(c)).toContain('excl. conventions');
+  });
+
+  it('fieldAccuracyExConvention is null when only convention fields were scored', () => {
+    const truth = facts({
+      sewers: [run({ runLabel: 'MH 1-MH 2', length: null, pipeDiameter: null, typeClass: 2.35, slope: null, depth: 3 })],
+    });
+    const pred = facts({
+      sewers: [run({ runLabel: 'MH 1-MH 2', length: null, pipeDiameter: null, typeClass: 2.35, slope: null, depth: 3 })],
+    });
+    const c = compareFacts(pred, truth);
+    expect(c.fieldAccuracy).toBe(1);
+    expect(c.fieldAccuracyExConvention).toBeNull();
   });
 });

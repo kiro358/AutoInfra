@@ -76,3 +76,30 @@ describe('loadTruthManifest / resolveTruthFacts', () => {
     expect(got).toBeNull();
   });
 });
+
+describe('readTruthFacts — watermain ocSc/avgCover carry no invented defaults (PR2)', () => {
+  it('leaves blank ocSc/avgCover null and keeps stated values', async () => {
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('WATERMAIN (1)');
+    // Row 13: length + diameter stated, ocSc (F) and avgCover (J) blank.
+    ws.getCell('B13').value = '200mm PVC';
+    ws.getCell('C13').value = 50;
+    ws.getCell('D13').value = 200;
+    // Row 14: everything stated.
+    ws.getCell('B14').value = '300mm PVC';
+    ws.getCell('C14').value = 30;
+    ws.getCell('D14').value = 300;
+    ws.getCell('F14').value = 1.2;
+    ws.getCell('J14').value = 2.1;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'truthwm-'));
+    const file = path.join(dir, 'T.xlsx');
+    await wb.xlsx.writeFile(file);
+    const facts = await readTruthFacts(file, 'T');
+    expect(facts.watermain).toHaveLength(2);
+    expect(facts.watermain[0].ocSc).toBeNull();
+    expect(facts.watermain[0].avgCover).toBeNull();
+    expect(facts.watermain[1].ocSc).toBe(1.2);
+    expect(facts.watermain[1].avgCover).toBe(2.1);
+  });
+});

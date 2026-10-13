@@ -13,6 +13,7 @@
  *
  * Everything here is pure so it can be unit tested without the dataset.
  */
+import { fieldAccuracyExcludingConvention } from './compare-facts';
 
 /** One project's persisted result. Superset of evaluate-golden.ts's Summary. */
 export interface GoldenRow {
@@ -33,6 +34,12 @@ export interface GoldenRow {
   cellAcc?: number | null;
   /** Richer per-entity breakdown — present in offline-scored rows. */
   entities?: EntityRow[];
+  /**
+   * Per-field breakdown (field name -> matched/total) — present in rows
+   * written after PR 2. Drives the convention-excluded field accuracy;
+   * absent in older rows, which then contribute nothing to that metric.
+   */
+  fields?: FieldRow[];
   /** 'empty' = extraction produced no entities at all (a transport/run failure, not a model miss). */
   status?: ProjectStatus;
   /** Total tokens for the extraction, when the run recorded cost. */
@@ -44,6 +51,12 @@ export interface EntityRow {
   matched: number;
   truthCount: number;
   predCount: number;
+}
+
+export interface FieldRow {
+  field: string;
+  matched: number;
+  total: number;
 }
 
 export type ProjectStatus = 'ok' | 'empty' | 'missing';
@@ -77,6 +90,12 @@ export interface ProjectSummary {
   asDrawnF1?: number | null;
   conventionF1?: number | null;
   fieldAcc: number | null;
+  /**
+   * Field accuracy excluding the convention fields (sewer.typeClass,
+   * sewer.depth — see compare-facts CONVENTION_FIELDS). Null when the row
+   * carries no per-field breakdown or no non-convention field was scored.
+   */
+  fieldAccExConvention: number | null;
   status: ProjectStatus;
   /** Truth entity count — the drawing's size. Drives the scale-vs-accuracy read. */
   truthSize: number;
@@ -93,6 +112,8 @@ export interface PerformanceSummary {
   /** Mean detF1 counting failed/empty extractions as zero. The pessimistic read. */
   meanDetF1WithFailures: number;
   meanFieldAcc: number;
+  /** Mean of per-project fieldAccExConvention over scored projects that carry a per-field breakdown. Null when none do. */
+  meanFieldAccExConvention: number | null;
   meanAsDrawnF1?: number | null;
   meanConventionF1?: number | null;
   projectsTotal: number;
@@ -155,6 +176,7 @@ export function summarizePerformance(rows: GoldenRow[]): PerformanceSummary {
       asDrawnF1: r.asDrawnF1 ?? null,
       conventionF1: r.conventionF1 ?? null,
       fieldAcc: r.fieldT > 0 ? ratio(r.fieldM, r.fieldT) : null,
+      fieldAccExConvention: r.fields ? fieldAccuracyExcludingConvention(r.fields) : null,
       status,
       truthSize: truthFromEntities ?? r.structT + r.runT,
       structM: r.structM,
@@ -219,6 +241,7 @@ export function summarizePerformance(rows: GoldenRow[]): PerformanceSummary {
   }
 
   const fieldAccs = scored.map((p) => p.fieldAcc).filter((x): x is number => x != null);
+  const fieldAccsExConv = scored.map((p) => p.fieldAccExConvention).filter((x): x is number => x != null);
   const asDrawnF1s = scored.map((p) => p.asDrawnF1).filter((x): x is number => x != null);
   const convF1s = scored.map((p) => p.conventionF1).filter((x): x is number => x != null);
 
@@ -226,6 +249,7 @@ export function summarizePerformance(rows: GoldenRow[]): PerformanceSummary {
     meanDetF1: mean(scored.map((p) => p.detF1)),
     meanDetF1WithFailures: mean(projects.map((p) => p.detF1)),
     meanFieldAcc: mean(fieldAccs),
+    meanFieldAccExConvention: fieldAccsExConv.length > 0 ? mean(fieldAccsExConv) : null,
     meanAsDrawnF1: asDrawnF1s.length > 0 ? mean(asDrawnF1s) : null,
     meanConventionF1: convF1s.length > 0 ? mean(convF1s) : null,
     projectsTotal: projects.length,

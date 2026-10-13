@@ -287,8 +287,13 @@ describe('priceTakeoff — withheld & provenance (PR 8)', () => {
     annotated.sewers[0].source = { method: 'schedule', page: 2, evidence: 'MH1 | MH2 | 30' };
     annotated.watermain[0].source = { method: 'text-layer', page: 3, evidence: '200mm PVC WM' };
     annotated.withheld = [{ entity: 'X', field: 'length', kind: 'withheld', question: 'q', defaultApplied: null }];
-    const strip = (o: unknown) => JSON.parse(JSON.stringify(o, (k, v) => (k === 'source' || k === 'withheld' ? undefined : v)));
+    // 'confidence'/'confidenceFactors' are stripped alongside the annotations
+    // themselves: since PR 9 the score is DERIVED from the annotations
+    // (signal-based — unprovenanced legacy facts score lower), so it differs
+    // by design. The invariant under test is that no PRICED number changes.
+    const strip = (o: unknown) => JSON.parse(JSON.stringify(o, (k, v) => (k === 'source' || k === 'withheld' || k === 'confidence' || k === 'confidenceFactors' ? undefined : v)));
     expect(strip(priceTakeoff(annotated))).toEqual(strip(priceTakeoff(base)));
+    expect(priceTakeoff(annotated).confidence).toBeGreaterThan(priceTakeoff(base).confidence);
     expect(priceTakeoff(base).withheld!.length).toBeGreaterThan(0); // defaults recorded even for legacy facts
   });
 });

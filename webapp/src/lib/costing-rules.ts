@@ -19,6 +19,7 @@ import {
   WithheldItem,
 } from './types';
 import { snapToMHSize } from './geometry';
+import { assessConfidence } from './confidence';
 import { TEMPLATE_LAYOUT, blockCapacity, MH_DIAMETERS } from './constants';
 
 export interface CostingRules {
@@ -454,6 +455,18 @@ export function priceTakeoff(
     laborPerValve: rules.watermain.valveLaborPerValve,
   }));
 
+  const pricedWithheld = dedupeWithheld(withheld);
+  // The estimator-facing confidence is assessed HERE, on the priced picture:
+  // only at this point does the full withheld list exist, so only here can
+  // the defaulted-values deduction (the strongest measured predictor of
+  // field accuracy — see confidence.ts) fire. The facts-level score the
+  // assembly computed is superseded, not averaged. The assessment counts the
+  // RAW withheld list: dedupeWithheld is an AUDIT-sheet presentation
+  // concern (600 identical unmeasured callouts shown once, "[600
+  // callouts]"), but the score must feel all 600 firings — assessing the
+  // deduped list let Panattoni's 636 unmeasured callouts nearly vanish.
+  const assessed = assessConfidence({ ...facts, withheld });
+
   return {
     projectName: facts.projectName,
     jobNumber: facts.jobNumber,
@@ -469,9 +482,10 @@ export function priceTakeoff(
     watermain,
     watermainSpecials,
     watermainValves,
-    confidence: facts.confidence,
+    confidence: assessed.score,
+    confidenceFactors: assessed.factors,
     warnings,
-    withheld: dedupeWithheld(withheld),
+    withheld: pricedWithheld,
     locatorIndex: facts.locatorIndex ?? null,
   };
 }

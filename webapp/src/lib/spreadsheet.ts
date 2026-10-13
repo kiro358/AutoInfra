@@ -1,6 +1,6 @@
 import ExcelJS from 'exceljs';
 import path from 'path';
-import { ExtractionResult, GlobalParams } from './types';
+import { ExtractionResult, GlobalParams, WithheldItem } from './types';
 import { DEFAULT_PARAMS, TEMPLATE_LAYOUT, RowBlock, blockCapacity } from './constants';
 import { standardFeeKind } from './costing-rules';
 
@@ -39,10 +39,87 @@ export async function populateTemplate(
   fillManholes(workbook, extraction, params, layout);
   fillSewers(workbook, extraction, params, layout);
   fillWatermain(workbook, extraction, params, layout);
+  addAuditSheet(workbook, extraction);
 
   // Write to buffer
   const buffer = await workbook.xlsx.writeBuffer();
   return Buffer.from(buffer);
+}
+
+/**
+ * The AUDIT sheet: every number in this workbook that was NOT read off the
+ * drawings, in one place. Two sections, both rendered from the extraction's
+ * withheld list (see WithheldItem in types.ts):
+ *   1. Withheld & defaulted — values the estimator must confirm; where a
+ *      convention default was applied so pricing could proceed, the value
+ *      used and its source are shown next to the question.
+ *   2. Derived — values computed at pricing from read values (rim − invert
+ *      depths, pipe-inferred structure sizes).
+ * A legacy extraction (no withheld list at all) says so explicitly rather
+ * than presenting an empty sheet as a clean bill of health.
+ */
+function addAuditSheet(workbook: ExcelJS.Workbook, extraction: ExtractionResult): void {
+  const ws = workbook.addWorksheet('AUDIT');
+  ws.getColumn(1).width = 34;
+  ws.getColumn(2).width = 16;
+  ws.getColumn(3).width = 26;
+  ws.getColumn(4).width = 78;
+  ws.getColumn(5).width = 14;
+  ws.getColumn(6).width = 52;
+
+  let row = 1;
+  const title = ws.getCell(`A${row++}`);
+  title.value = 'AUDIT — values not read off the drawings';
+  title.font = { bold: true, size: 13 };
+  const sub = ws.getCell(`A${row++}`);
+  sub.value = 'Every value below was missing from the drawings and was withheld, defaulted by convention, or derived at pricing. Confirm each one before relying on this estimate.';
+  row++;
+
+  const items = extraction.withheld;
+  if (!items) {
+    ws.getCell(`A${row}`).value = 'No audit trail was recorded for this extraction (it predates provenance/withheld recording). Re-run the extraction to produce one.';
+    return;
+  }
+  if (items.length === 0) {
+    ws.getCell(`A${row}`).value = 'Nothing withheld: no defaults or derivations were applied at pricing beyond the costing rule table.';
+    return;
+  }
+
+  const sections: { heading: string; kinds: WithheldItem['kind'][] }[] = [
+    { heading: 'WITHHELD & DEFAULTED — questions for the estimator', kinds: ['withheld', 'defaulted'] },
+    { heading: 'DERIVED — computed at pricing from read values', kinds: ['derived'] },
+  ];
+  for (const section of sections) {
+    const rows = items.filter((i) => section.kinds.includes(i.kind));
+    if (rows.length === 0) continue;
+    const h = ws.getCell(`A${row++}`);
+    h.value = section.heading;
+    h.font = { bold: true, size: 11 };
+    const header = ws.getRow(row++);
+    ['Entity', 'Field', 'Status', 'Question / note', 'Value used', 'Value source'].forEach((t, c) => {
+      const cell = header.getCell(c + 1);
+      cell.value = t;
+      cell.font = { bold: true };
+    });
+    for (const item of rows) {
+      const r = ws.getRow(row++);
+      r.getCell(1).value = item.entity;
+      r.getCell(2).value = item.field;
+      r.getCell(3).value =
+        item.kind === 'withheld' ? 'WITHHELD — left blank'
+        : item.kind === 'defaulted' ? 'DEFAULTED — default applied'
+        : 'DERIVED';
+      r.getCell(4).value = item.question;
+      if (item.defaultApplied) {
+        r.getCell(5).value = item.defaultApplied.value;
+        r.getCell(6).value = item.defaultApplied.source;
+      } else {
+        r.getCell(5).value = '—';
+        r.getCell(6).value = '—';
+      }
+    }
+    row++;
+  }
 }
 
 type Layout = (typeof TEMPLATE_LAYOUT)['SHORT'];

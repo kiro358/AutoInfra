@@ -19,6 +19,7 @@ import { normalizeLabel, runSignature } from './compare-facts';
 import { assembleTranscriptTakeoff } from './transcript-takeoff';
 import { mergeTakeoffs, dropSpecNoteStructures, dropImplausibleCatchbasinGroups, reconcileTakeoff } from './reconcile';
 import { appendCoverageWarnings } from './coverage-checks';
+import { withConfidence } from './confidence';
 import { extractPageText, isTextyPage } from './pdf-text';
 import { verifyStructureProvenance } from './provenance';
 import { assembleTextTakeoff } from './text-takeoff';
@@ -320,7 +321,7 @@ export function parseFacts(raw: any, projectName: string): TakeoffFacts {
     else groupByType[t].quantity = Math.max(groupByType[t].quantity, cnt);
   }
 
-  return {
+  const parsed: TakeoffFacts = {
     projectName: raw.projectName || projectName,
     jobNumber: raw.jobNumber || '',
     date: raw.date || new Date().toISOString().split('T')[0],
@@ -359,9 +360,22 @@ export function parseFacts(raw: any, projectName: string): TakeoffFacts {
       valveSize: String(v.valveSize || ''),
       quantity: Number(v.quantity) || 0,
     })),
-    confidence: Number(raw.confidence) || 0.5,
+    confidence: 0, // placeholder — assessed from signals below, never the model's self-report
     warnings: arr(raw.warnings).filter((w: unknown): w is string => typeof w === 'string'),
   };
+
+  // Provenance: every fact here came from the model's single-pass read —
+  // stamp it so method slicing and the confidence assessment can see the
+  // origin instead of treating these facts as origin-less.
+  for (const fact of [...parsed.structures, ...parsed.catchbasins, ...parsed.sewers, ...parsed.watermain]) {
+    if (!fact.source) fact.source = { method: 'single-pass' };
+  }
+  // The model's self-reported confidence (and the 0.9 the caller used to
+  // seed it) is NOT carried forward: the score is derived from signals —
+  // see confidence.ts. Single-pass facts are uncorroborated by construction,
+  // so the unverifiable-method deduction applies in full; that is the honest
+  // successor to the old `Number(raw.confidence) || 0.5`.
+  return withConfidence(parsed);
 }
 
 /** Run fn over items with at most `limit` in flight; preserves input order. */
@@ -927,6 +941,9 @@ async function extractFromPDFInner(
 
         // Partial-miss surfacing (warnings only — see coverage-checks.ts).
         facts = appendCoverageWarnings(facts);
+        // Re-assess confidence on the final facts (the second pass and the
+        // coverage warnings above postdate the assembler's own assessment).
+        facts = withConfidence(facts);
         facts.transcript = transcript;
         facts.locatorIndex = locatorIndex;
         facts.cost = cost;
@@ -967,6 +984,10 @@ async function extractFromPDFInner(
         // endpoint is only "dangling" once both paths' structures are in, so
         // this runs after the merge, not inside either sub-assembly.
         facts = appendCoverageWarnings(facts);
+        // Re-assess confidence on the MERGED facts: mergeTakeoffs kept the
+        // primary (text) path's assessment, which knows nothing of the
+        // transcript half. See confidence.ts.
+        facts = withConfidence(facts);
         if (transcript.length > 0) facts.transcript = transcript;
         facts.locatorIndex = locatorIndex;
         facts.cost = cost;
@@ -1109,7 +1130,6 @@ async function extractFromPDFInner(
         watermain: deduplicateWatermain(raw.watermain),
         watermainSpecials: deduplicateSpecials(raw.watermainSpecials),
         watermainValves: deduplicateValves(raw.watermainValves),
-        confidence: 0.9,
         warnings: raw.warnings,
       }, projectName);
 

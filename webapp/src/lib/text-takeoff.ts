@@ -11,6 +11,7 @@ import {
   structureDescription, chamberWarning,
 } from './callout-parser';
 import { reconcileTakeoff } from './reconcile';
+import { withConfidence } from './confidence';
 import { normalizeLabel } from './compare-facts';
 import { detectTables, tableToSewers } from './schedule-table';
 import { TakeoffFacts, StructureFact, SewerFact, WatermainFact, CatchbasinGroupFact, FactSource, WithheldItem } from './types';
@@ -196,11 +197,14 @@ export function assembleTextTakeoff(pages: PageText[], projectName: string): Tak
     source: catchbasinSource.get(type),
   }));
 
-  // Step 8
-  return reconcileTakeoff({
+  // Step 8 — confidence is assessed from the reconciled facts' own signals
+  // (provenance coverage, withheld questions, coverage warnings), never a
+  // constant: the `confidence: 1` below is a placeholder withConfidence
+  // immediately replaces. See confidence.ts.
+  return withConfidence(reconcileTakeoff({
     projectName, jobNumber: '', date: '',
     structures, catchbasins, sewers, watermain,
     watermainSpecials: [], watermainValves: [],
     confidence: 1, warnings, withheld,
-  });
+  }));
 }

@@ -16,6 +16,7 @@ import {
   isDanglingRunHead, isRunContinuation, ParsedStructure, ParsedRun,
 } from './callout-parser';
 import { reconcileTakeoff } from './reconcile';
+import { withConfidence } from './confidence';
 import { appendCoverageWarnings } from './coverage-checks';
 import { normalizeLabel } from './compare-facts';
 import { TakeoffFacts, StructureFact, SewerFact, WatermainFact, CatchbasinGroupFact, TileTranscript, FactSource, WithheldItem } from './types';
@@ -448,8 +449,12 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
   // here, facts-level from coverage-checks.ts). No fact is created, altered
   // or removed: an incomplete takeoff must SAY it is incomplete.
   const coverage = coverageWarningsFor(transcripts, out, reconciled);
-  return appendCoverageWarnings({
+  // Confidence is assessed LAST, from the final facts' own signals
+  // (provenance coverage, withheld questions, and the coverage warnings
+  // appended above) — never the constant the reconciler was handed.
+  // See confidence.ts.
+  return withConfidence(appendCoverageWarnings({
     ...reconciled,
     warnings: [...reconciled.warnings, ...coverage],
-  });
+  }));
 }

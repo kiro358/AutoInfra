@@ -1,0 +1,552 @@
+[
+ {
+  "project": "Georgian Dr (2/3)",
+  "pdfs": 1,
+  "pages": 3,
+  "textyPages": 0,
+  "unknownPages": 3,
+  "bearingPages": [],
+  "usedPages": [
+   2,
+   3
+  ],
+  "missedBearingPages": [],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 2
+ },
+ {
+  "project": "King Forest (5/8)",
+  "pdfs": 1,
+  "pages": 3,
+  "textyPages": 0,
+  "unknownPages": 3,
+  "bearingPages": [],
+  "usedPages": [
+   1,
+   2
+  ],
+  "missedBearingPages": [],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 5
+ },
+ {
+  "project": "Woodbine Ave (11/12)",
+  "pdfs": 3,
+  "pages": 3,
+  "textyPages": 0,
+  "unknownPages": 3,
+  "bearingPages": [],
+  "usedPages": [
+   1,
+   2,
+   3
+  ],
+  "missedBearingPages": [],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 11
+ },
+ {
+  "project": "Holiday Inn (9/13)",
+  "pdfs": 1,
+  "pages": 10,
+  "textyPages": 2,
+  "unknownPages": 8,
+  "bearingPages": [
+   10
+  ],
+  "usedPages": [
+   8,
+   9
+  ],
+  "missedBearingPages": [
+   {
+    "page": 10,
+    "file": "05-Civil Drawings & Specs.pdf",
+    "signals": [
+     "watermain callouts"
+    ]
+   }
+  ],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 5
+ },
+ {
+  "project": "Eric Smith Way (11/14)",
+  "pdfs": 4,
+  "pages": 4,
+  "textyPages": 4,
+  "unknownPages": 0,
+  "bearingPages": [
+   1,
+   2,
+   3,
+   4
+  ],
+  "usedPages": [
+   3,
+   4
+  ],
+  "missedBearingPages": [
+   {
+    "page": 1,
+    "file": "55EricTSmithWay-A01T-SPA-Nov15-24 - Copy.pdf",
+    "signals": [
+     "11 structure labels"
+    ]
+   },
+   {
+    "page": 2,
+    "file": "55EricTSmithWay-A01EC-SPA-Nov15-24 - Copy.pdf",
+    "signals": [
+     "11 structure labels"
+    ]
+   }
+  ],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 10
+ },
+ {
+  "project": "Matthews Hangar (6/17)",
+  "pdfs": 1,
+  "pages": 5,
+  "textyPages": 2,
+  "unknownPages": 3,
+  "bearingPages": [
+   3,
+   5
+  ],
+  "usedPages": [
+   3
+  ],
+  "missedBearingPages": [
+   {
+    "page": 5,
+    "file": "Field Aerospace Hanger - Drawing Package - 13 FEB 2026.pdf",
+    "signals": [
+     "15 structure labels",
+     "15 elevations"
+    ]
+   }
+  ],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 1
+ },
+ {
+  "project": "Ecole Secondaire (14/19)",
+  "pdfs": 1,
+  "pages": 2,
+  "textyPages": 0,
+  "unknownPages": 2,
+  "bearingPages": [],
+  "usedPages": [
+   1,
+   2
+  ],
+  "missedBearingPages": [],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 14
+ },
+ {
+  "project": "Oakville Fire Hall (10/20)",
+  "pdfs": 2,
+  "pages": 9,
+  "textyPages": 4,
+  "unknownPages": 5,
+  "bearingPages": [
+   2,
+   3,
+   5,
+   6
+  ],
+  "usedPages": [
+   3,
+   5,
+   6,
+   8,
+   9
+  ],
+  "missedBearingPages": [
+   {
+    "page": 2,
+    "file": "RFT-80-2025_Civil_Drawings (1).pdf",
+    "signals": [
+     "17 structure labels"
+    ]
+   }
+  ],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 2
+ },
+ {
+  "project": "New Orillia (12/20)",
+  "pdfs": 1,
+  "pages": 5,
+  "textyPages": 0,
+  "unknownPages": 5,
+  "bearingPages": [],
+  "usedPages": [
+   2,
+   3,
+   5
+  ],
+  "missedBearingPages": [],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 12
+ },
+ {
+  "project": "Bradford Civic (10/21)",
+  "pdfs": 1,
+  "pages": 6,
+  "textyPages": 4,
+  "unknownPages": 2,
+  "bearingPages": [
+   1,
+   2,
+   3
+  ],
+  "usedPages": [
+   1,
+   2,
+   3
+  ],
+  "missedBearingPages": [],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 0
+ },
+ {
+  "project": "White Oak Woodbine (19/22)",
+  "pdfs": 2,
+  "pages": 2,
+  "textyPages": 0,
+  "unknownPages": 2,
+  "bearingPages": [],
+  "usedPages": [
+   1,
+   2
+  ],
+  "missedBearingPages": [],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 31
+ },
+ {
+  "project": "Milton #13 (17/27)",
+  "pdfs": 1,
+  "pages": 3,
+  "textyPages": 0,
+  "unknownPages": 3,
+  "bearingPages": [],
+  "usedPages": [
+   2
+  ],
+  "missedBearingPages": [],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 17
+ },
+ {
+  "project": "Ultimate Drive (19/29)",
+  "pdfs": 2,
+  "pages": 9,
+  "textyPages": 7,
+  "unknownPages": 2,
+  "bearingPages": [
+   1,
+   2,
+   3,
+   4,
+   5,
+   9
+  ],
+  "usedPages": [
+   1,
+   2,
+   9
+  ],
+  "missedBearingPages": [
+   {
+    "page": 3,
+    "file": "21459319-0002-Ultimate Drive-250814.pdf",
+    "signals": [
+     "26 structure labels",
+     "watermain callouts"
+    ]
+   },
+   {
+    "page": 4,
+    "file": "21459319-0002-Ultimate Drive-250814.pdf",
+    "signals": [
+     "2 structure labels",
+     "watermain callouts"
+    ]
+   },
+   {
+    "page": 5,
+    "file": "21459319-0002-Ultimate Drive-250814.pdf",
+    "signals": [
+     "2 elevations"
+    ]
+   }
+  ],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 4
+ },
+ {
+  "project": "Ontario Tech (25/36)",
+  "pdfs": 1,
+  "pages": 1,
+  "textyPages": 0,
+  "unknownPages": 1,
+  "bearingPages": [],
+  "usedPages": [
+   1
+  ],
+  "missedBearingPages": [],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 24
+ },
+ {
+  "project": "Proposed Commercial (32/56, multi)",
+  "pdfs": 1,
+  "pages": 1,
+  "textyPages": 0,
+  "unknownPages": 1,
+  "bearingPages": [],
+  "usedPages": [
+   1
+  ],
+  "missedBearingPages": [],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 32
+ },
+ {
+  "project": "Panattoni (85/89, multi)",
+  "pdfs": 13,
+  "pages": 13,
+  "textyPages": 0,
+  "unknownPages": 13,
+  "bearingPages": [],
+  "usedPages": [
+   3,
+   4,
+   5,
+   6,
+   7,
+   8,
+   9,
+   10,
+   11,
+   12,
+   13
+  ],
+  "missedBearingPages": [],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 84
+ },
+ {
+  "project": "Walmart Port Perry (4/9)",
+  "pdfs": 2,
+  "pages": 2,
+  "textyPages": 1,
+  "unknownPages": 1,
+  "bearingPages": [
+   1
+  ],
+  "usedPages": [
+   1,
+   2
+  ],
+  "missedBearingPages": [],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 4
+ },
+ {
+  "project": "Loretto Abbey (10/14)",
+  "pdfs": 1,
+  "pages": 5,
+  "textyPages": 3,
+  "unknownPages": 2,
+  "bearingPages": [
+   1,
+   3,
+   4
+  ],
+  "usedPages": [
+   2,
+   3,
+   4
+  ],
+  "missedBearingPages": [
+   {
+    "page": 1,
+    "file": "LACS TENDER Civil Dwgs.pdf",
+    "signals": [
+     "watermain callouts"
+    ]
+   }
+  ],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 8
+ },
+ {
+  "project": "Wigmore Park (9/17)",
+  "pdfs": 1,
+  "pages": 2,
+  "textyPages": 0,
+  "unknownPages": 2,
+  "bearingPages": [],
+  "usedPages": [
+   1,
+   2
+  ],
+  "missedBearingPages": [],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 9
+ },
+ {
+  "project": "Stevenson Road (7/20)",
+  "pdfs": 1,
+  "pages": 9,
+  "textyPages": 4,
+  "unknownPages": 5,
+  "bearingPages": [
+   7
+  ],
+  "usedPages": [
+   1,
+   7
+  ],
+  "missedBearingPages": [],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 7
+ },
+ {
+  "project": "Gerrard Shelter (9/21)",
+  "pdfs": 6,
+  "pages": 17,
+  "textyPages": 5,
+  "unknownPages": 12,
+  "bearingPages": [
+   6,
+   7,
+   15
+  ],
+  "usedPages": [
+   1,
+   2
+  ],
+  "missedBearingPages": [
+   {
+    "page": 6,
+    "file": "2535 Gerrard St E - Cupolex SWM Drawings 2026-02-04.pdf",
+    "signals": [
+     "3 structure labels",
+     "10 elevations"
+    ]
+   },
+   {
+    "page": 7,
+    "file": "2535 Gerrard St E - Cupolex SWM Drawings 2026-02-04.pdf",
+    "signals": [
+     "run callouts"
+    ]
+   },
+   {
+    "page": 15,
+    "file": "2535 GERRARD STREET E. TORONTO.pdf",
+    "signals": [
+     "watermain callouts"
+    ]
+   }
+  ],
+  "truthStructuresOnlyOnMissed": [
+   "MH 5",
+   "MH 6",
+   "MH 7"
+  ],
+  "truthStructuresNotVisibleInTextLayer": 6
+ },
+ {
+  "project": "Project Crimson (13/23)",
+  "pdfs": 3,
+  "pages": 3,
+  "textyPages": 0,
+  "unknownPages": 3,
+  "bearingPages": [],
+  "usedPages": [
+   1
+  ],
+  "missedBearingPages": [],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 13
+ },
+ {
+  "project": "Future Park (2/24)",
+  "pdfs": 1,
+  "pages": 3,
+  "textyPages": 0,
+  "unknownPages": 3,
+  "bearingPages": [],
+  "usedPages": [
+   1,
+   2,
+   3
+  ],
+  "missedBearingPages": [],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 2
+ },
+ {
+  "project": "Uxbridge Pool Sprung (9/26)",
+  "pdfs": 1,
+  "pages": 5,
+  "textyPages": 2,
+  "unknownPages": 3,
+  "bearingPages": [
+   1,
+   2
+  ],
+  "usedPages": [
+   2
+  ],
+  "missedBearingPages": [
+   {
+    "page": 1,
+    "file": "Combined_Uxbridge Pool Sprung_Grading and Site Servicing Drawings - Dated March 23 2026.pdf",
+    "signals": [
+     "watermain callouts"
+    ]
+   }
+  ],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 4
+ },
+ {
+  "project": "New Tottenham (12/27)",
+  "pdfs": 1,
+  "pages": 3,
+  "textyPages": 0,
+  "unknownPages": 3,
+  "bearingPages": [],
+  "usedPages": [
+   2,
+   3
+  ],
+  "missedBearingPages": [],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 12
+ },
+ {
+  "project": "Riocan Windfields (14/31)",
+  "pdfs": 1,
+  "pages": 7,
+  "textyPages": 0,
+  "unknownPages": 7,
+  "bearingPages": [],
+  "usedPages": [
+   3,
+   4
+  ],
+  "missedBearingPages": [],
+  "truthStructuresOnlyOnMissed": [],
+  "truthStructuresNotVisibleInTextLayer": 14
+ }
+]

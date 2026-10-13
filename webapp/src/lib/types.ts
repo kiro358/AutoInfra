@@ -96,6 +96,8 @@ export interface ExtractionResult {
   watermainSpecials: WatermainSpecial[];
   watermainValves: WatermainValve[];
   confidence: number;
+  /** The named deductions behind `confidence` (signal-based, see confidence.ts). */
+  confidenceFactors?: ConfidenceFactor[];
   warnings: string[];
   /** Carried from the facts and extended at pricing with every default /
    *  derivation actually applied — rendered on the workbook's AUDIT sheet. */
@@ -146,6 +148,26 @@ export interface WithheldItem {
   question: string;
   /** The value actually used in pricing, and where it came from — null when left blank. */
   defaultApplied?: { value: number | string; source: string } | null;
+}
+
+/**
+ * One named deduction behind a signal-based confidence score (see
+ * confidence.ts). The score is the product of the applied factors; each line
+ * names the signal, how many units it fired on, and the multiplier it
+ * applied — the breakdown travels with the number so a low score explains
+ * itself instead of arriving as a bare float.
+ */
+export interface ConfidenceFactor {
+  /** Stable machine id of the signal ('defaulted-values', 'coverage-warnings', …). */
+  signal: string;
+  /** Human-readable reason, shown anywhere the score is surfaced. */
+  label: string;
+  /** Units the signal fired on (facts, withheld items, warnings). */
+  count: number;
+  /** Denominator the count is a share of (0 when the signal is not a share). */
+  total: number;
+  /** Multiplier this signal applied to the score (1 = reported, no deduction). */
+  factor: number;
 }
 
 export interface StructureFact {
@@ -218,6 +240,8 @@ export interface TakeoffFacts {
   watermainSpecials: WatermainSpecialFact[];
   watermainValves: WatermainValveFact[];
   confidence: number;
+  /** The named deductions behind `confidence` (signal-based, see confidence.ts). */
+  confidenceFactors?: ConfidenceFactor[];
   warnings: string[];
   /** Values not read off the drawings that pricing had to default, derive, or
    *  leave blank — see WithheldItem. Optional: legacy facts carry none. */

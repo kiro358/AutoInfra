@@ -21,7 +21,7 @@ import { mergeTakeoffs, dropSpecNoteStructures, dropImplausibleCatchbasinGroups,
 import { appendCoverageWarnings } from './coverage-checks';
 import { appendPhysicsWarnings } from './physics-checks';
 import { withConfidence } from './confidence';
-import { extractPageText, isTextyPage } from './pdf-text';
+import { extractPageText, isTextyPage, PageText } from './pdf-text';
 import { verifyStructureProvenance } from './provenance';
 import { assembleTextTakeoff } from './text-takeoff';
 import { extractVectorTakeoff, type VectorVerifier } from './vector-takeoff';
@@ -552,6 +552,62 @@ export function countEntities(facts: TakeoffFacts): number {
   );
 }
 
+export interface HybridAssembly {
+  facts: TakeoffFacts;
+  transcript: TileTranscript[];
+  /** Located pages routed to the text layer. */
+  textyPageNums: number[];
+  /** Pages actually vision-transcribed (non-texty + zero-yield fallbacks). */
+  rasterPageNums: number[];
+  /** Texty pages re-routed to vision because their text layer yielded zero entities. */
+  fallbackPageNums: number[];
+}
+
+/**
+ * EXTRACTION_MODE=hybrid core: text-layer pages are assembled exactly ($0);
+ * non-texty pages are vision-transcribed and merged (text wins conflicts).
+ * `transcribe` is injected so the routing is testable without the LLM.
+ *
+ * Zero-yield fallback: a page can pass isTextyPage while its drawing
+ * annotations are absent from the text layer (annotation-bearing prose whose
+ * callouts the grammar cannot assemble — spec/schedule sheets — or residual
+ * SHX prose the classifier still admits). Its text assembly then contributes
+ * ZERO entities and, pre-fix, the sheet was silently lost: no vision tiles
+ * were ever rendered for it. Such a page is re-routed to vision transcription.
+ * Attribution is per page — assembleTextTakeoff's spatial logic is per-page,
+ * so a page that yields nothing alone contributes nothing to the joint
+ * assembly. The guard is the cost control: the fallback fires ONLY on zero
+ * yield, and when no page falls back the routing (and therefore the facts)
+ * is byte-identical to the pre-fix behaviour.
+ */
+export async function assembleHybridTakeoff(
+  pageTexts: PageText[],
+  locatedPages: number[],
+  projectName: string,
+  transcribe: (pages: number[]) => Promise<TileTranscript[]>,
+): Promise<HybridAssembly> {
+  const textyPages = pageTexts.filter(isTextyPage);
+  const textyPageNums = textyPages.map((p) => p.page);
+  const textySet = new Set(textyPageNums);
+  const rasterSet = new Set(locatedPages.filter((p) => !textySet.has(p)));
+
+  const textFacts = assembleTextTakeoff(textyPages, projectName);
+
+  const fallbackPageNums: number[] = [];
+  for (const page of textyPages) {
+    if (countEntities(assembleTextTakeoff([page], projectName)) === 0) {
+      fallbackPageNums.push(page.page);
+      rasterSet.add(page.page);
+    }
+  }
+  const rasterPageNums = [...rasterSet].sort((a, b) => a - b);
+
+  const transcript = rasterPageNums.length > 0 ? await transcribe(rasterPageNums) : [];
+  const transcriptFacts = transcript.length > 0 ? assembleTranscriptTakeoff(transcript, projectName) : null;
+  const facts = transcriptFacts ? mergeTakeoffs(textFacts, transcriptFacts) : textFacts;
+  return { facts, transcript, textyPageNums, rasterPageNums, fallbackPageNums };
+}
+
 /** Pure: turn recorded failures into warnings, or an error when nothing survived. */
 export function applyCallFailures(facts: TakeoffFacts, failures: string[]): TakeoffFacts {
   if (failures.length === 0) return facts;
@@ -1009,15 +1065,16 @@ async function extractFromPDFInner(
       // only non-texty pages go through the transcribe path. Text layer wins on conflicts.
       if (mode === 'hybrid') {
         const pageTexts = await extractPageText(pdfBuffer, unionPages);
-        const textyPages = pageTexts.filter(isTextyPage);
-        const textyPageNums = new Set(textyPages.map((p) => p.page));
-        const rasterPageNums = unionPages.filter((p) => !textyPageNums.has(p));
+        // Routing + assembly live in assembleHybridTakeoff (incl. the
+        // zero-yield fallback: a texty page that assembles to zero entities
+        // is re-routed to vision instead of being silently dropped).
+        const hybrid = await assembleHybridTakeoff(pageTexts, unionPages, projectName, transcribeTiles);
+        const transcript = hybrid.transcript;
+        if (hybrid.fallbackPageNums.length > 0) {
+          console.log(`      [extraction.ts] hybrid: texty page(s) ${hybrid.fallbackPageNums.join(', ')} yielded zero entities from the text layer — re-routed to vision transcription.`);
+        }
 
-        const textFacts = assembleTextTakeoff(textyPages, projectName);
-        const transcript = rasterPageNums.length > 0 ? await transcribeTiles(rasterPageNums) : [];
-        const transcriptFacts = transcript.length > 0 ? assembleTranscriptTakeoff(transcript, projectName) : null;
-
-        let facts = transcriptFacts ? mergeTakeoffs(textFacts, transcriptFacts) : textFacts;
+        let facts = hybrid.facts;
 
         // Two-pass watermain extraction if still 0 watermain runs
         if (facts.watermain.length === 0 && (unionPages.length > 0 || pdfBuffer)) {
@@ -1050,7 +1107,7 @@ async function extractFromPDFInner(
         // the two paths are merged, so this runs here, not inside either
         // sub-assembly alone. Appended after the confidence assessment.
         facts = appendPhysicsWarnings(facts);
-        console.log(`      [extraction.ts] hybrid: ${textyPageNums.size} texty / ${rasterPageNums.length} raster of ${unionPages.length} located page(s). cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);
+        console.log(`      [extraction.ts] hybrid: ${hybrid.textyPageNums.length} texty / ${hybrid.rasterPageNums.length} raster of ${unionPages.length} located page(s). cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);
         return facts;
       }
 

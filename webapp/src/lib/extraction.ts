@@ -5,7 +5,8 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env.local') });
 
 import { GoogleGenAI } from '@google/genai';
 import { Storage } from '@google-cloud/storage';
-import { TakeoffFacts, CatchbasinGroupFact, TileTranscript, WatermainFact, WatermainSpecialFact, WatermainValveFact } from './types';
+import { TakeoffFacts, CatchbasinGroupFact, TileTranscript, WatermainFact, WatermainSpecialFact, WatermainValveFact, EntityCounts, ExtractionDiagnostics, PageDiagnostics, TileDiagnostics } from './types';
+import { buildExtractionDiagnostics, deriveRenderedPerPage, entityCountsByKind, tileDiagnosticsWarnings } from './diagnostics';
 import type { ExtractionModeId } from './extraction-modes';
 import { PIPE_DIAMETERS } from './constants';
 import { snapToPipeDiameter, normalizeSlope } from './geometry';
@@ -561,6 +562,14 @@ export interface HybridAssembly {
   rasterPageNums: number[];
   /** Texty pages re-routed to vision because their text layer yielded zero entities. */
   fallbackPageNums: number[];
+  /** Entity counts of the text-path assembly, before the merge (diagnostics). */
+  textCounts: EntityCounts;
+  /** Entity counts of the transcript-path assembly, before the merge;
+   *  null when no page was transcribed. */
+  transcriptCounts: EntityCounts | null;
+  /** Per-page text yield for texty pages — the counts the zero-yield
+   *  fallback check itself computed (diagnostics; not recomputed). */
+  textyPageYields: Record<number, number>;
 }
 
 /**
@@ -594,8 +603,11 @@ export async function assembleHybridTakeoff(
   const textFacts = assembleTextTakeoff(textyPages, projectName);
 
   const fallbackPageNums: number[] = [];
+  const textyPageYields: Record<number, number> = {};
   for (const page of textyPages) {
-    if (countEntities(assembleTextTakeoff([page], projectName)) === 0) {
+    const y = countEntities(assembleTextTakeoff([page], projectName));
+    textyPageYields[page.page] = y;
+    if (y === 0) {
       fallbackPageNums.push(page.page);
       rasterSet.add(page.page);
     }
@@ -605,7 +617,12 @@ export async function assembleHybridTakeoff(
   const transcript = rasterPageNums.length > 0 ? await transcribe(rasterPageNums) : [];
   const transcriptFacts = transcript.length > 0 ? assembleTranscriptTakeoff(transcript, projectName) : null;
   const facts = transcriptFacts ? mergeTakeoffs(textFacts, transcriptFacts) : textFacts;
-  return { facts, transcript, textyPageNums, rasterPageNums, fallbackPageNums };
+  return {
+    facts, transcript, textyPageNums, rasterPageNums, fallbackPageNums,
+    textCounts: entityCountsByKind(textFacts),
+    transcriptCounts: transcriptFacts ? entityCountsByKind(transcriptFacts) : null,
+    textyPageYields,
+  };
 }
 
 export interface LocatedPageAddition {
@@ -714,6 +731,32 @@ async function extractFromPDFInner(
   const sourceHashes = inputBuffers.map(buf => crypto.createHash('sha256').update(buf).digest('hex'));
   const sourceHash = crypto.createHash('sha256').update(sourceHashes.join(',')).digest('hex');
 
+  // --- Diagnostics state (PR18) -------------------------------------------
+  // Accumulated as the run proceeds and attached to the facts at each
+  // return (see attachDiagnostics). Purely observational: nothing below
+  // reads this state to make an extraction decision.
+  const runStartedAt = Date.now();
+  let locatorRan = false;
+  let locatorRawPicks: number[] = [];
+  let tileAllFallback = false;
+  let unionAdded: LocatedPageAddition[] = [];
+  let unionPageTexts: PageText[] | null = null;
+  // Tile accounting for the transcribe/hybrid paths, filled by
+  // transcribeTiles (the single-pass path builds its own section — it does
+  // not transcribe). `ran` stays false when no page was ever tiled.
+  const tileAcc = {
+    ran: false,
+    renderFailed: false,
+    plannedPages: [] as { page: number; planned: number }[],
+    perPageRendered: [] as (number | null)[],
+    rendered: null as number | null,
+    uploaded: null as number | null,
+    transcribed: null as number | null,
+    missingAfterRetry: 0,
+    degenerateDiscarded: 0,
+    blocks: null as number | null,
+  };
+
   const ai = getGenAI();
   const useVertex = process.env.USE_VERTEX_AI === 'true' || !process.env.GEMINI_API_KEY;
   const uploadedFiles: any[] = [];
@@ -744,6 +787,7 @@ async function extractFromPDFInner(
       locatorIndex = { manholePages: allPages, sewerPages: allPages, watermainPages: allPages };
       console.log(`      [extraction.ts] Tiling all ${totalPages} page(s) (locator skipped).`);
     } else {
+      locatorRan = true;
       let relevant: number[] = [];
       const memoedPages = REUSE_PREP ? locatorMemo.get(sourceHash) : undefined;
       if (memoedPages) {
@@ -760,6 +804,7 @@ async function extractFromPDFInner(
           console.warn(`      [extraction.ts] Page locator failed (${e.message}); using all pages.`);
         }
       }
+      locatorRawPicks = [...relevant];
       if (relevant.length > 0) {
         locatorIndex = { manholePages: relevant, sewerPages: relevant, watermainPages: relevant };
         console.log(`      [extraction.ts] Page locator selected ${relevant.length}/${totalPages} page(s):`, relevant);
@@ -771,6 +816,7 @@ async function extractFromPDFInner(
         (locatorIndex.manholePages.length === 0 &&
          locatorIndex.sewerPages.length === 0 &&
          locatorIndex.watermainPages.length === 0)) {
+      tileAllFallback = true;
       locatorIndex = { manholePages: allPages, sewerPages: allPages, watermainPages: allPages };
       console.log(`      [extraction.ts] Locator empty — tiling all ${totalPages} page(s).`);
     }
@@ -790,7 +836,9 @@ async function extractFromPDFInner(
       ]);
       if (locatedSet.size > 0 && locatedSet.size < totalPages) {
         try {
-          const union = unionLocatedPages([...locatedSet], await extractPageText(pdfBuffer), projectName);
+          unionPageTexts = await extractPageText(pdfBuffer);
+          const union = unionLocatedPages([...locatedSet], unionPageTexts, projectName);
+          unionAdded = union.added;
           if (union.added.length > 0) {
             locatorIndex = { manholePages: union.pages, sewerPages: union.pages, watermainPages: union.pages };
             console.log(
@@ -908,6 +956,73 @@ async function extractFromPDFInner(
       return parts;
     };
 
+    // --- Diagnostics helpers (PR18) --------------------------------------
+    // Page size in points from the already-loaded document (tilesNeededPerPage
+    // needs the sheet geometry). Null on any failure — that page then plans 0
+    // tiles and the per-page derivation fails to reconcile, leaving totals
+    // authoritative and per-page rendered null (see diagnostics.ts).
+    const pageDimsPt = (page: number): { width: number; height: number } | null => {
+      try {
+        const s = srcDoc.getPage(page - 1).getSize();
+        return { width: s.width, height: s.height };
+      } catch {
+        return null;
+      }
+    };
+
+    const textCharsByPage = (pts: PageText[] | null): Map<number, number> | null =>
+      pts ? new Map(pts.map((pt) => [pt.page, pt.items.reduce((a, i) => a + i.text.length, 0)])) : null;
+
+    // The tiles section of the diagnostics record, from tileAcc (the
+    // single-pass path builds its own section — it renders but never
+    // transcribes, so its transcription fields stay null).
+    const transcribeTileSection = (): TileDiagnostics => {
+      if (!tileAcc.ran) {
+        return { planned: null, rendered: null, uploaded: null, transcribed: null, missingAfterRetry: null, degenerateDiscarded: null, blocks: null };
+      }
+      return {
+        planned: tileAcc.plannedPages.reduce((a, p) => a + p.planned, 0),
+        rendered: tileAcc.renderFailed ? 0 : tileAcc.rendered,
+        uploaded: tileAcc.uploaded,
+        transcribed: tileAcc.transcribed,
+        missingAfterRetry: tileAcc.renderFailed ? null : tileAcc.missingAfterRetry,
+        degenerateDiscarded: tileAcc.renderFailed ? null : tileAcc.degenerateDiscarded,
+        blocks: tileAcc.blocks,
+        ...(tileAcc.renderFailed ? { renderFailed: true as const } : {}),
+      };
+    };
+
+    const tilePlanByPage = (): Map<number, { planned: number; rendered: number | null }> =>
+      new Map(tileAcc.plannedPages.map((p, i) => [p.page, { planned: p.planned, rendered: tileAcc.perPageRendered[i] ?? null }]));
+
+    // Attach the diagnostics record to finished facts (see diagnostics.ts).
+    // Called at each mode's return, after every mutation of the facts.
+    const attachDiagnostics = (
+      facts: TakeoffFacts,
+      mode: string,
+      pages: PageDiagnostics[],
+      tiles: TileDiagnostics,
+      sources: ExtractionDiagnostics['assembly']['sources'],
+      finalPages: number[],
+    ): TakeoffFacts => {
+      facts.diagnostics = buildExtractionDiagnostics({
+        mode,
+        durationMs: Date.now() - runStartedAt,
+        locator: {
+          ran: locatorRan,
+          rawPicks: locatorRawPicks,
+          unionAdded: unionAdded.map((a) => ({ page: a.page, reason: a.reason })),
+          finalPages,
+          tileAllFallback,
+        },
+        pages,
+        tiles,
+        sources,
+        finalFacts: facts,
+      });
+      return facts;
+    };
+
     // Render + upload tiles for `pages`, batch them, and transcribe each batch
     // verbatim with getTranscriptionPrompt (no takeoff interpretation — see
     // modular-prompts.ts). Shared by EXTRACTION_MODE=transcribe (all located
@@ -916,20 +1031,32 @@ async function extractFromPDFInner(
     const transcribeTiles = async (pages: number[]): Promise<TileTranscript[]> => {
       if (pages.length === 0) return [];
 
+      // Diagnostics: plan the tile geometry for exactly the pages being
+      // tiled, so rendered/transcribed/lost counts attribute per page.
+      tileAcc.ran = true;
+      const PER_PAGE = MAX_TILES_PER_PAGE;
+      const maxTilesTotal = Math.min(Number(process.env.MAX_TILES_TOTAL) || 320, pages.length * PER_PAGE);
+      tileAcc.plannedPages = pages.map((p) => {
+        const d = pageDimsPt(p);
+        return { page: p, planned: d ? tilesNeededPerPage(d.width, d.height) : 0 };
+      });
+
       let tiles: Buffer[] = [];
       try {
-        const PER_PAGE = MAX_TILES_PER_PAGE;
-        const maxTilesTotal = Math.min(Number(process.env.MAX_TILES_TOTAL) || 320, pages.length * PER_PAGE);
         tiles = await renderTilesFlat(pdfBuffer, pages, {
           dpi: TILE_DPI, tilePx: TILE_PX, overlapPx: TILE_OVERLAP, maxTilesPerPage: PER_PAGE, maxTilesTotal,
         });
+        tileAcc.rendered = tiles.length;
+        tileAcc.perPageRendered = deriveRenderedPerPage(tileAcc.plannedPages, PER_PAGE, maxTilesTotal, tiles.length);
       } catch (e: any) {
+        tileAcc.renderFailed = true;
         console.warn(`      [extraction.ts] Transcribe tile rendering failed (${e.message}).`);
         recordCallFailure('Rendering drawing tiles', e);
         return [];
       }
 
       const tileParts = await uploadTiles(tiles);
+      tileAcc.uploaded = tileParts.length;
       cost.tiles += tileParts.length;
       console.log(`      [extraction.ts] Rendered + uploaded ${tileParts.length} tile(s) from ${pages.length} page(s) for transcription.`);
 
@@ -937,7 +1064,11 @@ async function extractFromPDFInner(
       const BATCH_CONCURRENCY = Number(process.env.BATCH_CONCURRENCY) || 3;
       const tileBatches: any[][] = [];
       for (let i = 0; i < tileParts.length; i += BATCH_TILES) tileBatches.push(tileParts.slice(i, i + BATCH_TILES));
-      if (tileBatches.length === 0) return [];
+      if (tileBatches.length === 0) {
+        tileAcc.transcribed = 0;
+        tileAcc.blocks = 0;
+        return [];
+      }
 
       // One transcription call: prompt -> stream -> parsed object. Shared by the first
       // pass and the single retry round below so the retry cannot drift from the
@@ -1002,6 +1133,7 @@ async function extractFromPDFInner(
         );
 
         const first = sanitizeTranscriptTiles(parsed?.tiles, tileOffset, batch.length);
+        tileAcc.degenerateDiscarded += first.degenerate.length;
         for (const n of first.degenerate) {
           console.warn(`      [extraction.ts] ${label}: tile ${n} DISCARDED — decode repetition loop, not a read of the drawing.`);
         }
@@ -1024,6 +1156,8 @@ async function extractFromPDFInner(
             parts, retryOffset, `${sourceHash}_transcribe_b${bi}r${run[0]}`, retryLabel
           );
           const again = sanitizeTranscriptTiles(rp?.tiles, retryOffset, parts.length);
+          tileAcc.degenerateDiscarded += again.degenerate.length;
+          tileAcc.missingAfterRetry += again.missing.length;
           for (const n of again.degenerate) {
             console.warn(`      [extraction.ts] ${retryLabel}: tile ${n} DISCARDED — decode repetition loop.`);
           }
@@ -1035,7 +1169,10 @@ async function extractFromPDFInner(
         return out;
       });
 
-      return batchResults.flat();
+      const allTiles = batchResults.flat();
+      tileAcc.transcribed = allTiles.length;
+      tileAcc.blocks = allTiles.reduce((a, t) => a + t.blocks.length, 0);
+      return allTiles;
     };
 
     // --- TILED INGESTION ---
@@ -1114,6 +1251,15 @@ async function extractFromPDFInner(
         const facts = await extractVectorTakeoff(pdfBuffer, unionPages, projectName, { verify });
         facts.locatorIndex = locatorIndex;
         facts.cost = cost;
+        // Diagnostics: the vector path renders no transcription tiles (the
+        // verifier's thumbnails are on-demand, not tile accounting), so the
+        // tiles section stays null; pages record the vector route.
+        const vectorChars = textCharsByPage(unionPageTexts);
+        attachDiagnostics(facts, 'vector',
+          unionPages.map((p) => ({ page: p, route: 'vector' as const, textChars: vectorChars?.get(p) ?? null, textYield: null, tilesPlanned: null, tilesRendered: null })),
+          transcribeTileSection(),
+          [{ path: 'vector', counts: entityCountsByKind(facts) }],
+          unionPages);
         console.log(`      [extraction.ts] vector-native: ${unionPages.length} located page(s). cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);
         return facts;
       }
@@ -1123,6 +1269,7 @@ async function extractFromPDFInner(
       if (mode === 'transcribe') {
         const transcript = await transcribeTiles(unionPages);
         let facts = assembleTranscriptTakeoff(transcript, projectName);
+        const transcriptCounts = entityCountsByKind(facts);
 
         // Two-pass watermain extraction: if no watermain runs were transcribed,
         // run a focused second pass specifically querying watermain linework/services.
@@ -1151,6 +1298,23 @@ async function extractFromPDFInner(
         // Physics surfacing (warnings only — see physics-checks.ts),
         // appended after the confidence assessment on the final facts.
         facts = appendPhysicsWarnings(facts);
+        // Tile-loss surfacing + diagnostics (PR18): appended after the
+        // confidence assessment, like the physics warnings, so the record
+        // and the warnings describe the final facts without feeding back
+        // into their confidence.
+        const tilesDiagT = transcribeTileSection();
+        facts.warnings = [...(facts.warnings ?? []), ...tileDiagnosticsWarnings(tilesDiagT)];
+        const planT = tilePlanByPage();
+        const charsT = textCharsByPage(unionPageTexts);
+        attachDiagnostics(facts, 'transcribe',
+          unionPages.map((p) => ({
+            page: p, route: 'vision' as const,
+            textChars: charsT?.get(p) ?? null, textYield: null,
+            tilesPlanned: planT.get(p)?.planned ?? null, tilesRendered: planT.get(p)?.rendered ?? null,
+          })),
+          tilesDiagT,
+          [{ path: 'transcript', counts: transcriptCounts }],
+          unionPages);
         console.log(`      [extraction.ts] transcribe: cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);
         return facts;
       }
@@ -1201,12 +1365,38 @@ async function extractFromPDFInner(
         // the two paths are merged, so this runs here, not inside either
         // sub-assembly alone. Appended after the confidence assessment.
         facts = appendPhysicsWarnings(facts);
+        // Tile-loss surfacing + diagnostics (PR18), after the confidence
+        // assessment like the physics warnings above.
+        const tilesDiagH = transcribeTileSection();
+        facts.warnings = [...(facts.warnings ?? []), ...tileDiagnosticsWarnings(tilesDiagH)];
+        const planH = tilePlanByPage();
+        const charsH = textCharsByPage(pageTexts);
+        const rasterSetH = new Set(hybrid.rasterPageNums);
+        const fallbackSetH = new Set(hybrid.fallbackPageNums);
+        attachDiagnostics(facts, 'hybrid',
+          unionPages.map((p) => ({
+            page: p,
+            route: (rasterSetH.has(p) ? 'vision' : 'text') as 'vision' | 'text',
+            textChars: charsH?.get(p) ?? null,
+            textYield: hybrid.textyPageYields[p] ?? null,
+            tilesPlanned: planH.get(p)?.planned ?? null,
+            tilesRendered: planH.get(p)?.rendered ?? null,
+            ...(fallbackSetH.has(p) ? { zeroYieldFallback: true } : {}),
+          })),
+          tilesDiagH,
+          [
+            { path: 'text', counts: hybrid.textCounts },
+            ...(hybrid.transcriptCounts ? [{ path: 'transcript' as const, counts: hybrid.transcriptCounts }] : []),
+          ],
+          unionPages);
         console.log(`      [extraction.ts] hybrid: ${hybrid.textyPageNums.length} texty / ${hybrid.rasterPageNums.length} raster of ${unionPages.length} located page(s). cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);
         return facts;
       }
 
       // Rasterize located pages to legible tiles; fall back to the raw PDF if rendering fails.
       let tileParts: any[] = [];
+      let spRenderFailed = false;
+      let spRenderedCount: number | null = null;
       const memoedTiles = REUSE_PREP ? tilePartsMemo.get(sourceHash) : undefined;
       if (memoedTiles) {
         tileParts = memoedTiles;
@@ -1223,6 +1413,7 @@ async function extractFromPDFInner(
           const tiles = await renderTilesFlat(pdfBuffer, unionPages, {
             dpi: TILE_DPI, tilePx: TILE_PX, overlapPx: TILE_OVERLAP, maxTilesPerPage: PER_PAGE, maxTilesTotal,
           });
+          spRenderedCount = tiles.length;
           tileParts = await uploadTiles(tiles);
           if (REUSE_PREP && tileParts.length > 0) {
             if (tilePartsMemo.size > 64) tilePartsMemo.clear(); // bound memory in long-lived servers
@@ -1230,6 +1421,7 @@ async function extractFromPDFInner(
           }
           console.log(`      [extraction.ts] Rendered + uploaded ${tileParts.length} tile(s) from ${unionPages.length || 'all'} page(s).`);
         } catch (e: any) {
+          spRenderFailed = true;
           console.warn(`      [extraction.ts] Tile rendering failed (${e.message}); falling back to full PDF.`);
         }
       }
@@ -1342,6 +1534,9 @@ async function extractFromPDFInner(
         watermainValves: deduplicateValves(raw.watermainValves),
         warnings: raw.warnings,
       }, projectName);
+      // Assembly counts before the second pass / provenance / junk filters
+      // mutate the facts — the single-pass source row of the diagnostics.
+      const singlePassCounts = entityCountsByKind(facts);
 
       // Dedicated two-pass watermain extraction: on dense servicing drawings with 50+ sewer
       // and structure callouts, the model often exhausts its output token/attention budget
@@ -1420,6 +1615,36 @@ async function extractFromPDFInner(
           `Those responses hit the output ceiling mid-loop, so coverage is incomplete — re-run before trusting this takeoff.`
         );
       }
+      // Tile truncation surfacing + diagnostics (PR18): this path renders
+      // the same capped tile set as the transcribe path, so a cap-truncated
+      // render is attributable here too. It never transcribes, so the
+      // transcription fields stay null.
+      const spPlannedPages = unionPages.map((p) => {
+        const d = pageDimsPt(p);
+        return { page: p, planned: d ? tilesNeededPerPage(d.width, d.height) : 0 };
+      });
+      const spPerPageCap = MAX_TILES_PER_PAGE;
+      const spTotalCap = Math.min(Number(process.env.MAX_TILES_TOTAL) || 320, (unionPages.length || 1) * spPerPageCap);
+      const spRendered = spRenderedCount ?? tileParts.length;
+      const spTiles: TileDiagnostics = {
+        planned: spPlannedPages.reduce((a, p) => a + p.planned, 0),
+        rendered: spRendered,
+        uploaded: tileParts.length,
+        transcribed: null, missingAfterRetry: null, degenerateDiscarded: null, blocks: null,
+        ...(spRenderFailed ? { renderFailed: true } : {}),
+      };
+      facts.warnings = [...facts.warnings, ...tileDiagnosticsWarnings(spTiles)];
+      const spPerPageRendered = deriveRenderedPerPage(spPlannedPages, spPerPageCap, spTotalCap, spRendered);
+      const spChars = textCharsByPage(unionPageTexts);
+      attachDiagnostics(facts, 'single-pass',
+        unionPages.map((p, i) => ({
+          page: p, route: 'vision' as const,
+          textChars: spChars?.get(p) ?? null, textYield: null,
+          tilesPlanned: spPlannedPages[i]?.planned ?? null, tilesRendered: spPerPageRendered[i] ?? null,
+        })),
+        spTiles,
+        [{ path: 'single-pass', counts: singlePassCounts }],
+        unionPages);
       facts.locatorIndex = locatorIndex;
       facts.cost = cost;
       console.log(`      [extraction.ts] cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);

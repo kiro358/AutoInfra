@@ -109,6 +109,17 @@ export function tilesNeededPerPage(widthPt: number, heightPt: number): number {
 }
 const MAX_TILES_PER_PAGE = Number(process.env.PER_PAGE) || 24;
 
+// Tile-loss recovery ladder (PR19). The primary batch pass and its one
+// batch-shaped re-issue of missing tiles are unchanged; these caps bound
+// only the NEW single-tile recovery calls that follow. A missing tile gets
+// at most two single-tile attempts, and a degenerate tile gets one
+// single-tile re-issue. The per-batch and run-total caps keep a pathological
+// sheet from fanning out into unbounded extra model calls.
+export const TILE_RECOVERY_MAX_SINGLE_ATTEMPTS = 2;
+export const TILE_RECOVERY_MAX_CALLS_PER_BATCH = 24;
+export const TILE_RECOVERY_MAX_CALLS_TOTAL = 48;
+export const TILE_RECOVERY_CONCURRENCY = 2;
+
 // Explicit output ceiling: thinking tokens + JSON response share this budget.
 const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS) || 32768;
 // CAP THINKING. gemini-2.5-flash uses "dynamic" thinking by default, and on VERTEX the
@@ -754,6 +765,9 @@ async function extractFromPDFInner(
     transcribed: null as number | null,
     missingAfterRetry: 0,
     degenerateDiscarded: 0,
+    recoveredAfterRetry: 0,
+    recoveredAsSingle: 0,
+    degenerateRecovered: 0,
     blocks: null as number | null,
   };
 
@@ -978,7 +992,7 @@ async function extractFromPDFInner(
     // transcribes, so its transcription fields stay null).
     const transcribeTileSection = (): TileDiagnostics => {
       if (!tileAcc.ran) {
-        return { planned: null, rendered: null, uploaded: null, transcribed: null, missingAfterRetry: null, degenerateDiscarded: null, blocks: null };
+        return { planned: null, rendered: null, uploaded: null, transcribed: null, missingAfterRetry: null, degenerateDiscarded: null, recoveredAfterRetry: null, recoveredAsSingle: null, degenerateRecovered: null, blocks: null };
       }
       return {
         planned: tileAcc.plannedPages.reduce((a, p) => a + p.planned, 0),
@@ -987,6 +1001,9 @@ async function extractFromPDFInner(
         transcribed: tileAcc.transcribed,
         missingAfterRetry: tileAcc.renderFailed ? null : tileAcc.missingAfterRetry,
         degenerateDiscarded: tileAcc.renderFailed ? null : tileAcc.degenerateDiscarded,
+        recoveredAfterRetry: tileAcc.renderFailed ? null : tileAcc.recoveredAfterRetry,
+        recoveredAsSingle: tileAcc.renderFailed ? null : tileAcc.recoveredAsSingle,
+        degenerateRecovered: tileAcc.renderFailed ? null : tileAcc.degenerateRecovered,
         blocks: tileAcc.blocks,
         ...(tileAcc.renderFailed ? { renderFailed: true as const } : {}),
       };
@@ -1125,6 +1142,11 @@ async function extractFromPDFInner(
         }
       };
 
+      // Run-total budget for the single-tile recovery ladder, shared by
+      // every batch below (recoverTranscriptTiles reserves calls from it
+      // synchronously, so concurrent batches cannot overshoot the cap).
+      const tileRecoveryBudget: TileRecoveryBudget = { maxTotalCalls: TILE_RECOVERY_MAX_CALLS_TOTAL, usedCalls: 0 };
+
       const batchResults = await mapLimit(tileBatches, BATCH_CONCURRENCY, async (batch, bi) => {
         const tileOffset = bi * BATCH_TILES;
         const label = `batch ${bi + 1}/${tileBatches.length}`;
@@ -1133,40 +1155,70 @@ async function extractFromPDFInner(
         );
 
         const first = sanitizeTranscriptTiles(parsed?.tiles, tileOffset, batch.length);
-        tileAcc.degenerateDiscarded += first.degenerate.length;
-        for (const n of first.degenerate) {
-          console.warn(`      [extraction.ts] ${label}: tile ${n} DISCARDED — decode repetition loop, not a read of the drawing.`);
-        }
-        if (first.missing.length === 0) return first.tiles;
+        if (first.missing.length === 0 && first.degenerate.length === 0) return first.tiles;
 
         // A looping tile burns the batch's entire output budget, so every LATER tile
         // is truncated out of the response and repairTruncatedJson returns a valid
         // object without them (Bradford lost 52 of 60 tiles this way). Those tiles are
         // innocent — re-issue them ONCE, with the offender no longer in the request so
-        // it cannot loop again. One round only: a retry that still comes back short is
-        // reported, not retried, so a pathological sheet cannot fan out calls.
-        console.warn(`      [extraction.ts] ${label}: ${first.missing.length} tile(s) absent from the response — re-issuing once.`);
-        const out = [...first.tiles];
-        for (const run of contiguousRuns(first.missing)) {
-          const parts = run.map((n) => tileParts[n - 1]).filter(Boolean);
-          if (parts.length === 0) continue;
-          const retryOffset = run[0] - 1;
-          const retryLabel = `${label} retry ${run[0]}-${run[run.length - 1]}`;
-          const rp = await transcribeCall(
-            parts, retryOffset, `${sourceHash}_transcribe_b${bi}r${run[0]}`, retryLabel
-          );
-          const again = sanitizeTranscriptTiles(rp?.tiles, retryOffset, parts.length);
-          tileAcc.degenerateDiscarded += again.degenerate.length;
-          tileAcc.missingAfterRetry += again.missing.length;
-          for (const n of again.degenerate) {
-            console.warn(`      [extraction.ts] ${retryLabel}: tile ${n} DISCARDED — decode repetition loop.`);
-          }
-          if (again.missing.length > 0) {
-            console.warn(`      [extraction.ts] ${retryLabel}: STILL missing ${again.missing.length} tile(s) after one retry — giving up on them.`);
-          }
-          out.push(...again.tiles);
+        // it cannot loop again (the batch re-issue inside recoverTranscriptTiles,
+        // unchanged). PR19 then climbs the recovery ladder for whatever the
+        // re-issue still could not save: tiles still missing get up to two
+        // SINGLE-tile calls each, and a tile discarded as degenerate gets one
+        // single-tile re-issue before it is truly discarded — White Oak Blk1
+        // lost 8 of 12 tiles to exactly these two shapes. The single-tile
+        // calls are capped per batch and per run (tileRecoveryBudget), so a
+        // pathological sheet cannot fan out calls.
+        for (const n of first.degenerate) {
+          console.warn(`      [extraction.ts] ${label}: tile ${n} returned degenerate — re-issuing it as a single tile before discarding.`);
         }
-        return out;
+        if (first.missing.length > 0) {
+          console.warn(`      [extraction.ts] ${label}: ${first.missing.length} tile(s) absent from the response — re-issuing once.`);
+        }
+        const outcome = await recoverTranscriptTiles(first, {
+          budget: tileRecoveryBudget,
+          callTiles: async (tileNumbers, phase, attempt) => {
+            const parts = tileNumbers.map((n) => tileParts[n - 1]).filter(Boolean);
+            const callOffset = tileNumbers[0] - 1;
+            let callLabel: string;
+            let cacheKey: string;
+            if (phase === 'batch-retry') {
+              callLabel = `${label} retry ${tileNumbers[0]}-${tileNumbers[tileNumbers.length - 1]}`;
+              cacheKey = `${sourceHash}_transcribe_b${bi}r${tileNumbers[0]}`;
+            } else if (phase === 'single-missing') {
+              callLabel = `${label} single-tile recovery ${tileNumbers[0]} (attempt ${attempt})`;
+              cacheKey = `${sourceHash}_transcribe_b${bi}s${tileNumbers[0]}m${attempt}`;
+            } else {
+              callLabel = `${label} single-tile degenerate re-issue ${tileNumbers[0]}`;
+              cacheKey = `${sourceHash}_transcribe_b${bi}s${tileNumbers[0]}d`;
+            }
+            const rp = await transcribeCall(parts, callOffset, cacheKey, callLabel);
+            return sanitizeTranscriptTiles(rp?.tiles, callOffset, parts.length);
+          },
+        });
+        tileAcc.recoveredAfterRetry += outcome.recoveredAfterRetry;
+        tileAcc.recoveredAsSingle += outcome.recoveredAsSingle;
+        tileAcc.degenerateRecovered += outcome.degenerateRecovered;
+        tileAcc.missingAfterRetry += outcome.missing.length;
+        tileAcc.degenerateDiscarded += outcome.degenerate.length;
+        const saved = outcome.recoveredAfterRetry + outcome.recoveredAsSingle + outcome.degenerateRecovered;
+        if (saved > 0) {
+          console.warn(
+            `      [extraction.ts] ${label}: tile recovery saved ${saved} tile(s) ` +
+            `(${outcome.recoveredAfterRetry} after the batch retry, ${outcome.recoveredAsSingle} as single-tile calls, ` +
+            `${outcome.degenerateRecovered} after a degenerate re-issue).`
+          );
+        }
+        if (outcome.recoveryCapReached) {
+          console.warn(`      [extraction.ts] ${label}: single-tile recovery cap reached — remaining lost tiles were not re-issued further.`);
+        }
+        for (const n of outcome.degenerate) {
+          console.warn(`      [extraction.ts] ${label}: tile ${n} DISCARDED — decode repetition loop, not a read of the drawing.`);
+        }
+        if (outcome.missing.length > 0) {
+          console.warn(`      [extraction.ts] ${label}: STILL missing ${outcome.missing.length} tile(s) after the recovery ladder — giving up on them.`);
+        }
+        return outcome.tiles;
       });
 
       const allTiles = batchResults.flat();
@@ -1630,7 +1682,8 @@ async function extractFromPDFInner(
         planned: spPlannedPages.reduce((a, p) => a + p.planned, 0),
         rendered: spRendered,
         uploaded: tileParts.length,
-        transcribed: null, missingAfterRetry: null, degenerateDiscarded: null, blocks: null,
+        transcribed: null, missingAfterRetry: null, degenerateDiscarded: null,
+        recoveredAfterRetry: null, recoveredAsSingle: null, degenerateRecovered: null, blocks: null,
         ...(spRenderFailed ? { renderFailed: true } : {}),
       };
       facts.warnings = [...facts.warnings, ...tileDiagnosticsWarnings(spTiles)];
@@ -1868,7 +1921,8 @@ export function contiguousRuns(indices: number[]): number[][] {
 
 export interface SanitizedTranscript {
   tiles: TileTranscript[];
-  /** Tiles returned but discarded as a decode loop. Never retried — they would loop again. */
+  /** Tiles returned but caught as a decode loop. transcribeTiles re-issues
+   *  each once as a single-tile call before it is finally discarded. */
   degenerate: number[];
   /** Tiles requested but absent from the response: the collateral of a loop, worth retrying. */
   missing: number[];
@@ -1924,6 +1978,180 @@ export function sanitizeTranscriptTiles(
   const missing: number[] = [];
   for (let i = tileOffset + 1; i <= tileOffset + batchLen; i++) if (!seen.has(i)) missing.push(i);
   return { tiles, degenerate, missing };
+}
+
+/** Shared run-total budget for single-tile recovery calls. Calls are
+ *  reserved synchronously (usedCalls incremented before any await), so
+ *  concurrent batches sharing one budget cannot overshoot the cap. */
+export interface TileRecoveryBudget {
+  maxTotalCalls: number;
+  usedCalls: number;
+}
+
+export type TileRecoveryPhase = 'batch-retry' | 'single-missing' | 'single-degenerate';
+
+/** One recovery call: transcribe exactly `tileNumbers` (a contiguous run
+ *  for 'batch-retry', always a single tile for the other phases) and return
+ *  the sanitized result. */
+export type TileRecoveryCall = (
+  tileNumbers: number[],
+  phase: TileRecoveryPhase,
+  attempt: number,
+) => Promise<SanitizedTranscript>;
+
+export interface TileRecoveryOutcome {
+  /** Final transcript tiles for the batch, in first-materialization order
+   *  (primary tiles, then batch-retry tiles, then single-tile saves).
+   *  Finally-discarded degenerate tiles remain as empty placeholders,
+   *  exactly as the pre-ladder code returned them. */
+  tiles: TileTranscript[];
+  /** FINAL loss: tiles never returned usable after every rung. */
+  missing: number[];
+  /** FINAL loss: tiles discarded as degenerate after their re-issue. */
+  degenerate: number[];
+  /** Missing tiles saved by the batch re-issue rung. */
+  recoveredAfterRetry: number;
+  /** Missing tiles saved by a single-tile call rung. */
+  recoveredAsSingle: number;
+  /** Degenerate tiles saved by their single-tile re-issue. */
+  degenerateRecovered: number;
+  /** Single-tile recovery calls actually made for this batch. */
+  singleRecoveryCalls: number;
+  /** A per-batch or run-total cap stopped at least one single-tile call. */
+  recoveryCapReached: boolean;
+}
+
+/**
+ * The tile-loss recovery ladder (PR19) for ONE primary batch, given its
+ * sanitized first response. Rungs, in order:
+ *
+ *   1. Batch re-issue of the missing tiles, one call per contiguous run —
+ *      byte-for-byte the pre-PR19 behaviour.
+ *   2. Single-tile calls for tiles STILL missing: one tile per call (which
+ *      isolates whatever made the batch drop it), up to
+ *      TILE_RECOVERY_MAX_SINGLE_ATTEMPTS attempts per tile.
+ *   3. One single-tile re-issue per degenerate tile (from any earlier
+ *      response — primary, batch re-issue, or a rung-2 call); only a tile
+ *      whose re-issue also loops (or never resolves) is finally discarded.
+ *
+ * Rungs 2–3 share a call budget: at most maxCallsPerBatch per batch and
+ * budget.maxTotalCalls across the run, reserved synchronously. Tiles the
+ * cap leaves behind stay in the final loss counts — the ladder degrades to
+ * the old behaviour, never to silence.
+ */
+export async function recoverTranscriptTiles(
+  first: SanitizedTranscript,
+  options: {
+    callTiles: TileRecoveryCall;
+    budget?: TileRecoveryBudget;
+    maxCallsPerBatch?: number;
+    maxSingleAttempts?: number;
+    concurrency?: number;
+  },
+): Promise<TileRecoveryOutcome> {
+  const budget = options.budget ?? { maxTotalCalls: TILE_RECOVERY_MAX_CALLS_TOTAL, usedCalls: 0 };
+  const maxPerBatch = options.maxCallsPerBatch ?? TILE_RECOVERY_MAX_CALLS_PER_BATCH;
+  const maxAttempts = options.maxSingleAttempts ?? TILE_RECOVERY_MAX_SINGLE_ATTEMPTS;
+  const concurrency = options.concurrency ?? TILE_RECOVERY_CONCURRENCY;
+
+  let perBatchCalls = 0;
+  let capReached = false;
+  const tryReserveSingleCall = (): boolean => {
+    if (perBatchCalls >= maxPerBatch || budget.usedCalls >= budget.maxTotalCalls) {
+      capReached = true;
+      return false;
+    }
+    perBatchCalls++;
+    budget.usedCalls++;
+    return true;
+  };
+
+  // Tile state. A tile is in exactly one of: usable (in `materialized` with
+  // real blocks), missing, or degeneratePending. `materialized` keeps every
+  // tile ever returned (degenerate ones as their empty placeholder) in
+  // first-materialization order — the pre-ladder output order.
+  const materialized = new Map<number, TileTranscript>();
+  const materializedOrder: number[] = [];
+  const put = (t: TileTranscript) => {
+    if (!materialized.has(t.tile)) materializedOrder.push(t.tile);
+    materialized.set(t.tile, t);
+  };
+  for (const t of first.tiles) put(t);
+  const degeneratePending = new Set<number>(first.degenerate);
+  const missing = new Set<number>(first.missing);
+  for (const n of degeneratePending) missing.delete(n);
+
+  let recoveredAfterRetry = 0;
+  let recoveredAsSingle = 0;
+  let degenerateRecovered = 0;
+
+  const processReturned = (result: SanitizedTranscript, phase: TileRecoveryPhase) => {
+    const resultDegenerate = new Set(result.degenerate);
+    for (const t of result.tiles) {
+      put(t);
+      if (resultDegenerate.has(t.tile)) {
+        degeneratePending.add(t.tile);
+        missing.delete(t.tile);
+      } else {
+        const wasMissing = missing.has(t.tile);
+        const wasDegenerate = degeneratePending.has(t.tile);
+        missing.delete(t.tile);
+        degeneratePending.delete(t.tile);
+        if (phase === 'batch-retry' && wasMissing) recoveredAfterRetry++;
+        else if (phase === 'single-missing' && wasMissing) recoveredAsSingle++;
+        else if (phase === 'single-degenerate' && wasDegenerate) degenerateRecovered++;
+      }
+    }
+  };
+
+  // Rung 1 — the existing batch re-issue, unchanged: one call per
+  // contiguous run of missing tiles.
+  if (missing.size > 0) {
+    for (const run of contiguousRuns([...missing])) {
+      const result = await options.callTiles(run, 'batch-retry', 1);
+      processReturned(result, 'batch-retry');
+    }
+  }
+
+  // Rung 2 — single-tile calls for the tiles still missing, up to
+  // maxAttempts each, concurrency-limited across tiles.
+  if (missing.size > 0) {
+    await mapLimit([...missing], concurrency, async (tile) => {
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        if (!missing.has(tile)) return;
+        if (!tryReserveSingleCall()) return;
+        const result = await options.callTiles([tile], 'single-missing', attempt);
+        processReturned(result, 'single-missing');
+      }
+    });
+  }
+
+  // Rung 3 — one single-tile re-issue per degenerate tile. A re-issue that
+  // loops again, never returns, or is never made (cap) leaves the tile in
+  // degeneratePending: finally discarded, counted once.
+  if (degeneratePending.size > 0) {
+    await mapLimit([...degeneratePending], concurrency, async (tile) => {
+      if (!degeneratePending.has(tile)) return;
+      if (!tryReserveSingleCall()) return;
+      const result = await options.callTiles([tile], 'single-degenerate', 1);
+      processReturned(result, 'single-degenerate');
+    });
+  }
+
+  for (const n of degeneratePending) {
+    if (!materialized.has(n)) put({ tile: n, blocks: [] });
+  }
+
+  return {
+    tiles: materializedOrder.map((n) => materialized.get(n)!).filter(Boolean),
+    missing: [...missing].sort((a, b) => a - b),
+    degenerate: [...degeneratePending].sort((a, b) => a - b),
+    recoveredAfterRetry,
+    recoveredAsSingle,
+    degenerateRecovered,
+    singleRecoveryCalls: perBatchCalls,
+    recoveryCapReached: capReached,
+  };
 }
 
 /**

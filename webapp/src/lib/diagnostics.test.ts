@@ -65,7 +65,7 @@ describe('diagnostics on a hybrid run fixture', () => {
         { page: 1, route: 'text', textChars: 120, textYield: hybrid.textyPageYields[1] ?? null, tilesPlanned: null, tilesRendered: null },
         { page: 3, route: 'vision', textChars: 40, textYield: null, tilesPlanned: 12, tilesRendered: 12 },
       ],
-      tiles: { planned: 12, rendered: 12, uploaded: 12, transcribed: 1, missingAfterRetry: 0, degenerateDiscarded: 0, blocks: 2 },
+      tiles: { planned: 12, rendered: 12, uploaded: 12, transcribed: 1, missingAfterRetry: 0, degenerateDiscarded: 0, recoveredAfterRetry: 1, recoveredAsSingle: 2, degenerateRecovered: 1, blocks: 2 },
       sources: [
         { path: 'text', counts: hybrid.textCounts },
         ...(hybrid.transcriptCounts ? [{ path: 'transcript' as const, counts: hybrid.transcriptCounts }] : []),
@@ -76,6 +76,10 @@ describe('diagnostics on a hybrid run fixture', () => {
     expect(record.version).toBe(1);
     expect(record.mode).toBe('hybrid');
     expect(record.locator.finalPages).toEqual([1, 3]);
+    // The recovery-rung counters ride through the builder untouched.
+    expect(record.tiles.recoveredAfterRetry).toBe(1);
+    expect(record.tiles.recoveredAsSingle).toBe(2);
+    expect(record.tiles.degenerateRecovered).toBe(1);
     expect(record.pages.map((p) => p.route)).toEqual(['text', 'vision']);
     expect(record.pages[0].textYield).toBeGreaterThanOrEqual(4);
     expect(record.pages[1].textYield).toBeNull();
@@ -132,13 +136,26 @@ describe('diagnostics on a hybrid run fixture', () => {
 });
 
 describe('tileDiagnosticsWarnings — silent tile loss surfacing (audit 6c/6a)', () => {
-  const base = { planned: 24, rendered: 24, uploaded: 24, transcribed: 24, missingAfterRetry: 0, degenerateDiscarded: 0, blocks: 60 };
+  const base = { planned: 24, rendered: 24, uploaded: 24, transcribed: 24, missingAfterRetry: 0, degenerateDiscarded: 0, recoveredAfterRetry: 0, recoveredAsSingle: 0, degenerateRecovered: 0, blocks: 60 };
 
-  it('fires when tiles are still missing after the retry', () => {
+  it('fires when tiles are still missing after the recovery ladder', () => {
     const w = tileDiagnosticsWarnings({ ...base, transcribed: 16, missingAfterRetry: 8 });
     expect(w).toHaveLength(1);
     expect(w[0]).toContain('lost 8 tile(s) of 24 rendered');
-    expect(w[0]).toContain('8 tile(s) never returned, even after one retry');
+    expect(w[0]).toContain('8 tile(s) never returned after all recovery attempts');
+  });
+
+  it('reports FINAL loss only and credits what the ladder saved', () => {
+    const w = tileDiagnosticsWarnings({
+      ...base, missingAfterRetry: 2, degenerateDiscarded: 1,
+      recoveredAfterRetry: 3, recoveredAsSingle: 2, degenerateRecovered: 1,
+    });
+    expect(w).toHaveLength(1);
+    expect(w[0]).toContain('lost 3 tile(s)');
+    expect(w[0]).toContain('Recovery saved 6 tile(s)');
+    expect(w[0]).toContain('3 after the batch retry');
+    expect(w[0]).toContain('2 as single-tile calls');
+    expect(w[0]).toContain('1 after a degenerate re-issue');
   });
 
   it('fires when tiles are discarded as degenerate, and names both losses together', () => {

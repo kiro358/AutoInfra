@@ -314,10 +314,21 @@ export interface TileDiagnostics {
   uploaded: number | null;
   /** Tiles present in the returned transcript (transcribe/hybrid paths). */
   transcribed: number | null;
-  /** Tiles absent from the transcript even after the single retry round. */
+  /** Tiles absent from the transcript after every recovery rung (the
+   *  batch re-issue and the capped single-tile attempts). */
   missingAfterRetry: number | null;
-  /** Tiles returned but discarded as degenerate repetition (blocks emptied). */
+  /** Tiles returned but finally discarded as degenerate repetition after
+   *  their single-tile re-issue also looped (blocks emptied). */
   degenerateDiscarded: number | null;
+  /** Tiles the batch re-issue saved: absent from the primary response,
+   *  returned usable by the re-issued batch call. */
+  recoveredAfterRetry?: number | null;
+  /** Tiles the single-tile rung saved: still absent after the batch
+   *  re-issue, returned usable by a one-tile call. */
+  recoveredAsSingle?: number | null;
+  /** Degenerate tiles saved by their single-tile re-issue: the re-issue
+   *  returned a usable read instead of looping again. */
+  degenerateRecovered?: number | null;
   /** Total transcript blocks across all transcribed tiles. */
   blocks: number | null;
   /** Tile rendering itself failed (the run fell back / recorded a call

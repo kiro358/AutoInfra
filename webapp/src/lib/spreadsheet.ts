@@ -75,6 +75,35 @@ function addAuditSheet(workbook: ExcelJS.Workbook, extraction: ExtractionResult)
   sub.value = 'Every value below was missing from the drawings and was withheld, defaulted by convention, or derived at pricing. Confirm each one before relying on this estimate.';
   row++;
 
+  // Pipeline diagnostics summary (PR18): where this run could have lost
+  // content — pages located, tiles planned vs rendered vs transcribed, and
+  // entity counts per source path vs the final merged facts. Present only
+  // when the extraction recorded diagnostics (legacy runs carry none).
+  const diag = extraction.diagnostics;
+  if (diag) {
+    const dh = ws.getCell(`A${row++}`);
+    dh.value = 'PIPELINE DIAGNOSTICS — where content could have been lost';
+    dh.font = { bold: true, size: 11 };
+    const loc = diag.locator;
+    const unionNote = loc.unionAdded.length > 0
+      ? `; locator union added ${loc.unionAdded.map((a) => `p${a.page} (${a.reason})`).join(', ')}`
+      : '';
+    const fallbackNote = loc.tileAllFallback ? '; locator returned nothing — all pages tiled' : '';
+    ws.getCell(`A${row++}`).value =
+      `Located pages: ${loc.finalPages.length > 0 ? loc.finalPages.join(', ') : 'none'} (mode ${diag.mode})${unionNote}${fallbackNote}.`;
+    if (diag.tiles.planned != null) {
+      const t = diag.tiles;
+      ws.getCell(`A${row++}`).value =
+        `Tiles: ${t.planned} planned, ${t.rendered ?? '—'} rendered, ${t.transcribed ?? '—'} transcribed` +
+        ` (${t.missingAfterRetry ?? 0} lost after retry, ${t.degenerateDiscarded ?? 0} discarded as degenerate, ${t.blocks ?? '—'} transcript blocks).`;
+    }
+    const fmtCounts = (c: { structures: number; sewers: number; watermain: number; catchbasins: number }) =>
+      `${c.structures} structures / ${c.sewers} sewer runs / ${c.watermain} watermain / ${c.catchbasins} catchbasin groups`;
+    const srcNote = diag.assembly.sources.map((s) => `${s.path}: ${fmtCounts(s.counts)}`).join('; ');
+    ws.getCell(`A${row++}`).value = `Entities by source — ${srcNote} → final: ${fmtCounts(diag.assembly.final)}.`;
+    row++;
+  }
+
   const items = extraction.withheld;
   if (!items) {
     ws.getCell(`A${row}`).value = 'No audit trail was recorded for this extraction (it predates provenance/withheld recording). Re-run the extraction to produce one.';

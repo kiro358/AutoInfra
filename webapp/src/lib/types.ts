@@ -103,6 +103,9 @@ export interface ExtractionResult {
    *  derivation actually applied — rendered on the workbook's AUDIT sheet. */
   withheld?: WithheldItem[];
   locatorIndex?: { manholePages: number[]; sewerPages: number[]; watermainPages: number[] } | null;
+  /** Carried from the facts (see ExtractionDiagnostics) — rendered as a
+   *  summary on the workbook's AUDIT sheet. */
+  diagnostics?: ExtractionDiagnostics;
 }
 
 // ============ Takeoff Facts (Extraction Stage output) ============
@@ -268,6 +271,98 @@ export interface SheetCalibration {
   residual?: number | null;
 }
 
+/** Entity counts by kind — the assembly section of ExtractionDiagnostics. */
+export interface EntityCounts {
+  structures: number;
+  sewers: number;
+  watermain: number;
+  catchbasins: number;
+}
+
+/** Per-located-page diagnostics: how the page was routed and what the
+ *  pipeline genuinely computed for it. Fields the pipeline never computed
+ *  for a page are null — never estimated, never back-filled. */
+export interface PageDiagnostics {
+  page: number;
+  route: 'text' | 'vision' | 'vector';
+  /** Characters in the page's text layer, when this run actually extracted
+   *  that layer for the page (hybrid routing, locator union); else null. */
+  textChars: number | null;
+  /** Entities the text assembler read from this page alone — recorded only
+   *  where the pipeline computes it (hybrid texty pages, in the zero-yield
+   *  fallback check); else null. */
+  textYield: number | null;
+  /** Geometry-derived tiles this page needs (tilesNeededPerPage), for
+   *  vision-routed pages only; null for text/vector pages. */
+  tilesPlanned: number | null;
+  /** Tiles the renderer emitted for this page, DERIVED from render order
+   *  and the per-page/total caps (the renderer reports only a flat list).
+   *  Null when the derivation does not reconcile with the actual rendered
+   *  total — then only the totals in TileDiagnostics are trustworthy. */
+  tilesRendered: number | null;
+  /** A texty page that yielded zero entities and was re-routed to vision
+   *  (the PR #41 fallback). */
+  zeroYieldFallback?: boolean;
+}
+
+/** Tile-pipeline totals for one run. "Planned" sums tilesNeededPerPage over
+ *  the pages actually sent to the tile renderer (vision-routed pages);
+ *  text-routed pages are never tiled, so they are not in the plan. */
+export interface TileDiagnostics {
+  planned: number | null;
+  rendered: number | null;
+  uploaded: number | null;
+  /** Tiles present in the returned transcript (transcribe/hybrid paths). */
+  transcribed: number | null;
+  /** Tiles absent from the transcript even after the single retry round. */
+  missingAfterRetry: number | null;
+  /** Tiles returned but discarded as degenerate repetition (blocks emptied). */
+  degenerateDiscarded: number | null;
+  /** Total transcript blocks across all transcribed tiles. */
+  blocks: number | null;
+  /** Tile rendering itself failed (the run fell back / recorded a call
+   *  failure) — rendered is then 0 for a non-cap reason, and no truncation
+   *  warning is derived from it. */
+  renderFailed?: boolean;
+}
+
+/**
+ * Per-run pipeline diagnostics (PR18): where content was lost, stage by
+ * stage — locator → routing → tiles → assembly — recorded on the facts so
+ * a prod run on a real project attributes its own losses instead of leaving
+ * them in server console logs (the silent-cap audit's classes 6a/6c were
+ * console-only). Diagnostics never feed back into extraction: the record
+ * is written after the facts are final and changes nothing upstream.
+ */
+export interface ExtractionDiagnostics {
+  version: 1;
+  mode: string;
+  durationMs: number;
+  locator: {
+    /** The locator step ran (LLM or memoized). False when skipped (tiny
+     *  sets / disabled), where the located set is all pages by rule. */
+    ran: boolean;
+    /** Page numbers the locator returned, verbatim (empty when it returned
+     *  nothing, failed, or was skipped). */
+    rawPicks: number[];
+    /** Pages the locator union (PR #42) added, with the admission reason. */
+    unionAdded: { page: number; reason: string }[];
+    /** The located set every downstream stage consumed. */
+    finalPages: number[];
+    /** The empty-set fallback fired: locator produced nothing usable, so
+     *  all pages were tiled. */
+    tileAllFallback: boolean;
+  };
+  pages: PageDiagnostics[];
+  tiles: TileDiagnostics;
+  assembly: {
+    /** Entity counts from each source path that ran, before merging. */
+    sources: { path: 'text' | 'transcript' | 'vector' | 'single-pass'; counts: EntityCounts }[];
+    /** Entity counts of the final merged facts. */
+    final: EntityCounts;
+  };
+}
+
 export interface TakeoffFacts {
   projectName: string;
   jobNumber: string;
@@ -296,6 +391,9 @@ export interface TakeoffFacts {
   // Verbatim per-tile callout transcription (vision-as-transcriber path). Optional —
   // populated when EXTRACTION_MODE=transcribe|hybrid; persisted via predicted_facts.json.
   transcript?: TileTranscript[];
+  /** Per-run pipeline diagnostics (see ExtractionDiagnostics). Optional:
+   *  legacy facts carry none. Persisted wherever the facts are persisted. */
+  diagnostics?: ExtractionDiagnostics;
 }
 
 /** Verbatim per-tile callout transcription (vision path). A block is a group of

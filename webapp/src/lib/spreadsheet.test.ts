@@ -322,6 +322,35 @@ describe('populateTemplate — AUDIT sheet (PR 8)', () => {
     expect(texts.join('\n')).toContain('predates provenance/withheld recording');
   });
 
+  it('summarizes pipeline diagnostics on the AUDIT sheet when the run recorded them (PR18)', async () => {
+    const { wb } = await build(facts({
+      structures: [st('MH 1')],
+      diagnostics: {
+        version: 1, mode: 'hybrid', durationMs: 1000,
+        locator: {
+          ran: true, rawPicks: [1], unionAdded: [{ page: 3, reason: 'text-yield' }],
+          finalPages: [1, 3], tileAllFallback: false,
+        },
+        pages: [],
+        tiles: { planned: 24, rendered: 24, uploaded: 24, transcribed: 16, missingAfterRetry: 8, degenerateDiscarded: 0, blocks: 40 },
+        assembly: {
+          sources: [{ path: 'transcript', counts: { structures: 1, sewers: 0, watermain: 0, catchbasins: 0 } }],
+          final: { structures: 1, sewers: 0, watermain: 0, catchbasins: 0 },
+        },
+      },
+    }));
+    const audit = wb.getWorksheet('AUDIT');
+    const texts: string[] = [];
+    audit!.eachRow({ includeEmpty: false }, (r) => r.eachCell({ includeEmpty: false }, (c) => texts.push(String(c.value))));
+    const joined = texts.join('\n');
+    expect(joined).toContain('PIPELINE DIAGNOSTICS');
+    expect(joined).toContain('Located pages: 1, 3');
+    expect(joined).toContain('locator union added p3 (text-yield)');
+    expect(joined).toContain('24 planned, 24 rendered, 16 transcribed');
+    expect(joined).toContain('8 lost after retry');
+    expect(joined).toContain('transcript: 1 structures');
+  });
+
   it('says so when nothing was withheld', async () => {
     const { ex } = await build(facts({}));
     ex.withheld = [];

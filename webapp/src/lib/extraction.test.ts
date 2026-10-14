@@ -19,6 +19,7 @@ import {
   applySecondPassWatermain,
   runSecondPassWatermain,
   sanitizeTranscriptTiles,
+  recoverTranscriptTiles,
   contiguousRuns,
   assembleHybridTakeoff,
   countEntities,
@@ -916,6 +917,113 @@ describe('sanitizeTranscriptTiles', () => {
     const out = sanitizeTranscriptTiles([null, { tile: 'x' }, { tile: 2 }] as any, 0, 2);
     expect(out.tiles.map((t) => t.tile)).toEqual([2]);
     expect(out.missing).toEqual([1]);
+  });
+});
+
+describe('recoverTranscriptTiles — tile-loss recovery ladder (PR19)', () => {
+  const tile = (n: number, blocks: string[][]) => ({ tile: n, blocks });
+  // The Bradford loop shape: the same block emitted hundreds of times.
+  const loopBlocks = Array.from({ length: 200 }, () => ['D/T 0.1', '224.09', '223.86']);
+  const empty = (tiles: number[]) => sanitizeTranscriptTiles([], tiles[0] - 1, tiles.length);
+
+  it('credits the batch re-issue rung when it saves a missing tile (rung 1 unchanged)', async () => {
+    const first = sanitizeTranscriptTiles([tile(1, [['A']])], 0, 2); // tile 2 missing
+    const callTiles = vi.fn(async (tiles: number[], phase: string) => {
+      expect(phase).toBe('batch-retry');
+      return sanitizeTranscriptTiles([tile(2, [['MH 2']])], tiles[0] - 1, tiles.length);
+    });
+    const out = await recoverTranscriptTiles(first, { callTiles: callTiles as any });
+    expect(out.recoveredAfterRetry).toBe(1);
+    expect(out.recoveredAsSingle).toBe(0);
+    expect(out.missing).toEqual([]);
+    expect(out.tiles.map((t) => t.tile)).toEqual([1, 2]);
+    expect(callTiles).toHaveBeenCalledTimes(1); // no single-tile calls needed
+  });
+
+  it('recovers a still-missing tile with a single-tile call and lands it in the transcript', async () => {
+    const first = sanitizeTranscriptTiles([tile(1, [['A']])], 0, 2); // tile 2 missing
+    const phases: string[] = [];
+    const callTiles = vi.fn(async (tiles: number[], phase: string, attempt: number) => {
+      phases.push(`${phase}:${attempt}`);
+      if (phase === 'batch-retry') return empty(tiles); // the re-issue drops it again
+      return sanitizeTranscriptTiles([tile(2, [['MH 2', 'RIM 1.0']])], 1, 1);
+    });
+    const out = await recoverTranscriptTiles(first, { callTiles: callTiles as any });
+    expect(phases).toEqual(['batch-retry:1', 'single-missing:1']);
+    expect(out.recoveredAsSingle).toBe(1);
+    expect(out.missing).toEqual([]);
+    expect(out.tiles.find((t) => t.tile === 2)!.blocks).toEqual([['MH 2', 'RIM 1.0']]);
+  });
+
+  it('gives a stubborn tile up to two single-tile attempts before counting it lost', async () => {
+    const first = sanitizeTranscriptTiles([], 0, 1); // tile 1 missing
+    let singles = 0;
+    const callTiles = vi.fn(async (tiles: number[], phase: string) => {
+      if (phase === 'batch-retry') return empty(tiles);
+      singles++;
+      return singles < 2 ? empty(tiles) : sanitizeTranscriptTiles([tile(1, [['OK']])], 0, 1);
+    });
+    const out = await recoverTranscriptTiles(first, { callTiles: callTiles as any });
+    expect(singles).toBe(2);
+    expect(out.recoveredAsSingle).toBe(1);
+    expect(out.missing).toEqual([]);
+  });
+
+  it('keeps a degenerate tile whose single-tile re-issue reads cleanly', async () => {
+    const first = sanitizeTranscriptTiles([tile(1, loopBlocks)], 0, 1);
+    expect(first.degenerate).toEqual([1]);
+    const callTiles = vi.fn(async (tiles: number[], phase: string) => {
+      expect(phase).toBe('single-degenerate');
+      expect(tiles).toEqual([1]);
+      return sanitizeTranscriptTiles([tile(1, [['MH 1']])], 0, 1);
+    });
+    const out = await recoverTranscriptTiles(first, { callTiles: callTiles as any });
+    expect(out.degenerateRecovered).toBe(1);
+    expect(out.degenerate).toEqual([]);
+    expect(out.tiles[0].blocks).toEqual([['MH 1']]);
+  });
+
+  it('discards a degenerate tile whose re-issue loops again — final loss, counted once', async () => {
+    const first = sanitizeTranscriptTiles([tile(1, loopBlocks)], 0, 1);
+    const callTiles = vi.fn(async () => sanitizeTranscriptTiles([tile(1, loopBlocks)], 0, 1));
+    const out = await recoverTranscriptTiles(first, { callTiles: callTiles as any });
+    expect(callTiles).toHaveBeenCalledTimes(1); // exactly one re-issue, no more
+    expect(out.degenerateRecovered).toBe(0);
+    expect(out.degenerate).toEqual([1]);
+    expect(out.tiles).toEqual([{ tile: 1, blocks: [] }]); // the pre-ladder placeholder shape
+  });
+
+  it('caps bind: a batch where everything fails terminates with bounded calls and final-loss counts', async () => {
+    const first = sanitizeTranscriptTiles([], 0, 16); // all 16 tiles missing
+    const budget = { maxTotalCalls: 5, usedCalls: 0 };
+    const callTiles = vi.fn(async (tiles: number[]) => empty(tiles));
+    const out = await recoverTranscriptTiles(first, {
+      callTiles: callTiles as any, budget, maxCallsPerBatch: 5, concurrency: 1,
+    });
+    expect(out.singleRecoveryCalls).toBe(5);
+    expect(out.recoveryCapReached).toBe(true);
+    expect(budget.usedCalls).toBe(5);
+    // 1 batch re-issue (the missing tiles form one contiguous run) + 5 capped singles.
+    expect(callTiles).toHaveBeenCalledTimes(6);
+    expect(out.missing).toHaveLength(16);
+    expect(out.recoveredAsSingle).toBe(0);
+    expect(out.degenerate).toEqual([]);
+  });
+
+  it('a shared budget starves a later batch instead of overshooting the run total', async () => {
+    const budget = { maxTotalCalls: 3, usedCalls: 0 };
+    const callTiles = vi.fn(async (tiles: number[]) => empty(tiles));
+    const outA = await recoverTranscriptTiles(sanitizeTranscriptTiles([], 0, 4), {
+      callTiles: callTiles as any, budget, concurrency: 1,
+    });
+    expect(outA.singleRecoveryCalls).toBe(3);
+    const outB = await recoverTranscriptTiles(sanitizeTranscriptTiles([], 16, 4), {
+      callTiles: callTiles as any, budget, concurrency: 1,
+    });
+    expect(outB.singleRecoveryCalls).toBe(0);
+    expect(outB.recoveryCapReached).toBe(true);
+    expect(outB.missing).toHaveLength(4);
+    expect(budget.usedCalls).toBe(3);
   });
 });
 

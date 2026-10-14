@@ -21,7 +21,7 @@ import { mergeTakeoffs, dropSpecNoteStructures, dropImplausibleCatchbasinGroups,
 import { appendCoverageWarnings } from './coverage-checks';
 import { appendPhysicsWarnings } from './physics-checks';
 import { withConfidence } from './confidence';
-import { extractPageText, isTextyPage, PageText } from './pdf-text';
+import { extractPageText, isTextyPage, hasAnnotationForm, PageText } from './pdf-text';
 import { verifyStructureProvenance } from './provenance';
 import { assembleTextTakeoff } from './text-takeoff';
 import { extractVectorTakeoff, type VectorVerifier } from './vector-takeoff';
@@ -608,6 +608,71 @@ export async function assembleHybridTakeoff(
   return { facts, transcript, textyPageNums, rasterPageNums, fallbackPageNums };
 }
 
+export interface LocatedPageAddition {
+  page: number;
+  /** 'text-yield': the text assembler reads ≥2 entities from the page.
+   *  'annotation-form': callout-shaped text in the layer but ZERO yield —
+   *  the PR16-fallback class (real annotations, grammar-blind page). */
+  reason: 'annotation-form' | 'text-yield';
+}
+
+export interface LocatedUnion {
+  /** Located ∪ proven-bearing pages, deduplicated, ascending. */
+  pages: number[];
+  added: LocatedPageAddition[];
+}
+
+/**
+ * Locator union (PR17; silent-cap audit class 2). The vision locator returns
+ * ONE page set shared by all disciplines, and its only failure handling is
+ * empty-result → tile-all. A PARTIAL miss — a plausible-looking subset that
+ * quietly omits bearing pages — proceeded with no signal at all: 13 of 30
+ * text-visible bearing pages across 8 golden projects were never selected
+ * (Gerrard's three bearing pages among them, so its cached takeoff is ~0;
+ * Eric Smith's 14 truth runs sit on 2 missed pages).
+ *
+ * The text layer can prove some of those pages bearing for $0, in hybrid
+ * and every other mode that consumes the located set. Admission takes one
+ * of two shapes — anything in between is not proof:
+ *   - text yield ≥ 2: the text assembler reads the page's callout grammar
+ *     more than once; the page is demonstrably takeoff-bearing;
+ *   - annotation form with yield 0: numeric callout shapes (mm diameter,
+ *     @ slope, INV/T/G/RIM with a value, numbered structure label) sit in
+ *     the text layer but the grammar reads NOTHING from the page — the
+ *     PR16-fallback shape (real annotations the text path cannot assemble,
+ *     e.g. SHX strokes). Admitting it costs the text path nothing (it
+ *     yields zero) and routes the page to vision, where its content lives.
+ * A page whose entire yield is a SINGLE entity is deliberately refused:
+ * lone endpoint-less fragments parsed out of notes, legends and key plans
+ * are a known false-positive shape (measured on the golden A/B: every
+ * yield-1 admission produced an unmatched entity, every yield ≥ 2 or
+ * yield-0 admission produced gains or nothing), and one stray parse is
+ * not evidence a page is bearing. Prose-only sheets (no forms, no yield)
+ * stay out, and pages already located are never removed. Pure: callers
+ * pass every page's text and decide what to do with the union.
+ */
+export function unionLocatedPages(
+  locatedPages: number[],
+  pageTexts: PageText[],
+  projectName: string,
+): LocatedUnion {
+  const located = new Set(locatedPages);
+  const added: LocatedPageAddition[] = [];
+  for (const pt of pageTexts) {
+    if (located.has(pt.page)) continue;
+    const y = countEntities(assembleTextTakeoff([pt], projectName));
+    if (y >= 2) {
+      added.push({ page: pt.page, reason: 'text-yield' });
+      located.add(pt.page);
+    } else if (y === 0 && hasAnnotationForm(pt)) {
+      added.push({ page: pt.page, reason: 'annotation-form' });
+      located.add(pt.page);
+    }
+  }
+  added.sort((a, b) => a.page - b.page);
+  return { pages: [...located].sort((a, b) => a - b), added };
+}
+
 /** Pure: turn recorded failures into warnings, or an error when nothing survived. */
 export function applyCallFailures(facts: TakeoffFacts, failures: string[]): TakeoffFacts {
   if (failures.length === 0) return facts;
@@ -708,6 +773,35 @@ async function extractFromPDFInner(
          locatorIndex.watermainPages.length === 0)) {
       locatorIndex = { manholePages: allPages, sewerPages: allPages, watermainPages: allPages };
       console.log(`      [extraction.ts] Locator empty — tiling all ${totalPages} page(s).`);
+    }
+
+    // Locator union (PR17, silent-cap audit class 2): the fallback above
+    // covers only a locator that returns NOTHING. A partial miss proceeded
+    // silently, so union the located set with the pages the text layer
+    // proves bearing (unionLocatedPages) and let every downstream consumer
+    // — tiling, hybrid text routing, the provenance check, the persisted
+    // locatorIndex — see the recovered pages. Runs only when the located
+    // set is a proper subset: an all-pages set (locator skipped, failed, or
+    // empty above) has nothing to recover, and the empty-set tile-all
+    // behaviour is untouched.
+    if (locatorIndex) {
+      const locatedSet = new Set([
+        ...locatorIndex.manholePages, ...locatorIndex.sewerPages, ...locatorIndex.watermainPages,
+      ]);
+      if (locatedSet.size > 0 && locatedSet.size < totalPages) {
+        try {
+          const union = unionLocatedPages([...locatedSet], await extractPageText(pdfBuffer), projectName);
+          if (union.added.length > 0) {
+            locatorIndex = { manholePages: union.pages, sewerPages: union.pages, watermainPages: union.pages };
+            console.log(
+              `      [extraction.ts] Locator union: added ${union.added.length} text-layer-bearing page(s) ` +
+              `the locator missed: ${union.added.map((a) => `p${a.page} (${a.reason})`).join(', ')}.`
+            );
+          }
+        } catch (e: any) {
+          console.warn(`      [extraction.ts] Locator union skipped (${e.message}); keeping the locator's set.`);
+        }
+      }
     }
 
     const shouldRunManholes = !locatorIndex || locatorIndex.manholePages.length > 0;

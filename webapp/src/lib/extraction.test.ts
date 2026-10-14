@@ -22,9 +22,10 @@ import {
   contiguousRuns,
   assembleHybridTakeoff,
   countEntities,
+  unionLocatedPages,
 } from './extraction';
 import { assembleTextTakeoff } from './text-takeoff';
-import { isTextyPage, PageText } from './pdf-text';
+import { isTextyPage, hasAnnotationForm, PageText } from './pdf-text';
 import { TileTranscript } from './types';
 
 describe('parseFacts structure/catchbasin categorization', () => {
@@ -770,6 +771,82 @@ describe('assembleHybridTakeoff — zero-yield fallback routing', () => {
     expect(out.facts.structures.map((s) => s.description)).toContain('STMH 1');
     expect(out.facts.structures.map((s) => s.description)).toContain('MH 7');
     expect(out.facts.catchbasins.reduce((a, c) => a + c.quantity, 0)).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('unionLocatedPages — locator union with text-layer-bearing pages', () => {
+  const ptPage = (page: number, texts: string[]): PageText => ({
+    page, width: 2592, height: 1728,
+    items: texts.map((text, i) => ({ text, x: 100, y: 900 - i * 20, width: 120, height: 12 })),
+  });
+
+  // Bearing by annotation form with ZERO yield: callout shapes in the text
+  // layer that the grammar cannot assemble into entities (the SHX shape).
+  const annPage = ptPage(2, ['250mmØ PVC STM', '375mmØ PVC STM', 'PVC PIPE ALONG ALIGNMENT']);
+  // Bearing by yield only: named structures with no digit anywhere — the
+  // annotation-form regex cannot see them, but the text assembler reads two.
+  const yieldPage = ptPage(3, ['HEADWALL', 'FLARED END SECTION']);
+  // Prose only: servicing keywords throughout, no callout shapes, no yield.
+  const prosePage = ptPage(4, [
+    'GENERAL NOTES',
+    'STORM SEWER AND SANITARY SEWER NOTES',
+    'WATERMAIN PVC PIPE',
+    'INV AND T/G ELEVATIONS PER DETAIL',
+    'CB AND MH STRUCTURES',
+  ]);
+  // The Loretto key-plan shape: annotation forms present, but the page's
+  // entire yield is ONE lone run fragment — not proof of a bearing page.
+  const fragmentPage = ptPage(5, ['45.0m - 250mmØ PVC STM @ 0.50%']);
+  const locatedPage = ptPage(1, ['TITLE BLOCK']);
+
+  it('fixtures have the evidence properties the tests rely on', () => {
+    expect(hasAnnotationForm(annPage)).toBe(true);
+    expect(countEntities(assembleTextTakeoff([annPage], 'T'))).toBe(0);
+    expect(hasAnnotationForm(yieldPage)).toBe(false);
+    expect(countEntities(assembleTextTakeoff([yieldPage], 'T'))).toBe(2);
+    expect(hasAnnotationForm(prosePage)).toBe(false);
+    expect(countEntities(assembleTextTakeoff([prosePage], 'T'))).toBe(0);
+    expect(hasAnnotationForm(fragmentPage)).toBe(true);
+    expect(countEntities(assembleTextTakeoff([fragmentPage], 'T'))).toBe(1);
+  });
+
+  it('adds an unlocated zero-yield page with annotation-form evidence', () => {
+    const out = unionLocatedPages([1], [locatedPage, annPage], 'T');
+    expect(out.pages).toEqual([1, 2]);
+    expect(out.added).toEqual([{ page: 2, reason: 'annotation-form' }]);
+  });
+
+  it('adds an unlocated page the text assembler reads repeatedly (text-yield)', () => {
+    const out = unionLocatedPages([1], [locatedPage, yieldPage], 'T');
+    expect(out.pages).toEqual([1, 3]);
+    expect(out.added).toEqual([{ page: 3, reason: 'text-yield' }]);
+  });
+
+  it('does NOT add a page whose entire yield is a single fragment', () => {
+    const out = unionLocatedPages([1], [locatedPage, fragmentPage], 'T');
+    expect(out.pages).toEqual([1]);
+    expect(out.added).toEqual([]);
+  });
+
+  it('does NOT add a prose-only page (legend/notes)', () => {
+    const out = unionLocatedPages([1], [locatedPage, prosePage], 'T');
+    expect(out.pages).toEqual([1]);
+    expect(out.added).toEqual([]);
+  });
+
+  it('empty locator set: returns exactly the proven-bearing pages, sorted', () => {
+    const out = unionLocatedPages([], [prosePage, yieldPage, annPage], 'T');
+    expect(out.pages).toEqual([2, 3]);
+    expect(out.added.map((a) => a.page)).toEqual([2, 3]);
+  });
+
+  it('never duplicates a located page and never removes one', () => {
+    const dup = unionLocatedPages([2], [annPage, prosePage], 'T');
+    expect(dup.pages).toEqual([2]);
+    expect(dup.added).toEqual([]);
+    // A located page stays located even when it carries no evidence itself.
+    const kept = unionLocatedPages([4], [prosePage, annPage], 'T');
+    expect(kept.pages).toEqual([2, 4]);
   });
 });
 

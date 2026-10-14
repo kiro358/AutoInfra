@@ -14,6 +14,7 @@ import {
   WatermainFact,
   WatermainSpecialFact,
   WatermainValveFact,
+  WithheldItem,
 } from './types';
 
 export type InvariantType =
@@ -109,9 +110,12 @@ export function evaluateNetworkInvariants(
 
   // ----------------------------------------------------
   // Invariant 3: Length Conservation
+  // (Disabled on uncalibrated sheets: drawnLengthMeters is null there, so
+  // there is no drawn length to conserve against — the check must not run
+  // on invented units.)
   // ----------------------------------------------------
   for (const edge of edges) {
-    if (edge.calloutLengthMeters != null && edge.drawnLengthMeters > 0) {
+    if (edge.calloutLengthMeters != null && edge.drawnLengthMeters != null && edge.drawnLengthMeters > 0) {
       const stated = edge.calloutLengthMeters;
       const drawn = edge.drawnLengthMeters;
       const diff = Math.abs(drawn - stated);
@@ -290,6 +294,10 @@ export function evaluateNetworkInvariants(
     });
   }
 
+  const withheld: WithheldItem[] = [];
+  const uncalibratedNote =
+    'the sheet\u2019s scale could not be determined, so the drawn length cannot be converted';
+
   const sewerFacts: SewerFact[] = [];
   for (const edge of edges) {
     if (edge.system === 'STORM' || edge.system === 'SAN') {
@@ -300,7 +308,19 @@ export function evaluateNetworkInvariants(
       const toLabel = toNode?.boundLabel || toNode?.id || 'DN';
       const runLabel = edge.boundRunLabel || `${fromLabel}-${toLabel}`;
 
+      // Stated callout wins; drawn length only exists on calibrated sheets.
+      // Both absent => the length is unmeasurable: emit null and withhold
+      // the question instead of pricing an invented number.
       const length = edge.calloutLengthMeters ?? edge.drawnLengthMeters;
+      if (length == null) {
+        withheld.push({
+          entity: runLabel,
+          field: 'length',
+          kind: 'withheld',
+          question: `Length of run ${runLabel} is not stated in a callout and ${uncalibratedNote} \u2014 scale it off the plan. Left blank and not priced.`,
+          defaultApplied: null,
+        });
+      }
       const pipeDiameter = edge.diameterMm ?? (edge.system === 'SAN' ? 200 : 300);
 
       sewerFacts.push({
@@ -322,12 +342,25 @@ export function evaluateNetworkInvariants(
 
   for (const edge of edges) {
     if (edge.system === 'WATERMAIN') {
-      const length = edge.calloutLengthMeters ?? edge.drawnLengthMeters;
+      const measured = edge.calloutLengthMeters ?? edge.drawnLengthMeters;
       const dia = edge.diameterMm || 150;
       const mat = edge.material || 'PVC';
+      const sizeAndType = `${dia}mm ${mat} WATERMAIN`;
+      if (measured == null) {
+        // Same posture as the text path's unmeasured watermain: the fact is
+        // emitted (detection is real) with length 0 = not priced, and the
+        // missing measurement is withheld as a question.
+        withheld.push({
+          entity: sizeAndType,
+          field: 'length',
+          kind: 'withheld',
+          question: `Length of the ${sizeAndType} watermain is not stated in a callout and ${uncalibratedNote} \u2014 scale it off the plan. Left blank and not priced.`,
+          defaultApplied: null,
+        });
+      }
       watermainFacts.push({
-        sizeAndType: `${dia}mm ${mat} WATERMAIN`,
-        length,
+        sizeAndType,
+        length: measured ?? 0,
         pipeDiameter: dia,
         ocSc: 1.1,
         avgCover: 1.8,
@@ -367,6 +400,7 @@ export function evaluateNetworkInvariants(
     watermainValves,
     confidence: score,
     warnings: violations.map((v) => `${v.severity.toUpperCase()}: ${v.description}`),
+    ...(withheld.length > 0 ? { withheld } : {}),
   };
 
   return {

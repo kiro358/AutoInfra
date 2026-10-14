@@ -20,7 +20,12 @@ import {
   runSecondPassWatermain,
   sanitizeTranscriptTiles,
   contiguousRuns,
+  assembleHybridTakeoff,
+  countEntities,
 } from './extraction';
+import { assembleTextTakeoff } from './text-takeoff';
+import { isTextyPage, PageText } from './pdf-text';
+import { TileTranscript } from './types';
 
 describe('parseFacts structure/catchbasin categorization', () => {
   it('reclassifies plain catchbasins out of structures into CB group counts by type', () => {
@@ -674,6 +679,99 @@ describe('two-pass watermain extraction', () => {
   });
 });
 
+
+describe('assembleHybridTakeoff — zero-yield fallback routing', () => {
+  const ptPage = (page: number, items: { text: string; x: number; y: number }[]): PageText => ({
+    page, width: 2592, height: 1728,
+    items: items.map((i) => ({ ...i, width: 120, height: 12 })),
+  });
+
+  // A genuine texty servicing page: labels + elevations + run callouts.
+  const yieldingPage = ptPage(1, [
+    { text: 'STMH 1', x: 100, y: 900 },
+    { text: 'T/G=224.95', x: 105, y: 885 },
+    { text: 'N INV=223.35', x: 105, y: 870 },
+    { text: '45.0m - 250mmØ PVC STM @ 0.50%', x: 400, y: 900 },
+    { text: '60.0m - 300mmØ PVC STM @ 0.35%', x: 400, y: 800 },
+    { text: '30.0m - 200mmØ PVC SAN @ 1.00%', x: 400, y: 700 },
+  ]);
+
+  // Texty by both classifier gates (10 mm hits = keyword density + annotation
+  // forms) but NOTHING on it assembles: a sizes/spec list, no callout grammar.
+  // This is the production fallback shape (Ultimate Drive p5, Stevenson p6).
+  const zeroYieldPage = ptPage(2, [
+    { text: 'PIPE SIZES SHOWN ARE NOMINAL', x: 100, y: 900 },
+    { text: '250mm 300mm 375mm 450mm 525mm 600mm 750mm 900mm 1050mm 1200mm', x: 100, y: 850 },
+  ]);
+
+  // No callout content at all — routed to vision by the classifier already.
+  const rasterPage = ptPage(3, [
+    { text: 'GENERAL NOTES AND INDEX', x: 100, y: 900 },
+    { text: 'SHEET LIST', x: 100, y: 850 },
+  ]);
+
+  const fallbackTiles: TileTranscript[] = [
+    { tile: 1, blocks: [['MH 7', 'RIM: 90.50', 'INV: 88.10'], ['22.0m - 200mmØ PVC @ 1.00%']] },
+  ];
+  const rasterTiles: TileTranscript[] = [
+    { tile: 13, blocks: [['CB 3', 'RIM: 91.00']] },
+  ];
+
+  it('fixtures have the routing properties the tests rely on', () => {
+    expect(isTextyPage(yieldingPage)).toBe(true);
+    expect(isTextyPage(zeroYieldPage)).toBe(true);
+    expect(isTextyPage(rasterPage)).toBe(false);
+    expect(countEntities(assembleTextTakeoff([yieldingPage], 'T'))).toBeGreaterThan(0);
+    expect(countEntities(assembleTextTakeoff([zeroYieldPage], 'T'))).toBe(0);
+  });
+
+  it('re-routes a zero-yield texty page to vision transcription and merges its facts', async () => {
+    const transcribe = vi.fn(async (_pages: number[]) => fallbackTiles);
+    const out = await assembleHybridTakeoff([yieldingPage, zeroYieldPage], [1, 2], 'T', transcribe);
+
+    expect(transcribe).toHaveBeenCalledTimes(1);
+    expect(transcribe).toHaveBeenCalledWith([2]);
+    expect(out.fallbackPageNums).toEqual([2]);
+    expect(out.textyPageNums).toEqual([1, 2]);
+    expect(out.rasterPageNums).toEqual([2]);
+    // Text facts survive (primary) AND the fallback page's vision facts land.
+    const labels = out.facts.structures.map((s) => s.description);
+    expect(labels).toContain('STMH 1');
+    expect(labels).toContain('MH 7');
+    expect(out.facts.sewers.some((s) => s.pipeDiameter === 200 && s.length === 22.0)).toBe(true);
+    expect(out.transcript).toEqual(fallbackTiles);
+  });
+
+  it('does NOT transcribe a texty page that yields entities (no fallback, no vision cost)', async () => {
+    const transcribe = vi.fn(async (_pages: number[]) => fallbackTiles);
+    const out = await assembleHybridTakeoff([yieldingPage], [1], 'T', transcribe);
+
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(out.fallbackPageNums).toEqual([]);
+    expect(out.rasterPageNums).toEqual([]);
+    expect(out.transcript).toEqual([]);
+    expect(out.facts.structures.map((s) => s.description)).toContain('STMH 1');
+    expect(out.facts.sewers.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('mixed routing: zero-yield texty and non-texty pages are transcribed together, yielding page stays text-only', async () => {
+    const transcribe = vi.fn(async (pages: number[]) => [
+      ...(pages.includes(2) ? fallbackTiles : []),
+      ...(pages.includes(3) ? rasterTiles : []),
+    ]);
+    const out = await assembleHybridTakeoff(
+      [yieldingPage, zeroYieldPage, rasterPage], [1, 2, 3], 'T', transcribe,
+    );
+
+    expect(transcribe).toHaveBeenCalledTimes(1);
+    expect(transcribe).toHaveBeenCalledWith([2, 3]);
+    expect(out.fallbackPageNums).toEqual([2]);
+    expect(out.rasterPageNums).toEqual([2, 3]);
+    expect(out.facts.structures.map((s) => s.description)).toContain('STMH 1');
+    expect(out.facts.structures.map((s) => s.description)).toContain('MH 7');
+    expect(out.facts.catchbasins.reduce((a, c) => a + c.quantity, 0)).toBeGreaterThanOrEqual(1);
+  });
+});
 
 describe('contiguousRuns', () => {
   it('groups ascending indices into contiguous runs', () => {

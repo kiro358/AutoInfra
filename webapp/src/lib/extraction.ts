@@ -24,7 +24,8 @@ import { withConfidence } from './confidence';
 import { extractPageText, isTextyPage } from './pdf-text';
 import { verifyStructureProvenance } from './provenance';
 import { assembleTextTakeoff } from './text-takeoff';
-import { extractVectorTakeoff } from './vector-takeoff';
+import { extractVectorTakeoff, type VectorVerifier } from './vector-takeoff';
+import type { VerificationAnswer } from './vector-verifier';
 
 // Globally override Undici's default 30-second headers/body timeout and configure proxy if present
 try {
@@ -911,7 +912,56 @@ async function extractFromPDFInner(
 
       // EXTRACTION_MODE=vector: full CAD vector geometry and topology graph extraction ($0 LLM cost).
       if (mode === 'vector') {
-        const facts = await extractVectorTakeoff(pdfBuffer, unionPages, projectName);
+        // Production verifier for the vector path's invariant violations:
+        // one vision call per flagged sheet, answering only the targeted
+        // queries built from that sheet's error-severity violations. Any
+        // failure degrades to "no answers" — those queries are then
+        // withheld for the estimator by resolveVerification.
+        const verify: VectorVerifier = async (queries, page) => {
+          try {
+            const thumbs = await renderPageThumbnails(pdfBuffer, { maxPx: 2000 });
+            const thumb = thumbs.find((t) => t.page === page);
+            if (!thumb) return [];
+            const listing = queries
+              .map((q) => `- queryId: ${q.id} | entityId: ${q.entityId} | question: ${q.question}`)
+              .join('\n');
+            const prompt = [
+              `You are verifying specific details on sheet ${page} of the civil servicing drawing for "${projectName}".`,
+              'Answer ONLY the following targeted verification questions, using the attached sheet image:',
+              listing,
+              'Respond with JSON only: { "answers": [{ "queryId": string, "verifiedValue": string, "confidence": number }] }.',
+              'Include an answer only when the sheet clearly shows the value; omit any question you cannot confirm from the drawing.',
+            ].join('\n');
+            const text = await getCachedOrCallLLM(`${sourceHash}_vectorverify_p${page}`, prompt, 'vector-verify', async () => {
+              const response = await callWithRetry(async () => ai.models.generateContent({
+                model: EXTRACTION_MODEL,
+                contents: [{ role: 'user', parts: [{ text: prompt }, { inlineData: { mimeType: IMAGE_MIME, data: thumb.img.toString('base64') } }] }],
+                config: { temperature: 0, responseMimeType: 'application/json' },
+              }));
+              if (cost) addUsage(cost, (response as any).usageMetadata);
+              return response.text || '{}';
+            }, projectName);
+            const parsed = JSON.parse(text);
+            const raw: unknown = parsed?.answers;
+            if (!Array.isArray(raw)) return [];
+            const byId = new Map(queries.map((q) => [q.id, q]));
+            const out: VerificationAnswer[] = [];
+            for (const a of raw) {
+              const q = a ? byId.get(a.queryId) : undefined;
+              if (!q) continue;
+              out.push({
+                queryId: q.id,
+                entityId: q.entityId,
+                verifiedValue: a.verifiedValue != null ? String(a.verifiedValue) : undefined,
+                confidence: typeof a.confidence === 'number' ? a.confidence : 0,
+              });
+            }
+            return out;
+          } catch {
+            return [];
+          }
+        };
+        const facts = await extractVectorTakeoff(pdfBuffer, unionPages, projectName, { verify });
         facts.locatorIndex = locatorIndex;
         facts.cost = cost;
         console.log(`      [extraction.ts] vector-native: ${unionPages.length} located page(s). cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);

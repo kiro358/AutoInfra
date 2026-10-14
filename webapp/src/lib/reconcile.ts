@@ -748,5 +748,10 @@ export function mergeTakeoffs(primary: TakeoffFacts, secondary: TakeoffFacts): T
     watermainValves: [...primary.watermainValves, ...secondary.watermainValves],
     warnings: [...primary.warnings, ...secondary.warnings],
     withheld: [...(primary.withheld ?? []), ...(secondary.withheld ?? [])],
+    // Only present when a vector page contributed records — spreading the
+    // key unconditionally would add an empty array to text/transcript merges.
+    ...(primary.calibrations || secondary.calibrations
+      ? { calibrations: [...(primary.calibrations ?? []), ...(secondary.calibrations ?? [])] }
+      : {}),
   });
 }

@@ -229,6 +229,45 @@ export interface WatermainValveFact {
   quantity: number;
 }
 
+/**
+ * Per-sheet scale calibration record (vector path) — scale as *calibration*,
+ * not silent detection. Produced by site-network.ts when a sheet's vector
+ * results are built and carried on TakeoffFacts.calibrations.
+ *
+ * The discipline (OpenTakeoff pattern): detection is only a suggestion.
+ * A single unambiguous scale note is adopted as 'detected'; verification
+ * against stated dimensions on the same sheet promotes it to 'stated'.
+ * Anything else — conflicting notes ('ambiguous') or no note at all
+ * ('absent') — yields scalePtPerM: null, which downstream consumers must
+ * read as "cannot measure drawn geometry on this sheet", NEVER as licence
+ * to substitute a default. (The pre-PR-12 behaviour silently fell back to
+ * 5.0 pt/m, inventing every drawn length on the sheet.)
+ */
+export interface SheetCalibration {
+  /** pt per metre, or null when the sheet's scale could not be determined
+   *  unambiguously. Null = drawn geometry on this sheet is unmeasurable. */
+  scalePtPerM: number | null;
+  /** How the scale was established:
+   *  - 'stated':    scale note read AND verified against stated dimensions
+   *                 on the same sheet (residual within tolerance).
+   *  - 'detected':  single unambiguous scale note read; unverified.
+   *  - 'explicit':  supplied by the caller (an act of adoption, e.g. tests).
+   *  - 'ambiguous': multiple conflicting scale notes — no suggestion adopted.
+   *  - 'absent':    no scale note found on the sheet. */
+  source: 'stated' | 'detected' | 'explicit' | 'ambiguous' | 'absent';
+  /** 1-based drawing page this calibration belongs to, when known. */
+  page?: number;
+  /** The raw scale-note text the value was read from (e.g. "SCALE 1:200"). */
+  detectedText?: string;
+  /** Every distinct scale denominator found on the sheet — evidence,
+   *  including the conflicts when source is 'ambiguous'. */
+  candidates?: number[];
+  /** Relative residual of the verification check (|implied − adopted| /
+   *  adopted, median across stated-dimension samples); null when the check
+   *  did not run (too few samples) or no scale was adopted. */
+  residual?: number | null;
+}
+
 export interface TakeoffFacts {
   projectName: string;
   jobNumber: string;
@@ -246,6 +285,10 @@ export interface TakeoffFacts {
   /** Values not read off the drawings that pricing had to default, derive, or
    *  leave blank — see WithheldItem. Optional: legacy facts carry none. */
   withheld?: WithheldItem[];
+  /** Per-sheet scale calibration records (vector path) — see SheetCalibration.
+   *  Optional: text/transcript/single-pass facts carry none (those paths read
+   *  stated values and never measure drawn geometry). */
+  calibrations?: SheetCalibration[];
   locatorIndex?: { manholePages: number[]; sewerPages: number[]; watermainPages: number[] } | null;
   // Cost telemetry for a single extraction (all LLM calls summed): lets the eval
   // report tokens/tiles per project so cost changes (DPI, tile budget) are measurable.

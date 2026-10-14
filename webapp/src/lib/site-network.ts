@@ -9,6 +9,7 @@
 import { CadColor, CadGeometryPage, CadPoint, CadPolyline, distance } from './cad-geometry';
 import { detectLegend, StructureSymbolCandidate, StructureSymbolType } from './cad-symbols';
 import { PageText } from './pdf-text';
+import { SheetCalibration } from './types';
 
 export type PipeSystem = 'STORM' | 'SAN' | 'WATERMAIN' | 'UNKNOWN';
 
@@ -40,7 +41,10 @@ export interface SiteEdge {
   toNodeId: string;
   polyline: CadPoint[];
   drawnLengthPt: number;
-  drawnLengthMeters: number;
+  /** Drawn length converted at the sheet's calibrated scale. Null when the
+   *  sheet has no calibration (see SiteNetwork.calibration) — the length is
+   *  then *unmeasurable*, not zero and not defaulted. */
+  drawnLengthMeters: number | null;
   system: PipeSystem;
   strokeStyle: StrokeStyle;
   confidence: number;
@@ -57,7 +61,14 @@ export interface SiteNetwork {
   height: number;
   nodes: Map<string, SiteNode>;
   edges: SiteEdge[];
-  scaleRatio: number; // pt per meter
+  /** pt per meter, or null when the sheet's scale could not be determined
+   *  unambiguously (see `calibration`). Null disables every drawn-geometry
+   *  measurement on the sheet — there is deliberately no default. */
+  scaleRatio: number | null;
+  /** The calibration record behind `scaleRatio` (value + source + evidence).
+   *  Optional only so hand-built networks in older tests stay valid;
+   *  buildSiteNetwork always populates it. */
+  calibration?: SheetCalibration;
   stats: {
     nodeCount: number;
     edgeCount: number;
@@ -67,22 +78,112 @@ export interface SiteNetwork {
   };
 }
 
+/** Raw outcome of scanning a sheet's text for scale notes. */
+export interface ScaleDetection {
+  /** pt per metre when exactly one distinct scale note was found, else null. */
+  scalePtPerM: number | null;
+  source: 'detected' | 'ambiguous' | 'absent';
+  /** The raw text of the (first) accepted scale note. */
+  detectedText?: string;
+  /** Every distinct scale denominator found on the sheet. */
+  candidates: number[];
+}
+
+const SCALE_NOTE_RE = /SCALE\s*1\s*:\s*(\d+)/gi;
+
+/** (1000mm / denom) * (72pt / 25.4mm) — pt per metre for a 1:denom note. */
+function scalePtPerMForDenominator(denom: number): number {
+  return (1000 / denom) * (72 / 25.4);
+}
+
 /**
- * Detects scale ratio (pt per meter) from text or returns default.
+ * Scans the sheet text for scale notes (suggestion only — adoption happens
+ * in buildSiteNetwork / verifyCalibration). A single distinct denominator
+ * (however many times repeated) is a detection; two or more *distinct*
+ * denominators are a conflict and suggest nothing (the enlarged-detail
+ * trap: a plan sheet carrying a detail's 1:50 note next to its own 1:500).
  */
-export function detectDrawingScale(pageText?: PageText, fallbackScale: number = 5.0): number {
-  if (!pageText) return fallbackScale;
+export function detectDrawingScaleDetailed(pageText?: PageText): ScaleDetection {
+  if (!pageText) return { scalePtPerM: null, source: 'absent', candidates: [] };
+
+  const byDenominator = new Map<number, string>();
   for (const item of pageText.items) {
-    const m = item.text.match(/SCALE\s*1\s*:\s*(\d+)/i);
-    if (m) {
+    for (const m of item.text.matchAll(SCALE_NOTE_RE)) {
       const denom = parseInt(m[1], 10);
-      if (denom > 0) {
-        // (1000mm / denom) * (72pt / 25.4mm)
-        return (1000 / denom) * (72 / 25.4);
+      if (denom > 0 && !byDenominator.has(denom)) {
+        byDenominator.set(denom, item.text);
       }
     }
   }
-  return fallbackScale;
+
+  const candidates = [...byDenominator.keys()];
+  if (candidates.length === 0) {
+    return { scalePtPerM: null, source: 'absent', candidates };
+  }
+  if (candidates.length > 1) {
+    return { scalePtPerM: null, source: 'ambiguous', candidates };
+  }
+  const denom = candidates[0];
+  return {
+    scalePtPerM: scalePtPerMForDenominator(denom),
+    source: 'detected',
+    detectedText: byDenominator.get(denom),
+    candidates,
+  };
+}
+
+/**
+ * Detects scale ratio (pt per meter) from the sheet's scale note.
+ * Returns null when there is no note or the notes conflict — there is
+ * deliberately NO fallback constant: an unknown scale means drawn geometry
+ * cannot be measured, and callers must say so instead of inventing lengths
+ * (the pre-PR-12 code silently substituted 5.0 pt/m).
+ */
+export function detectDrawingScale(pageText?: PageText): number | null {
+  return detectDrawingScaleDetailed(pageText).scalePtPerM;
+}
+
+/** Verification tolerance: stated dimensions confirming the detected scale
+ *  within this relative residual promote the record to 'stated'. */
+export const SCALE_VERIFY_TOLERANCE = 0.1;
+/** Beyond this residual the stated dimensions flatly contradict the note —
+ *  surfaced as a warning (warn, don't block). */
+export const SCALE_CONFLICT_TOLERANCE = 0.25;
+
+/**
+ * Verifies a detected calibration against stated dimensions on the same
+ * sheet: each sample pairs a drawn length (pt) with the length the drawing
+ * states for the same run (m), implying its own pt/m. With ≥2 samples, the
+ * median implied scale is the sheet's geometric truth as far as the
+ * estimator is concerned: agreement within SCALE_VERIFY_TOLERANCE promotes
+ * the record to 'stated'; strong disagreement keeps 'detected' but records
+ * the residual so the caller can warn. Never overwrites the adopted value —
+ * conflicts are reported, not resolved by fiat.
+ */
+export function verifyCalibration(
+  calibration: SheetCalibration,
+  samples: { drawnLengthPt: number; statedLengthM: number }[]
+): { calibration: SheetCalibration; conflict: boolean } {
+  if (calibration.source !== 'detected' || calibration.scalePtPerM == null) {
+    return { calibration, conflict: false };
+  }
+  const implied = samples
+    .filter((s) => s.drawnLengthPt > 0 && s.statedLengthM > 0)
+    .map((s) => s.drawnLengthPt / s.statedLengthM)
+    .sort((a, b) => a - b);
+  if (implied.length < 2) {
+    return { calibration: { ...calibration, residual: null }, conflict: false };
+  }
+  const median = implied[Math.floor(implied.length / 2)];
+  const adopted = calibration.scalePtPerM;
+  const residual = Math.abs(median - adopted) / adopted;
+  if (residual <= SCALE_VERIFY_TOLERANCE) {
+    return { calibration: { ...calibration, source: 'stated', residual }, conflict: false };
+  }
+  return {
+    calibration: { ...calibration, residual },
+    conflict: residual > SCALE_CONFLICT_TOLERANCE,
+  };
 }
 
 /**
@@ -308,7 +409,23 @@ export function buildSiteNetwork(
   scale?: number,
   pageText?: PageText
 ): SiteNetwork {
-  const scaleRatio = scale ?? detectDrawingScale(pageText, 5.0);
+  // Scale is calibration, not a magic constant: an explicit caller-supplied
+  // scale is an act of adoption ('explicit'); otherwise the sheet's own
+  // scale note is the only suggestion, and ambiguity/absence records null.
+  let calibration: SheetCalibration;
+  if (scale != null) {
+    calibration = { scalePtPerM: scale, source: 'explicit', page: geometry.page };
+  } else {
+    const detection = detectDrawingScaleDetailed(pageText);
+    calibration = {
+      scalePtPerM: detection.scalePtPerM,
+      source: detection.source,
+      page: geometry.page,
+      detectedText: detection.detectedText,
+      candidates: detection.candidates,
+    };
+  }
+  const scaleRatio = calibration.scalePtPerM;
   const legendInfo = detectLegend(geometry, pageText);
 
   // 1. Create SiteNodes from StructureSymbolCandidates
@@ -402,8 +519,10 @@ export function buildSiteNetwork(
 
       const system = inferPipeSystem(strokeStyle);
       const drawnLengthPt = pl.length;
+      // Uncalibrated sheet => unmeasurable edge (null), never a defaulted
+      // conversion. Consumers must treat null as "cannot measure".
       const drawnLengthMeters =
-        scaleRatio > 0 ? drawnLengthPt / scaleRatio : drawnLengthPt / 5.0;
+        scaleRatio != null && scaleRatio > 0 ? drawnLengthPt / scaleRatio : null;
 
       const edge: SiteEdge = {
         id: edgeId,
@@ -440,6 +559,7 @@ export function buildSiteNetwork(
     nodes: nodeMap,
     edges,
     scaleRatio,
+    calibration,
     stats: {
       nodeCount: nodeMap.size,
       edgeCount: edges.length,

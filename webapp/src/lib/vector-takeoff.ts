@@ -15,9 +15,9 @@ import { extractPageText, isTextyPage, PageText } from './pdf-text';
 import { mergeTakeoffs, reconcileTakeoff } from './reconcile';
 import { clusterShxStrokes } from './shx-cluster';
 import { decodeShxClusters } from './shx-decode';
-import { buildSiteNetwork } from './site-network';
+import { buildSiteNetwork, verifyCalibration } from './site-network';
 import { assembleTextTakeoff } from './text-takeoff';
-import { TakeoffFacts } from './types';
+import { TakeoffFacts, WithheldItem } from './types';
 
 /**
  * Extracts TakeoffFacts directly from CAD vector geometry and topology.
@@ -78,12 +78,60 @@ export async function extractVectorTakeoff(
     // 6. Bind annotations to structures and pipes via leader lines & proximity
     const boundNetwork = bindAnnotationsToNetwork(network, annotations, geometry);
 
+    // 6b. Scale calibration: verify the detected note (if any) against the
+    // stated callout lengths bound to this sheet's runs. Agreement promotes
+    // the record to 'stated'; a flat contradiction is warned, never silently
+    // overwritten. No calibration at all is withheld as a question below.
+    let calibration = network.calibration;
+    const scaleWarnings: string[] = [];
+    if (calibration && calibration.source === 'detected') {
+      const samples = boundNetwork.edges
+        .filter((e) => e.calloutLengthMeters != null)
+        .map((e) => ({ drawnLengthPt: e.drawnLengthPt, statedLengthM: e.calloutLengthMeters! }));
+      const verified = verifyCalibration(calibration, samples);
+      calibration = verified.calibration;
+      network.calibration = calibration;
+      if (verified.conflict) {
+        scaleWarnings.push(
+          `Sheet ${pageNum}: stated dimensions disagree with the detected scale note "${calibration.detectedText ?? ''}" by ~${Math.round((calibration.residual ?? 0) * 100)}% \u2014 drawn-geometry quantities on this sheet may be wrong (check for enlarged details).`
+        );
+      }
+    }
+
     // 7. Evaluate natural network invariants (hydraulics, capacity, depth, length)
     const validation = evaluateNetworkInvariants(boundNetwork);
 
     // 8. Apply estimator conventions (rounding, label normalization, grouping)
     let vectorPageFacts = applyEstimatorConventions(validation.validEntities);
     vectorPageFacts.projectName = projectName;
+
+    // 8b. Attach the sheet's calibration record; when the sheet could not
+    // be calibrated, say so explicitly (warning + withheld question) \u2014
+    // drawn lengths on it were NOT converted with any default scale.
+    if (calibration) {
+      vectorPageFacts.calibrations = [...(vectorPageFacts.calibrations ?? []), calibration];
+      if (calibration.scalePtPerM == null) {
+        const candidates = calibration.candidates ?? [];
+        const reason =
+          calibration.source === 'ambiguous'
+            ? `conflicting scale notes (${candidates.map((d) => `1:${d}`).join(', ')})`
+            : 'no scale note (SCALE 1:N) found';
+        scaleWarnings.push(
+          `Sheet ${pageNum}: scale not determined \u2014 ${reason}; drawn geometry was not converted to metres. Only stated callout values are used.`
+        );
+        const withheldItem: WithheldItem = {
+          entity: `Sheet ${pageNum}`,
+          field: 'scale',
+          kind: 'withheld',
+          question: `Drawing scale for sheet ${pageNum} could not be determined (${reason}) \u2014 confirm the sheet scale. Drawn lengths on this sheet were left unmeasured rather than converted at an assumed scale.`,
+          defaultApplied: null,
+        };
+        vectorPageFacts.withheld = [...(vectorPageFacts.withheld ?? []), withheldItem];
+      }
+    }
+    if (scaleWarnings.length > 0) {
+      vectorPageFacts.warnings = [...vectorPageFacts.warnings, ...scaleWarnings];
+    }
 
     // 9. Merge text layer facts (primary) with vector topology facts
     if (textFacts) {

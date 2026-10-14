@@ -281,3 +281,100 @@ describe('cad-invariants network validation', () => {
     expect(dropErr?.severity).toBe('error');
   });
 });
+
+describe('cad-invariants on uncalibrated sheets (PR 12: drawnLengthMeters null)', () => {
+  function node(id: string, x: number) {
+    return {
+      id,
+      symbolCandidateId: `sym_${id}`,
+      centroid: { x, y: 100 },
+      symbolType: 'MH' as const,
+      bbox: [x - 10, 90, x + 10, 110] as [number, number, number, number],
+      incomingEdgeIds: [] as string[],
+      outgoingEdgeIds: [] as string[],
+      confidence: 1.0,
+      elevations: [],
+      annotationIds: [] as string[],
+    };
+  }
+
+  function uncalibratedBound(edges: any[]): BoundSiteNetwork {
+    const nodes = new Map([
+      ['node_1', node('node_1', 100)],
+      ['node_2', node('node_2', 200)],
+    ]);
+    return {
+      network: {
+        page: 1,
+        width: 800,
+        height: 600,
+        nodes: new Map(),
+        edges: [],
+        scaleRatio: null,
+        calibration: { scalePtPerM: null, source: 'absent', page: 1, candidates: [] },
+        stats: { nodeCount: 2, edgeCount: edges.length, stormEdgeCount: 1, sanitaryEdgeCount: 0, watermainEdgeCount: 0 },
+      },
+      nodes,
+      edges,
+      unboundAnnotations: [],
+      stats: { totalAnnotations: 0, boundToNodes: 0, boundToEdges: 0, unbound: 0 },
+    };
+  }
+
+  const baseEdge = {
+    polyline: [
+      { x: 100, y: 100 },
+      { x: 200, y: 100 },
+    ],
+    drawnLengthPt: 100,
+    drawnLengthMeters: null,
+    strokeStyle: { lineWidth: 2, dashArray: [] },
+    confidence: 1.0,
+    annotationIds: [],
+  };
+
+  it('skips LENGTH_CONSERVATION and withholds an unmeasured sewer length', () => {
+    const bound = uncalibratedBound([
+      { ...baseEdge, id: 'e1', fromNodeId: 'node_1', toNodeId: 'node_2', system: 'STORM' },
+    ]);
+    const result = evaluateNetworkInvariants(bound);
+
+    // No drawn length exists, so the conservation check cannot fire
+    expect(result.violations.filter((v) => v.invariant === 'LENGTH_CONSERVATION')).toEqual([]);
+    // The run is still detected, with an honestly blank length
+    expect(result.validEntities.sewers).toHaveLength(1);
+    expect(result.validEntities.sewers[0].length).toBeNull();
+    const w = (result.validEntities.withheld ?? []).find((i) => i.field === 'length');
+    expect(w).toBeDefined();
+    expect(w?.kind).toBe('withheld');
+    expect(w?.defaultApplied).toBeNull();
+  });
+
+  it('uses the stated callout length on an uncalibrated sheet (no withheld item)', () => {
+    const bound = uncalibratedBound([
+      {
+        ...baseEdge,
+        id: 'e1',
+        fromNodeId: 'node_1',
+        toNodeId: 'node_2',
+        system: 'STORM',
+        calloutLengthMeters: 25,
+      },
+    ]);
+    const result = evaluateNetworkInvariants(bound);
+    expect(result.validEntities.sewers[0].length).toBe(25);
+    expect(result.validEntities.withheld ?? []).toEqual([]);
+  });
+
+  it('emits an unmeasured watermain at length 0 with a withheld question', () => {
+    const bound = uncalibratedBound([
+      { ...baseEdge, id: 'e1', fromNodeId: 'node_1', toNodeId: 'node_2', system: 'WATERMAIN', diameterMm: 150 },
+    ]);
+    const result = evaluateNetworkInvariants(bound);
+    expect(result.validEntities.watermain).toHaveLength(1);
+    expect(result.validEntities.watermain[0].length).toBe(0);
+    const w = (result.validEntities.withheld ?? []).find((i) => i.field === 'length');
+    expect(w?.entity).toContain('WATERMAIN');
+    expect(w?.defaultApplied).toBeNull();
+  });
+});

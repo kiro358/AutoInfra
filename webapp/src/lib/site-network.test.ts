@@ -2,26 +2,89 @@ import { describe, it, expect } from 'vitest';
 import {
   buildSiteNetwork,
   detectDrawingScale,
+  detectDrawingScaleDetailed,
   inferPipeSystem,
+  verifyCalibration,
 } from './site-network';
 import { extractCadGeometry } from './cad-geometry';
 import { extractStructureSymbols } from './cad-symbols';
 import { extractPageText } from './pdf-text';
 import { createSyntheticCadPdf } from './test-fixtures/synthetic-cad-pdf';
+import { PageText } from './pdf-text';
+
+function pageTextWith(items: string[]): PageText {
+  return {
+    page: 1,
+    width: 842,
+    height: 595,
+    items: items.map((text, i) => ({ text, x: 50, y: 50 + i * 12, width: 60, height: 10 })),
+  };
+}
 
 describe('site-network scale & system inference', () => {
-  it('detects scale ratio from drawing text or falls back', () => {
-    const scale200 = detectDrawingScale({
-      page: 1,
-      width: 842,
-      height: 595,
-      items: [{ text: 'SCALE 1:200', x: 50, y: 50, width: 60, height: 10 }],
-    });
+  it('detects scale ratio from drawing text; no note means null, never a default', () => {
+    const scale200 = detectDrawingScale(pageTextWith(['SCALE 1:200']));
     // 1000 / 200 * (72 / 25.4) ≈ 14.17
     expect(scale200).toBeCloseTo(14.17, 1);
 
-    const fallback = detectDrawingScale(undefined, 5.0);
-    expect(fallback).toBe(5.0);
+    // PR 12: the silent 5.0 pt/m fallback is gone. Unknown scale is null.
+    expect(detectDrawingScale(undefined)).toBeNull();
+    expect(detectDrawingScale(pageTextWith(['GENERAL NOTES', 'NORTH ARROW']))).toBeNull();
+  });
+
+  it('treats repeated identical notes as one detection, distinct notes as ambiguous', () => {
+    const repeated = detectDrawingScaleDetailed(
+      pageTextWith(['SCALE 1:200', 'SCALE 1:200  |  DRAWING NO. SS-101'])
+    );
+    expect(repeated.source).toBe('detected');
+    expect(repeated.scalePtPerM).toBeCloseTo(14.17, 1);
+    expect(repeated.candidates).toEqual([200]);
+
+    const conflict = detectDrawingScaleDetailed(
+      pageTextWith(['SCALE 1:200', 'DETAIL A — SCALE 1:50'])
+    );
+    expect(conflict.source).toBe('ambiguous');
+    expect(conflict.scalePtPerM).toBeNull();
+    expect(conflict.candidates).toEqual([200, 50]);
+
+    const absent = detectDrawingScaleDetailed(pageTextWith(['TITLE BLOCK']));
+    expect(absent.source).toBe('absent');
+    expect(absent.scalePtPerM).toBeNull();
+    expect(absent.candidates).toEqual([]);
+  });
+
+  it('verifies a detected scale against stated dimensions (promote / conflict / insufficient)', () => {
+    const base = {
+      scalePtPerM: 14.1732, // 1:200
+      source: 'detected' as const,
+      page: 1,
+      detectedText: 'SCALE 1:200',
+      candidates: [200],
+    };
+    // Stated dimensions imply ~14.17 pt/m -> promoted to 'stated'
+    const promoted = verifyCalibration(base, [
+      { drawnLengthPt: 283.5, statedLengthM: 20 },
+      { drawnLengthPt: 141.7, statedLengthM: 10 },
+    ]);
+    expect(promoted.calibration.source).toBe('stated');
+    expect(promoted.calibration.residual).toBeLessThan(0.1);
+    expect(promoted.conflict).toBe(false);
+
+    // Stated dimensions imply 5 pt/m -> flat contradiction, value NOT overwritten
+    const conflicted = verifyCalibration(base, [
+      { drawnLengthPt: 200, statedLengthM: 40 },
+      { drawnLengthPt: 80, statedLengthM: 16 },
+    ]);
+    expect(conflicted.calibration.source).toBe('detected');
+    expect(conflicted.calibration.scalePtPerM).toBeCloseTo(14.17, 1);
+    expect(conflicted.calibration.residual).toBeGreaterThan(0.25);
+    expect(conflicted.conflict).toBe(true);
+
+    // A single sample cannot verify
+    const insufficient = verifyCalibration(base, [{ drawnLengthPt: 200, statedLengthM: 40 }]);
+    expect(insufficient.calibration.source).toBe('detected');
+    expect(insufficient.calibration.residual).toBeNull();
+    expect(insufficient.conflict).toBe(false);
   });
 
   it('infers pipe system from stroke colors, dash arrays, and layers', () => {
@@ -139,5 +202,43 @@ describe('buildSiteNetwork on synthetic CAD drawings', () => {
     // Drawn pt length = 150 + 200 + 150 = 500pt
     expect(edge.drawnLengthPt).toBeCloseTo(500, 0);
     expect(edge.drawnLengthMeters).toBeCloseTo(100, 0);
+    // An explicit caller scale is recorded as an adoption
+    expect(network.calibration?.source).toBe('explicit');
+    expect(network.calibration?.scalePtPerM).toBe(5.0);
+  });
+
+  it('records a detected calibration from the sheet scale note when no scale is passed', async () => {
+    const pdfBytes = await createSyntheticCadPdf();
+    const geometry = await extractCadGeometry(pdfBytes.slice(), 1);
+    const pageTexts = await extractPageText(Buffer.from(pdfBytes.slice()));
+    const symbols = extractStructureSymbols(geometry, pageTexts[0]);
+
+    // The fixture sheet states "SCALE 1:200" in its title block
+    const network = buildSiteNetwork(geometry, symbols, undefined, pageTexts[0]);
+
+    expect(network.calibration?.source).toBe('detected');
+    expect(network.calibration?.detectedText).toContain('SCALE 1:200');
+    expect(network.scaleRatio).toBeCloseTo(14.17, 1);
+    for (const edge of network.edges) {
+      expect(edge.drawnLengthMeters).not.toBeNull();
+      expect(edge.drawnLengthMeters!).toBeCloseTo(edge.drawnLengthPt / 14.1732, 3);
+    }
+  });
+
+  it('leaves drawn lengths unmeasurable (null) when the sheet has no determinable scale', async () => {
+    const pdfBytes = await createSyntheticCadPdf();
+    const geometry = await extractCadGeometry(pdfBytes.slice(), 1);
+    const symbols = extractStructureSymbols(geometry);
+
+    // No explicit scale and a text layer with no scale note at all
+    const network = buildSiteNetwork(geometry, symbols, undefined, pageTextWith(['SOME NOTES']));
+
+    expect(network.scaleRatio).toBeNull();
+    expect(network.calibration?.source).toBe('absent');
+    expect(network.edges.length).toBeGreaterThan(0);
+    for (const edge of network.edges) {
+      expect(edge.drawnLengthMeters).toBeNull();
+      expect(edge.drawnLengthPt).toBeGreaterThan(0);
+    }
   });
 });

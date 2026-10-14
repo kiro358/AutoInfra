@@ -105,11 +105,25 @@ export function tileDiagnosticsWarnings(tiles: TileDiagnostics): string[] {
   const degenerate = tiles.degenerateDiscarded ?? 0;
   if (missing > 0 || degenerate > 0) {
     const parts: string[] = [];
-    if (missing > 0) parts.push(`${missing} tile(s) never returned, even after one retry`);
+    if (missing > 0) parts.push(`${missing} tile(s) never returned after all recovery attempts`);
     if (degenerate > 0) parts.push(`${degenerate} tile(s) discarded as degenerate repetition (a decode loop, not a read of the drawing)`);
     const rendered = tiles.rendered != null ? ` of ${tiles.rendered} rendered` : '';
+    // Recovery credit: the loss counts above are FINAL (post-ladder), so
+    // when the ladder also saved tiles, say so — the saved tiles are in
+    // the transcript and are not part of the loss.
+    const savedParts: string[] = [];
+    const savedRetry = tiles.recoveredAfterRetry ?? 0;
+    const savedSingle = tiles.recoveredAsSingle ?? 0;
+    const savedDegenerate = tiles.degenerateRecovered ?? 0;
+    if (savedRetry > 0) savedParts.push(`${savedRetry} after the batch retry`);
+    if (savedSingle > 0) savedParts.push(`${savedSingle} as single-tile calls`);
+    if (savedDegenerate > 0) savedParts.push(`${savedDegenerate} after a degenerate re-issue`);
+    const savedTotal = savedRetry + savedSingle + savedDegenerate;
+    const recovery = savedTotal > 0
+      ? ` Recovery saved ${savedTotal} tile(s) (${savedParts.join(', ')}).`
+      : '';
     warnings.push(
-      `Transcription lost ${missing + degenerate} tile(s)${rendered}: ${parts.join('; ')}. ` +
+      `Transcription lost ${missing + degenerate} tile(s)${rendered}: ${parts.join('; ')}.${recovery} ` +
       `That sheet area was not transcribed, so this takeoff may be incomplete.`
     );
   }

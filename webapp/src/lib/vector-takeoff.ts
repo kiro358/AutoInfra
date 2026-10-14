@@ -6,9 +6,9 @@
  * topological network graphing, leader-line annotation binding, physical
  * invariant checking, schedule table extraction, and estimator convention reconciliation ($0 LLM cost).
  */
-import { CadAnnotation, bindAnnotationsToNetwork } from './cad-annotations';
+import { BoundSiteNetwork, CadAnnotation, bindAnnotationsToNetwork } from './cad-annotations';
 import { extractCadGeometry } from './cad-geometry';
-import { evaluateNetworkInvariants } from './cad-invariants';
+import { evaluateNetworkInvariants, NetworkValidationResult } from './cad-invariants';
 import { extractStructureSymbols } from './cad-symbols';
 import { applyEstimatorConventions } from './convention-rules';
 import { extractPageText, isTextyPage, PageText } from './pdf-text';
@@ -18,6 +18,97 @@ import { decodeShxClusters } from './shx-decode';
 import { buildSiteNetwork, verifyCalibration } from './site-network';
 import { assembleTextTakeoff } from './text-takeoff';
 import { TakeoffFacts, WithheldItem } from './types';
+import {
+  applyVerificationAnswers,
+  buildVerificationQueries,
+  VerificationAnswer,
+  VerificationQuery,
+} from './vector-verifier';
+
+/**
+ * Targeted verifier for one sheet's invariant violations. Production wires
+ * this to a single vision call (see extraction.ts); the $0 paths pass no
+ * verifier, in which case every query is withheld for the estimator.
+ */
+export type VectorVerifier = (
+  queries: VerificationQuery[],
+  page: number
+) => Promise<VerificationAnswer[]>;
+
+/**
+ * Resolves one sheet's invariant-violation verification queries.
+ *
+ * Queries come from error-severity violations only (buildVerificationQueries).
+ * Answered queries are applied to the network and the invariants are re-run
+ * on the corrected network, so downstream steps price from verified entities.
+ * Every unanswered query — no verifier wired, the verifier threw, or it
+ * simply did not answer that query — becomes a WithheldItem: the violation
+ * is surfaced to the estimator as a question instead of silently dropped.
+ */
+export async function resolveVerification(
+  validation: NetworkValidationResult,
+  boundNetwork: BoundSiteNetwork,
+  verify: VectorVerifier | undefined,
+  page: number
+): Promise<{
+  validation: NetworkValidationResult;
+  boundNetwork: BoundSiteNetwork;
+  withheld: WithheldItem[];
+  note: string | null;
+}> {
+  const queries = buildVerificationQueries(validation, boundNetwork);
+  if (queries.length === 0) {
+    return { validation, boundNetwork, withheld: [], note: null };
+  }
+
+  let answers: VerificationAnswer[] = [];
+  let verifyError: string | null = null;
+  if (verify) {
+    try {
+      answers = (await verify(queries, page)) ?? [];
+    } catch (err) {
+      verifyError = err instanceof Error ? err.message : String(err);
+      answers = [];
+    }
+  }
+
+  const byId = new Map(queries.map((q) => [q.id, q]));
+  const matched: VerificationAnswer[] = [];
+  for (const ans of answers) {
+    const q = ans ? byId.get(ans.queryId) : undefined;
+    if (!q) continue;
+    matched.push(ans.entityId ? ans : { ...ans, entityId: q.entityId });
+  }
+  const answeredIds = new Set(matched.map((a) => a.queryId));
+
+  let outValidation = validation;
+  let outNetwork = boundNetwork;
+  if (matched.length > 0) {
+    outNetwork = applyVerificationAnswers(boundNetwork, matched);
+    outValidation = evaluateNetworkInvariants(outNetwork);
+  }
+
+  const withheld: WithheldItem[] = [];
+  for (const q of queries) {
+    if (answeredIds.has(q.id)) continue;
+    withheld.push({
+      entity: q.entityId,
+      field: 'verification',
+      kind: 'withheld',
+      question: `${q.question} (Automated verification could not resolve this \u2014 please confirm on the drawing.)`,
+      defaultApplied: null,
+    });
+  }
+
+  let note =
+    `Sheet ${page}: ${queries.length} invariant violation(s) flagged for verification \u2014 ` +
+    `${answeredIds.size} resolved by verifier, ${withheld.length} withheld for manual confirmation.`;
+  if (verifyError) {
+    note += ` (Verifier failed: ${verifyError}.)`;
+  }
+
+  return { validation: outValidation, boundNetwork: outNetwork, withheld, note };
+}
 
 /**
  * Extracts TakeoffFacts directly from CAD vector geometry and topology.
@@ -25,7 +116,8 @@ import { TakeoffFacts, WithheldItem } from './types';
 export async function extractVectorTakeoff(
   pdfBuffer: Buffer | Uint8Array,
   pages?: number[],
-  projectName: string = 'Vector Takeoff'
+  projectName: string = 'Vector Takeoff',
+  options?: { verify?: VectorVerifier }
 ): Promise<TakeoffFacts> {
   const nodeBuf = Buffer.isBuffer(pdfBuffer) ? pdfBuffer : Buffer.from(pdfBuffer);
   const allPageTexts = await extractPageText(nodeBuf.slice(0), pages);
@@ -99,7 +191,14 @@ export async function extractVectorTakeoff(
     }
 
     // 7. Evaluate natural network invariants (hydraulics, capacity, depth, length)
-    const validation = evaluateNetworkInvariants(boundNetwork);
+    const rawValidation = evaluateNetworkInvariants(boundNetwork);
+
+    // 7b. Targeted verification of error-severity violations: a wired
+    // verifier may correct the network (invariants are re-run on the
+    // corrected graph inside resolveVerification); every query it cannot
+    // answer is withheld for the estimator instead of silently dropped.
+    const resolved = await resolveVerification(rawValidation, boundNetwork, options?.verify, pageNum);
+    const validation = resolved.validation;
 
     // 8. Apply estimator conventions (rounding, label normalization, grouping)
     let vectorPageFacts = applyEstimatorConventions(validation.validEntities);
@@ -131,6 +230,16 @@ export async function extractVectorTakeoff(
     }
     if (scaleWarnings.length > 0) {
       vectorPageFacts.warnings = [...vectorPageFacts.warnings, ...scaleWarnings];
+    }
+
+    // 8c. Verification outcome: unanswered queries ride along as withheld
+    // questions (same machinery as the scale item above); the per-sheet
+    // summary is a warning.
+    if (resolved.withheld.length > 0) {
+      vectorPageFacts.withheld = [...(vectorPageFacts.withheld ?? []), ...resolved.withheld];
+    }
+    if (resolved.note) {
+      vectorPageFacts.warnings = [...vectorPageFacts.warnings, resolved.note];
     }
 
     // 9. Merge text layer facts (primary) with vector topology facts

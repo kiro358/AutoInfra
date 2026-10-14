@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { extractVectorTakeoff } from './vector-takeoff';
+import { extractVectorTakeoff, resolveVerification } from './vector-takeoff';
 import { createSyntheticCadPdf } from './test-fixtures/synthetic-cad-pdf';
 import {
   buildVerificationQueries,
   applyVerificationAnswers,
 } from './vector-verifier';
 import { BoundSiteNetwork } from './cad-annotations';
+import { NetworkValidationResult } from './cad-invariants';
 
 describe('vector-takeoff end-to-end extraction', () => {
   it('extracts complete TakeoffFacts from synthetic CAD drawing with zero LLM calls', async () => {
@@ -179,5 +180,152 @@ describe('vector-verifier targeted queries', () => {
 
     expect(updated.edges[0].boundRunLabel).toBe('STMH 1-STMH 2');
     expect(updated.edges[0].confidence).toBe(0.95);
+  });
+});
+
+describe('resolveVerification wiring', () => {
+  // Fresh copies per test: applyVerificationAnswers mutates edge objects.
+  function makeBound(): BoundSiteNetwork {
+    const node = {
+      id: 'node_1',
+      symbolCandidateId: 'sym_1',
+      centroid: { x: 100, y: 100 },
+      symbolType: 'MH',
+      bbox: [90, 90, 110, 110] as [number, number, number, number],
+      incomingEdgeIds: [] as string[],
+      outgoingEdgeIds: ['edge_1'],
+      confidence: 0.6,
+      elevations: [] as never[],
+      annotationIds: [] as string[],
+    };
+    const edge = {
+      id: 'edge_1',
+      fromNodeId: 'node_1',
+      toNodeId: 'node_missing',
+      polyline: [{ x: 100, y: 100 }, { x: 200, y: 100 }],
+      drawnLengthPt: 100,
+      drawnLengthMeters: 20,
+      system: 'STORM' as const,
+      strokeStyle: { lineWidth: 2, dashArray: [] as number[] },
+      confidence: 0.6,
+      annotationIds: [] as string[],
+    };
+    return {
+      network: {
+        page: 1,
+        width: 800,
+        height: 600,
+        nodes: new Map([['node_1', { ...node }]]),
+        edges: [{ ...edge }],
+        scaleRatio: 5.0,
+        stats: { nodeCount: 1, edgeCount: 1, stormEdgeCount: 1, sanitaryEdgeCount: 0, watermainEdgeCount: 0 },
+      },
+      nodes: new Map([['node_1', { ...node }]]),
+      edges: [{ ...edge }],
+      unboundAnnotations: [],
+      stats: { totalAnnotations: 0, boundToNodes: 0, boundToEdges: 0, unbound: 0 },
+    } as BoundSiteNetwork;
+  }
+
+  function makeValidation(severity: 'error' | 'warning'): NetworkValidationResult {
+    return {
+      score: 0.7,
+      violations: [
+        {
+          invariant: 'ENDPOINT_COMPLETENESS',
+          entityId: 'edge_1',
+          entityType: 'edge',
+          description: 'Edge edge_1 missing terminal node',
+          severity,
+          location: [150, 100],
+        },
+      ],
+      validEntities: {
+        projectName: 'Test',
+        jobNumber: '',
+        date: '2026-09-01',
+        structures: [],
+        catchbasins: [],
+        sewers: [],
+        watermain: [],
+        watermainSpecials: [],
+        watermainValves: [],
+        confidence: 0.7,
+        warnings: [],
+      },
+    };
+  }
+
+  it('withholds every error-violation query when no verifier is wired', async () => {
+    const validation = makeValidation('error');
+    const bound = makeBound();
+    const res = await resolveVerification(validation, bound, undefined, 1);
+
+    expect(res.validation).toBe(validation);
+    expect(res.boundNetwork).toBe(bound);
+    expect(res.withheld).toHaveLength(1);
+    expect(res.withheld[0].entity).toBe('edge_1');
+    expect(res.withheld[0].field).toBe('verification');
+    expect(res.withheld[0].kind).toBe('withheld');
+    expect(res.withheld[0].defaultApplied).toBeNull();
+    expect(res.withheld[0].question).toContain('Is pipe segment edge_1 connected');
+    expect(res.withheld[0].question).toContain('Automated verification could not resolve this');
+    expect(res.note).toContain('Sheet 1');
+    expect(res.note).toContain('0 resolved by verifier, 1 withheld');
+  });
+
+  it('applies a stub verifier answer and re-runs invariants on the corrected network', async () => {
+    const validation = makeValidation('error');
+    const bound = makeBound();
+    const verify = async () => [
+      { queryId: 'q_1', entityId: 'edge_1', verifiedValue: 'STMH 1-STMH 2', confidence: 0.95 },
+    ];
+    const res = await resolveVerification(validation, bound, verify, 1);
+
+    expect(res.withheld).toHaveLength(0);
+    expect(res.boundNetwork.edges[0].boundRunLabel).toBe('STMH 1-STMH 2');
+    expect(res.boundNetwork.edges[0].confidence).toBe(0.95);
+    // Invariants were re-run on the corrected network (fresh result object).
+    expect(res.validation).not.toBe(validation);
+    expect(res.validation.validEntities).toBeDefined();
+    expect(res.note).toContain('1 resolved by verifier, 0 withheld');
+  });
+
+  it('falls back to withheld when the verifier throws', async () => {
+    const validation = makeValidation('error');
+    const bound = makeBound();
+    const verify = async () => {
+      throw new Error('verifier boom');
+    };
+    const res = await resolveVerification(validation, bound, verify, 3);
+
+    expect(res.validation).toBe(validation);
+    expect(res.withheld).toHaveLength(1);
+    expect(res.withheld[0].field).toBe('verification');
+    expect(res.note).toContain('Sheet 3');
+    expect(res.note).toContain('Verifier failed: verifier boom');
+  });
+
+  it('passes warning-only violations through untouched (no queries, no withheld)', async () => {
+    const validation = makeValidation('warning');
+    const bound = makeBound();
+    const res = await resolveVerification(validation, bound, undefined, 1);
+
+    expect(res.validation).toBe(validation);
+    expect(res.boundNetwork).toBe(bound);
+    expect(res.withheld).toHaveLength(0);
+    expect(res.note).toBeNull();
+  });
+
+  it('runs end-to-end on the synthetic CAD PDF with a stub verifier returning no answers', async () => {
+    const pdfBytes = await createSyntheticCadPdf();
+    const facts = await extractVectorTakeoff(Buffer.from(pdfBytes), [1], 'Synthetic Test Project', {
+      verify: async () => [],
+    });
+
+    expect(facts.projectName).toBe('Synthetic Test Project');
+    expect(facts.structures.length).toBeGreaterThanOrEqual(2);
+    expect(facts.sewers.length).toBeGreaterThanOrEqual(2);
+    expect(facts.watermain.length).toBeGreaterThanOrEqual(1);
   });
 });

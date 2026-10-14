@@ -56,14 +56,28 @@ export async function extractPageText(pdfBuffer: Buffer, pages?: number[]): Prom
   return out;
 }
 
-// A page is "texty" (text-layer path viable) when its callout-keyword density is
-// high enough that the drawing annotations — not just the title block — are text.
-// Thresholds calibrated on the golden corpus: texty servicing sheets show 100+
-// keyword hits; SHX/raster sheets show <10 (all from the title block).
+// A page is "texty" (text-layer path viable) when its drawing annotations —
+// not just the prose around the drawing — are in the text layer. Two gates:
+//   1. callout-keyword density >= 10 (the historical gate), AND
+//   2. at least one hit in annotation FORM: a numeric callout shape that
+//      legend/notes prose does not produce — a mm diameter, an @ slope, an
+//      INV/T/G/RIM elevation carrying a value, or a numbered structure label.
+// Gate 2 exists because SHX sheets carry ONLY prose in their text layer:
+// Holiday Inn's SS-1 servicing sheet scored exactly 10 keyword hits — every
+// one from its legend and general notes ("STORM STRUCTURES…", "SANITARY
+// SEWER") — while its annotations are SHX strokes absent from the layer, so
+// the keyword gate alone diverted the only sheet carrying runs/inverts to
+// the text path, which extracted nothing (prod: runs 0/13, fieldAcc 0.0).
+// Calibrated on the 26-project golden census (pr16_census): across all 135
+// pages, gate 2 flips exactly that one page; every page whose text layer
+// yields entities carries at least one annotation-form hit, and genuinely
+// texty servicing sheets carry 100+ keyword hits with dozens of forms.
 const CALLOUT_KW = /\b(STM|SAN(?:ITARY)?|STORM|INV|PVC|HDPE|CBMH|DCBMH|DICB|WATERMAIN|WM|T\/G)\b|\d+\s*mm|@\s*\d/gi;
+const ANNOTATION_FORM = /\d+\s*mm|@\s*\d|\b(?:INV|T\/G|RIM)\s*[:=]?\s*\d|\b(?:STMH|SANMH|SAMH|CBMH|DCBMH|DDICB|DICB|DCB|MH|CB)\s*\d+/i;
 
 export function isTextyPage(pt: PageText): boolean {
   const joined = pt.items.map((i) => i.text).join(' ');
   const hits = joined.match(CALLOUT_KW)?.length ?? 0;
-  return hits >= 10;
+  if (hits < 10) return false;
+  return ANNOTATION_FORM.test(joined);
 }

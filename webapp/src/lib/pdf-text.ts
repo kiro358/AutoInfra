@@ -75,9 +75,22 @@ export async function extractPageText(pdfBuffer: Buffer, pages?: number[]): Prom
 const CALLOUT_KW = /\b(STM|SAN(?:ITARY)?|STORM|INV|PVC|HDPE|CBMH|DCBMH|DICB|WATERMAIN|WM|T\/G)\b|\d+\s*mm|@\s*\d/gi;
 const ANNOTATION_FORM = /\d+\s*mm|@\s*\d|\b(?:INV|T\/G|RIM)\s*[:=]?\s*\d|\b(?:STMH|SANMH|SAMH|CBMH|DCBMH|DDICB|DICB|DCB|MH|CB)\s*\d+/i;
 
+/**
+ * True when the page's text layer carries at least one callout in annotation
+ * FORM (see gate 2 above). Legend/notes prose does not produce these shapes,
+ * so this is the cheapest text-layer proof that a page is takeoff-bearing —
+ * PR17's locator union (extraction.ts) uses it to recover bearing pages the
+ * vision locator missed. It is NOT a texty verdict on its own: a page can
+ * carry annotation forms while its callouts are SHX strokes the text grammar
+ * cannot assemble (the PR16 fallback pages), so density still gates routing.
+ */
+export function hasAnnotationForm(pt: PageText): boolean {
+  return ANNOTATION_FORM.test(pt.items.map((i) => i.text).join(' '));
+}
+
 export function isTextyPage(pt: PageText): boolean {
   const joined = pt.items.map((i) => i.text).join(' ');
   const hits = joined.match(CALLOUT_KW)?.length ?? 0;
   if (hits < 10) return false;
-  return ANNOTATION_FORM.test(joined);
+  return hasAnnotationForm(pt);
 }

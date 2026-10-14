@@ -39,6 +39,26 @@ describe('vector-takeoff end-to-end extraction', () => {
     expect(facts.watermainSpecials.length).toBeGreaterThanOrEqual(1);
     expect(facts.watermainValves.length).toBeGreaterThanOrEqual(1);
   });
+
+  it('attaches a scale calibration record and flags the fixture\u2019s note/geometry conflict', async () => {
+    const pdfBytes = await createSyntheticCadPdf();
+    const facts = await extractVectorTakeoff(Buffer.from(pdfBytes), [1], 'Synthetic Test Project');
+
+    expect(facts.calibrations).toHaveLength(1);
+    const cal = facts.calibrations![0];
+    expect(cal.page).toBe(1);
+    // The fixture sheet states SCALE 1:200 (a single unambiguous note) ...
+    expect(cal.detectedText).toContain('SCALE 1:200');
+    expect(cal.scalePtPerM).toBeCloseTo(14.17, 1);
+    // ... but its geometry is drawn at 5 pt/m, so verification must NOT
+    // promote the record to 'stated' \u2014 the conflict is recorded + warned.
+    expect(cal.source).toBe('detected');
+    expect(cal.residual).toBeGreaterThan(0.25);
+    expect(facts.warnings.some((w) => w.includes('stated dimensions disagree'))).toBe(true);
+    // Facts still come from the stated callouts, unchanged by the conflict
+    const stormRun = facts.sewers.find((s) => s.pipeDiameter === 300);
+    expect(stormRun?.length).toBe(40.0);
+  });
 });
 
 describe('vector-verifier targeted queries', () => {

@@ -602,6 +602,7 @@ export function priceTakeoff(
     warnings,
     withheld: pricedWithheld,
     locatorIndex: facts.locatorIndex ?? null,
+    diagnostics: facts.diagnostics,
   };
 }
 

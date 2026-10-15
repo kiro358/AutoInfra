@@ -33,7 +33,7 @@ const num = (v: string | number | null): number | null => {
 
 // Rows the estimator lists in the structures column that are NOT physical structures
 // (site line items, dividers, fees, special systems). Excluded from structure scoring.
-const STRUCTURE_JUNK = /GRAN\s*\*|^SANITARY$|X-?ING|REMOVAL|SAW\s*CUT|ROAD\s*RESTOR|CONSULTING|RELOCATE|BIO-?SWALE|\bADS?\b|\bMOB\b|ASP[H]?[A]?LT|STM\s*TANK|GREENSTORM|LAYOUT|AS\s*BUILT|VIDEO|DEWATER|SWALE/i;
+const STRUCTURE_JUNK = /GRAN\s*\*|^SANITARY$|X-?ING|REMOVAL|SAW\s*CUT|ROAD\s*RESTOR|CONSULTING|RELOCATE|BIO-?SWALE|\bADS?\b|\bMOB\b|ASP[H]?[A]?LT|STM\s*TANK|GREENSTORM|LAYOUT|AS\s*BUILT|VIDEO|DEWATER|SWALE|LABOU?R/i;
 
 const isMHSheet = (n: string) => /manhole|structure|\bmh\b/i.test(n) && !/sewer|watermain|summary/i.test(n);
 const isSWSheet = (n: string) => /sewer/i.test(n) && !/summary/i.test(n);
@@ -62,6 +62,9 @@ export async function readTruthFacts(xlsxPath: string, projectName: string): Pro
         if (desc === null || desc === '') continue;
         const label = String(desc);
         if (label.toUpperCase().includes('TOTAL') || STRUCTURE_JUNK.test(label)) continue;
+        // Skip "STORM:" / "SANITARY:" section-header rows — they're not structures
+        // (mirrors the sewer branch's header skip below).
+        if (/^(storm|sanitary|stm|san)\s*:?\s*$/i.test(label.trim())) continue;
         const s: StructureFact = {
           description: label,
           topElevation: num(cell(ws, `C${r}`)),
@@ -74,7 +77,23 @@ export async function readTruthFacts(xlsxPath: string, projectName: string): Pro
         // Keep only rows that look like real structures: some physical value present,
         // or a structure-ID label (MH/CB/CBMH/DCBMH/DICB/… + optional number).
         const hasPhysical = [s.topElevation, s.lowInvert, s.highInvert, s.pipeOutDiameter, s.depth].some((x) => x != null);
-        const looksLikeStructure = /\b(D?CBMH|DI?CB|MH|CB|HS|OS|CHAMBER)\b/i.test(label);
+        // Two label shapes count as a structure ID:
+        //  1. a standalone token — "MH", "MH 12", "CB", "CHAMBER 1" (original test);
+        //  2. a COMPACT ID — the token fused with its number/suffix, "MH6N",
+        //     "DCBMH5N", "DICB2", "CB3", "STMH1". The \b test can never see these
+        //     (letters and digits are both word chars, so there is no boundary
+        //     inside "MH6N"), which silently dropped generated-workbook rows
+        //     whose physical cells were also unreadable — e.g. depth written as
+        //     an unevaluated formula when rim/invert weren't both read, so the
+        //     row parses all-null. Require the ID at the label start or after a
+        //     separator, immediately followed by a digit, so prose that merely
+        //     mentions an ID doesn't qualify.
+        // Template chrome ("MH F&C $", "CB F&C $") never counts on the label
+        // path — F&C price rows are not structures.
+        const looksLikeStructure =
+          !/F\s*&\s*C/i.test(label) &&
+          (/\b(D?CBMH|DI?CB|MH|CB|HS|OS|CHAMBER)\b/i.test(label) ||
+            /(?:^|[\s\-/,(])(D?CBMH|DI?CB|STMH|SANMH|MH|CB)\s*-?\s*\d/i.test(label));
         if (hasPhysical || looksLikeStructure) structures.push(s);
       }
       // Catchbasin group block (rows 53-56)

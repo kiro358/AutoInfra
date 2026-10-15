@@ -362,3 +362,125 @@ describe('populateTemplate — AUDIT sheet (PR 8)', () => {
     expect(texts.join('\n')).toContain('Nothing withheld');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Storm/sanitary sections (PR21): the estimator's workbooks keep the systems
+// in headed sections — storm first, sanitary second — inside MANHOLES and
+// SEWERS. Generation groups the same way; unclassed entities go under
+// UNSPECIFIED, never under a guessed system.
+// ---------------------------------------------------------------------------
+import fs from 'fs';
+import os from 'os';
+import { readTruthFacts } from './truth-facts';
+
+const dimRun = (runLabel: string, length = 10, pipeDiameter = 300): SewerFact => ({
+  runLabel, isLineItem: false, length, pipeDiameter, typeClass: null, slope: 1, depth: null,
+});
+const colB = (wb: ExcelJS.Workbook, sheet: string, from: number, to: number): (string | null)[] => {
+  const out: (string | null)[] = [];
+  for (let r = from; r <= to; r++) {
+    const v = val(wb, sheet, `B${r}`);
+    out.push(v == null ? null : String(v));
+  }
+  return out;
+};
+const auditText = (wb: ExcelJS.Workbook): string => {
+  const texts: string[] = [];
+  wb.getWorksheet('AUDIT')!.eachRow({ includeEmpty: false }, (r) =>
+    r.eachCell({ includeEmpty: false }, (c) => texts.push(String(c.value))));
+  return texts.join('\n');
+};
+async function buildToFile(f: TakeoffFacts): Promise<{ ex: ExtractionResult; wb: ExcelJS.Workbook; file: string }> {
+  const { ex, wb } = await build(f);
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'pr21-')), 'gen.xlsx');
+  await wb.xlsx.writeFile(file);
+  return { ex, wb, file };
+}
+
+describe('populateTemplate — storm/sanitary sections', () => {
+  it('groups manholes and sewers under STORM / SANITARY / UNSPECIFIED headings (SHORT)', async () => {
+    const { ex, wb } = await build(facts({
+      structures: [st('STMH 1'), st('SAN MH 1'), st('MH 7')],
+      sewers: [dimRun('10m-300mm STM'), dimRun('20m-200mm SAN', 20, 200), dimRun('5m-150mm', 5, 150)],
+    }));
+    expect(ex.templateType).toBe('SHORT');
+    expect(colB(wb, 'MANHOLES (1)', 10, 16)).toEqual([
+      'STORM', 'STMH 1', 'SANITARY', 'SAN MH 1', 'UNSPECIFIED', 'MH 7', null,
+    ]);
+    expect(colB(wb, 'SEWERS (1)', 13, 19)).toEqual([
+      'STORM:', '10m-300mm STM', 'SANITARY', '20m-200mm SAN', 'UNSPECIFIED', '5m-150mm', null,
+    ]);
+  });
+
+  it('flags unclassed entities in the warnings and on the AUDIT sheet — and writes everything', async () => {
+    const { ex, wb, file } = await buildToFile(facts({
+      structures: [st('STMH 1'), st('SAN MH 1'), st('MH 7')],
+      sewers: [dimRun('10m-300mm STM'), dimRun('20m-200mm SAN', 20, 200), dimRun('5m-150mm', 5, 150)],
+    }));
+    expect(ex.warnings.some((w) => /1 structure\(s\) and 1 sewer run\(s\) could not be classed/.test(w))).toBe(true);
+    const audit = auditText(wb);
+    expect(audit).toContain('STORM / SANITARY SEPARATION');
+    expect(audit).toContain('1 structure(s) and 1 sewer run(s)');
+    // Round-trip through the workbook reader: every entity survives, and no
+    // heading row parses back as an entity.
+    const parsed = await readTruthFacts(file, 'T');
+    expect(parsed.structures.map((s) => s.description).sort()).toEqual(['MH 7', 'SAN MH 1', 'STMH 1']);
+    // (The SHORT template's fee rows — VIDEO / LAYOUT / AS BUILT — also parse
+    // back, as line items, exactly as they did before sections existed.)
+    expect(parsed.sewers.filter((s) => !s.isLineItem).map((s) => s.runLabel).sort())
+      .toEqual(['10m-300mm STM', '20m-200mm SAN', '5m-150mm']);
+    expect(parsed.sewers.map((s) => s.runLabel)).not.toContain('UNSPECIFIED');
+    expect(parsed.sewers.map((s) => s.runLabel)).not.toContain('SANITARY');
+  });
+
+  it('emits no UNSPECIFIED section and no separation note when everything is classed', async () => {
+    const { ex, wb } = await build(facts({
+      structures: [st('STMH 1'), st('SAN MH 1')],
+      sewers: [dimRun('10m-300mm STM'), dimRun('20m-200mm SAN', 20, 200)],
+    }));
+    expect(colB(wb, 'MANHOLES (1)', 10, 14)).toEqual(['STORM', 'STMH 1', 'SANITARY', 'SAN MH 1', null]);
+    expect(colB(wb, 'SEWERS (1)', 13, 17)).toEqual(['STORM:', '10m-300mm STM', 'SANITARY', '20m-200mm SAN', null]);
+    expect(ex.warnings.join(' ')).not.toMatch(/could not be classed/);
+    expect(auditText(wb)).not.toContain('STORM / SANITARY SEPARATION');
+  });
+
+  it('counts headings in the SHORT fit test: 36 two-system structures go LONG rather than lose a row', async () => {
+    const structures = [...Array.from({ length: 35 }, (_, i) => st(`STMH ${i + 1}`)), st('SAN MH 1')];
+    const { ex, wb } = await build(facts({ structures }));
+    expect(ex.templateType).toBe('LONG'); // 36 items + 1 in-flow heading > SHORT's 36 rows
+    expect(ex.warnings.join(' ')).not.toMatch(/did not fit/);
+    expect(val(wb, 'MANHOLES (1)', 'B45')).toBe('STMH 35');
+    // Orphan rule: the SANITARY heading would sit alone on sheet 1's last row,
+    // so the section starts sheet 2 under its header-row heading instead.
+    expect(val(wb, 'MANHOLES (1)', 'B46')).toBeNull();
+    expect(val(wb, 'MANHOLES (2)', 'B10')).toBe('SANITARY');
+    expect(val(wb, 'MANHOLES (2)', 'B11')).toBe('SAN MH 1');
+  });
+
+  it('repeats the heading in the header row when a section continues onto the next sheet (LONG)', async () => {
+    const structures = Array.from({ length: 40 }, (_, i) => st(`STMH ${i + 1}`));
+    const { wb } = await build(facts({ structures }));
+    expect(val(wb, 'MANHOLES (1)', 'B10')).toBe('STORM');
+    expect(val(wb, 'MANHOLES (2)', 'B10')).toBe('STORM');
+    expect(val(wb, 'MANHOLES (2)', 'B11')).toBe('STMH 37');
+
+    const runs = await build(facts({ sewers: Array.from({ length: 45 }, () => dimRun('10m-300mm STM')) }));
+    expect(val(runs.wb, 'SEWERS (1)', 'B13')).toBe('STORM:');
+    expect(val(runs.wb, 'SEWERS (2)', 'B13')).toBe('STORM:');
+    expect(val(runs.wb, 'SEWERS (2)', 'B14')).toBe('10m-300mm STM');
+  });
+
+  it('capacity accounting includes heading rows: the overflow warning counts them honestly', async () => {
+    // 110 structures, LONG capacity 108 slots. Storm takes 107; the SANITARY
+    // heading lands on the last sheet's last row and consumes it, so only 107
+    // structures fit and the warning must say exactly that.
+    const structures = [
+      ...Array.from({ length: 107 }, (_, i) => st(`STMH ${i + 1}`)),
+      st('SAN MH 1'), st('SAN MH 2'), st('SAN MH 3'),
+    ];
+    const { ex, wb } = await build(facts({ structures }));
+    expect(val(wb, 'MANHOLES (3)', 'B45')).toBe('STMH 107');
+    expect(val(wb, 'MANHOLES (3)', 'B46')).toBe('SANITARY');
+    expect(ex.warnings.some((w) => /3 of 110 structures did not fit the LONG template \(max 107\)/.test(w))).toBe(true);
+  });
+});

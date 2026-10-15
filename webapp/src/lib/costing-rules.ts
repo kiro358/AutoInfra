@@ -21,6 +21,7 @@ import {
 import { snapToMHSize } from './geometry';
 import { assessConfidence } from './confidence';
 import { TEMPLATE_LAYOUT, blockCapacity, MH_DIAMETERS } from './constants';
+import { classifySystems, nonEmptySectionCount } from './system-classification';
 
 export interface CostingRules {
   /** Per-structure material/labor surcharges, matched by token in the description. */
@@ -586,11 +587,27 @@ export function priceTakeoff(
     projectName: facts.projectName,
     jobNumber: facts.jobNumber,
     date: facts.date,
-    templateType: determineTemplateType(
-      sewers.filter((s) => !(s.isLineItem && standardFeeKind(s.runLabel))).length,
-      manholes.length,
-      watermain.length
-    ),
+    // The workbook groups manholes / sewer runs into headed storm/sanitary
+    // sections (spreadsheet.ts); each section after the first can consume one
+    // heading row of the block, so the SHORT fit test counts sections too —
+    // otherwise a two-system job that exactly filled SHORT would lose its
+    // last row(s) to headings. (Bound: a section's heading costs at most one
+    // slot; a section heading a sheet costs none.)
+    templateType: (() => {
+      const cls = classifySystems(manholes, sewers);
+      const sewerFitIdx = sewers
+        .map((s, i) => ({ s, i }))
+        .filter(({ s }) => !(s.isLineItem && standardFeeKind(s.runLabel)));
+      const sewerSections = nonEmptySectionCount(
+        sewerFitIdx.filter(({ s }) => !s.isLineItem).map(({ i }) => cls.sewerSystems[i])
+      );
+      const structSections = nonEmptySectionCount(cls.structureSystems);
+      return determineTemplateType(
+        sewerFitIdx.length + Math.max(0, sewerSections - 1),
+        manholes.length + Math.max(0, structSections - 1),
+        watermain.length
+      );
+    })(),
     manholes,
     catchbasins,
     sewers,

@@ -163,3 +163,32 @@ describe('readTruthFacts — watermain ocSc/avgCover carry no invented defaults 
     expect(facts.watermain[1].avgCover).toBe(2.1);
   });
 });
+
+describe('readTruthFacts — generated-workbook section headings (PR21)', () => {
+  it('skips STORM / SANITARY / UNSPECIFIED headings in both the structures and sewer branches', async () => {
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    const mh = wb.addWorksheet('MANHOLES (1)');
+    mh.getCell('B11').value = 'STMH 1';
+    mh.getCell('B12').value = 'SANITARY';
+    mh.getCell('B13').value = 'SAN MH 1';
+    mh.getCell('B14').value = 'UNSPECIFIED';
+    mh.getCell('B15').value = 'MH 7';
+    const sw = wb.addWorksheet('SEWERS (1)');
+    sw.getCell('B14').value = '10m-300mm STM';
+    sw.getCell('C14').value = 10;
+    sw.getCell('B15').value = 'SANITARY';
+    sw.getCell('B16').value = '20m-200mm SAN';
+    sw.getCell('C16').value = 20;
+    sw.getCell('B17').value = 'UNSPECIFIED';
+    sw.getCell('B18').value = '5m-150mm';
+    sw.getCell('C18').value = 5;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'truthsec-'));
+    const file = path.join(dir, 'T.xlsx');
+    await wb.xlsx.writeFile(file);
+    const facts = await readTruthFacts(file, 'T');
+    expect(facts.structures.map((s) => s.description)).toEqual(['STMH 1', 'SAN MH 1', 'MH 7']);
+    // Without the skip, "UNSPECIFIED" would parse back as a phantom line-item run.
+    expect(facts.sewers.map((s) => s.runLabel)).toEqual(['10m-300mm STM', '20m-200mm SAN', '5m-150mm']);
+  });
+});

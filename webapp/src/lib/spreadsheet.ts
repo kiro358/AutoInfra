@@ -3,6 +3,7 @@ import path from 'path';
 import { ExtractionResult, GlobalParams, WithheldItem } from './types';
 import { DEFAULT_PARAMS, TEMPLATE_LAYOUT, RowBlock, blockCapacity } from './constants';
 import { standardFeeKind } from './costing-rules';
+import { classifySystems, groupBySystem, SystemClassification } from './system-classification';
 
 import fs from 'fs';
 
@@ -36,10 +37,27 @@ export async function populateTemplate(
     }
   });
 
-  fillManholes(workbook, extraction, params, layout);
-  fillSewers(workbook, extraction, params, layout);
+  // Storm/sanitary classification drives the sectioned layout of the MANHOLES
+  // and SEWERS sheets (the estimator's workbooks keep the systems in headed
+  // sections — storm first, sanitary second). Classed once here so both fills
+  // and the AUDIT note agree. Unclassed entities are never dropped or filed
+  // under a guessed system: they get their own UNSPECIFIED section, a warning,
+  // and an AUDIT note (see system-classification.ts for the evidence rules).
+  const classification = classifySystems(extraction.manholes, extraction.sewers);
+  const unspecifiedStructures = classification.structureSystems.filter((c) => c === 'UNKNOWN').length;
+  const unspecifiedRuns = extraction.sewers.filter(
+    (s, i) => !s.isLineItem && classification.sewerSystems[i] === 'UNKNOWN'
+  ).length;
+  if (unspecifiedStructures + unspecifiedRuns > 0) {
+    extraction.warnings.push(
+      `${unspecifiedStructures} structure(s) and ${unspecifiedRuns} sewer run(s) could not be classed storm or sanitary from their labels — they are listed under UNSPECIFIED at the end of the MANHOLES / SEWERS sheets, not filed under either system. Check each one's system before relying on the split.`
+    );
+  }
+
+  fillManholes(workbook, extraction, params, layout, classification);
+  fillSewers(workbook, extraction, params, layout, classification);
   fillWatermain(workbook, extraction, params, layout);
-  addAuditSheet(workbook, extraction);
+  addAuditSheet(workbook, extraction, { unspecifiedStructures, unspecifiedRuns });
 
   // Write to buffer
   const buffer = await workbook.xlsx.writeBuffer();
@@ -58,7 +76,11 @@ export async function populateTemplate(
  * A legacy extraction (no withheld list at all) says so explicitly rather
  * than presenting an empty sheet as a clean bill of health.
  */
-function addAuditSheet(workbook: ExcelJS.Workbook, extraction: ExtractionResult): void {
+function addAuditSheet(
+  workbook: ExcelJS.Workbook,
+  extraction: ExtractionResult,
+  separation?: { unspecifiedStructures: number; unspecifiedRuns: number }
+): void {
   const ws = workbook.addWorksheet('AUDIT');
   ws.getColumn(1).width = 34;
   ws.getColumn(2).width = 16;
@@ -101,6 +123,20 @@ function addAuditSheet(workbook: ExcelJS.Workbook, extraction: ExtractionResult)
       `${c.structures} structures / ${c.sewers} sewer runs / ${c.watermain} watermain / ${c.catchbasins} catchbasin groups`;
     const srcNote = diag.assembly.sources.map((s) => `${s.path}: ${fmtCounts(s.counts)}`).join('; ');
     ws.getCell(`A${row++}`).value = `Entities by source — ${srcNote} → final: ${fmtCounts(diag.assembly.final)}.`;
+    row++;
+  }
+
+  // Storm/sanitary separation note: present only when something could not be
+  // classed. The MANHOLES / SEWERS sheets group entities under STORM and
+  // SANITARY headings like the estimator's workbooks; anything unclassed sits
+  // under UNSPECIFIED instead of being silently filed under a system.
+  if (separation && separation.unspecifiedStructures + separation.unspecifiedRuns > 0) {
+    const sh = ws.getCell(`A${row++}`);
+    sh.value = 'STORM / SANITARY SEPARATION — entities whose system is not recorded';
+    sh.font = { bold: true, size: 11 };
+    ws.getCell(`A${row++}`).value =
+      `${separation.unspecifiedStructures} structure(s) and ${separation.unspecifiedRuns} sewer run(s) could not be classed storm or sanitary from their labels. ` +
+      'They are listed under the UNSPECIFIED heading at the end of the MANHOLES / SEWERS sheets — check each one\'s system before relying on the storm/sanitary split.';
     row++;
   }
 
@@ -174,11 +210,104 @@ function warnOverflow(extraction: ExtractionResult, what: string, total: number,
   }
 }
 
+/** One headed section of a data block, in workbook order. `heading: null` is a
+ *  heading-less tail (sewer line items) that simply follows the last section. */
+interface BlockSection<T> {
+  heading: string | null;
+  items: T[];
+}
+
+interface BlockPlan<T> {
+  /** In-flow cells in slot order: data rows and mid-sheet heading rows. */
+  cells: { sheet: ExcelJS.Worksheet; row: number; heading?: string; item?: T }[];
+  /** Heading written in the row ABOVE a sheet's data block, per sheet. */
+  headerHeadings: Map<ExcelJS.Worksheet, string>;
+  placedItems: number;
+  droppedItems: number;
+}
+
+/**
+ * Lay sections out over a block's sheets the way the estimator's workbooks do:
+ * sections in order; a section whose items begin a sheet (first section, a
+ * section starting exactly at a sheet boundary, or one continuing onto the
+ * next sheet) carries its heading in the row above the data block (MANHOLES
+ * row 10 / SEWERS row 13 — the SHORT template even pre-fills "STORM:" there),
+ * which costs no data slot; a section starting mid-sheet takes one in-flow
+ * heading row. A heading never orphans on a sheet's last row — it moves to
+ * the next sheet's header row, leaving that slot blank. Items that run past
+ * the last sheet are counted as dropped (the caller warns with the real
+ * numbers) — never silently truncated.
+ */
+function planSections<T>(
+  workbook: ExcelJS.Workbook,
+  block: RowBlock,
+  sections: BlockSection<T>[]
+): BlockPlan<T> {
+  const perSheet = block.lastRow - block.firstRow + 1;
+  const sheets = block.sheets
+    .map((name) => workbook.getWorksheet(name))
+    .filter(Boolean) as ExcelJS.Worksheet[];
+  const totalSlots = perSheet * sheets.length;
+  const headerHeadings = new Map<ExcelJS.Worksheet, string>();
+  const cells: BlockPlan<T>['cells'] = [];
+  let placedItems = 0;
+  let totalItems = 0;
+  let slot = 0;
+
+  for (const section of sections) {
+    totalItems += section.items.length;
+    section.items.forEach((item, i) => {
+      let sheetIdx = Math.floor(slot / perSheet);
+      let pos = slot % perSheet;
+      if (pos === 0 && section.heading && sheetIdx < sheets.length) {
+        // This item heads its sheet: the section's heading goes in the header
+        // row (section start at a boundary, or continuation from last sheet).
+        headerHeadings.set(sheets[sheetIdx], section.heading);
+      }
+      if (i === 0 && pos !== 0 && section.heading) {
+        if (pos === perSheet - 1 && sheetIdx < sheets.length - 1) {
+          // Orphan avoidance: leave the last slot blank; the section starts
+          // at the next sheet's top under its header-row heading.
+          slot++;
+          sheetIdx = Math.floor(slot / perSheet);
+          pos = slot % perSheet;
+          headerHeadings.set(sheets[sheetIdx], section.heading);
+        } else {
+          if (slot < totalSlots) {
+            cells.push({ sheet: sheets[sheetIdx], row: block.firstRow + pos, heading: section.heading });
+          }
+          slot++;
+          sheetIdx = Math.floor(slot / perSheet);
+          pos = slot % perSheet;
+        }
+      }
+      if (slot < totalSlots) {
+        cells.push({ sheet: sheets[sheetIdx], row: block.firstRow + pos, item });
+        placedItems++;
+      }
+      slot++;
+    });
+  }
+
+  return { cells, headerHeadings, placedItems, droppedItems: totalItems - placedItems };
+}
+
+/** Write a plan's header-row headings and in-flow heading rows (column B only). */
+function writePlanHeadings<T>(block: RowBlock, plan: BlockPlan<T>) {
+  for (const [sheet, text] of plan.headerHeadings) {
+    setCellValue(sheet, `B${block.firstRow - 1}`, text);
+  }
+  for (const cell of plan.cells) {
+    if (cell.heading) setCellValue(cell.sheet, `B${cell.row}`, cell.heading);
+  }
+}
+
 function fillManholes(
   workbook: ExcelJS.Workbook,
   extraction: ExtractionResult,
   params: GlobalParams,
-  layout: Layout
+  layout: Layout,
+  classification: SystemClassification
 ) {
   const sheets = layout.manholes.sheets
     .map(name => workbook.getWorksheet(name))
@@ -217,12 +346,23 @@ function fillManholes(
     setCellValue(sheet, 'L7', params.manholes.frameCoverM);
   });
 
-  // Data rows: the template's real formula block only (never the totals row).
-  warnOverflow(extraction, 'structures', extraction.manholes.length, blockCapacity(layout.manholes));
-  extraction.manholes.forEach((mh, idx) => {
-    const slot = slotFor(workbook, layout.manholes, idx);
-    if (!slot) return; // over capacity — reported by warnOverflow above
-    const { sheet, row } = slot;
+  // Data rows: the template's real formula block only (never the totals row),
+  // grouped into the estimator's STORM / SANITARY sections (unclassed last,
+  // under UNSPECIFIED). Within a section the facts' order is preserved.
+  const groups = groupBySystem(extraction.manholes, classification.structureSystems);
+  const plan = planSections(workbook, layout.manholes, [
+    { heading: 'STORM', items: groups.storm },
+    { heading: 'SANITARY', items: groups.sanitary },
+    { heading: 'UNSPECIFIED', items: groups.unspecified },
+  ]);
+  if (plan.droppedItems > 0) {
+    warnOverflow(extraction, 'structures', extraction.manholes.length, plan.placedItems);
+  }
+  writePlanHeadings(layout.manholes, plan);
+  plan.cells.forEach((cell) => {
+    const mh = cell.item;
+    if (!mh) return; // heading row — written by writePlanHeadings
+    const { sheet, row } = cell;
 
     setCellValue(sheet, `B${row}`, mh.description);
     // The template derives depth as Top El - Low Inv. Writing only one of the pair gives a
@@ -285,7 +425,8 @@ function fillSewers(
   workbook: ExcelJS.Workbook,
   extraction: ExtractionResult,
   params: GlobalParams,
-  layout: Layout
+  layout: Layout,
+  classification: SystemClassification
 ) {
   const sheets = layout.sewers.sheets
     .map(name => workbook.getWorksheet(name))
@@ -345,11 +486,30 @@ function fillSewers(
     }
   }
 
-  warnOverflow(extraction, 'sewer rows', runRows.length, blockCapacity(layout.sewers));
-  runRows.forEach((sw, idx) => {
-    const slot = slotFor(workbook, layout.sewers, idx);
-    if (!slot) return; // over capacity — reported by warnOverflow above
-    const { sheet, row } = slot;
+  // Data rows grouped into the estimator's sections, storm first: "STORM:"
+  // (the heading the truth workbooks and the SHORT template itself use at the
+  // top of the sheet), then "SANITARY", then unclassed runs under
+  // "UNSPECIFIED". Line items are not network runs — they follow the last
+  // section unheaded, as the estimator's fee rows do. runRows holds the same
+  // object references as extraction.sewers, so the shared classification
+  // (computed in populateTemplate) applies by identity.
+  const systemOf = new Map(extraction.sewers.map((s, i) => [s, classification.sewerSystems[i]] as const));
+  const runsOnly = runRows.filter((sw) => !sw.isLineItem);
+  const groups = groupBySystem(runsOnly, runsOnly.map((sw) => systemOf.get(sw) ?? 'UNKNOWN'));
+  const plan = planSections(workbook, layout.sewers, [
+    { heading: 'STORM:', items: groups.storm },
+    { heading: 'SANITARY', items: groups.sanitary },
+    { heading: 'UNSPECIFIED', items: groups.unspecified },
+    { heading: null, items: runRows.filter((sw) => sw.isLineItem) },
+  ]);
+  if (plan.droppedItems > 0) {
+    warnOverflow(extraction, 'sewer rows', runRows.length, plan.placedItems);
+  }
+  writePlanHeadings(layout.sewers, plan);
+  plan.cells.forEach((cell) => {
+    const sw = cell.item;
+    if (!sw) return; // heading row — written by writePlanHeadings
+    const { sheet, row } = cell;
 
     setCellValue(sheet, `B${row}`, sw.runLabel);
     setCellValue(sheet, `C${row}`, sw.length || undefined);

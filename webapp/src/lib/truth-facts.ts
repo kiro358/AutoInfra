@@ -63,8 +63,11 @@ export async function readTruthFacts(xlsxPath: string, projectName: string): Pro
         const label = String(desc);
         if (label.toUpperCase().includes('TOTAL') || STRUCTURE_JUNK.test(label)) continue;
         // Skip "STORM:" / "SANITARY:" section-header rows — they're not structures
-        // (mirrors the sewer branch's header skip below).
-        if (/^(storm|sanitary|stm|san)\s*:?\s*$/i.test(label.trim())) continue;
+        // (mirrors the sewer branch's header skip below). "UNSPECIFIED" is the
+        // heading generated workbooks give entities whose system is not
+        // recorded; it never appears in estimator workbooks (corpus census,
+        // PR21) but must not parse as a structure when reading generated ones.
+        if (/^(storm|sanitary|stm|san|unspecified)\s*:?\s*$/i.test(label.trim())) continue;
         const s: StructureFact = {
           description: label,
           topElevation: num(cell(ws, `C${r}`)),
@@ -114,7 +117,11 @@ export async function readTruthFacts(xlsxPath: string, projectName: string): Pro
         const label = cell(ws, `B${r}`);
         if (label === null || label === '' || String(label).toUpperCase().includes('TOTAL')) continue;
         // Skip "STORM:" / "SANITARY:" section-header rows — they're not sewer runs.
-        if (/^(storm|sanitary|stm|san)\s*:?\s*$/i.test(String(label).trim())) continue;
+        // "UNSPECIFIED" likewise: the generated workbooks' heading for runs
+        // whose system is not recorded (never present in estimator workbooks).
+        // Without this, a generated UNSPECIFIED heading would parse back as a
+        // phantom line-item run.
+        if (/^(storm|sanitary|stm|san|unspecified)\s*:?\s*$/i.test(String(label).trim())) continue;
         const length = num(cell(ws, `C${r}`));
         sewers.push({
           runLabel: String(label),

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { assembleTextTakeoff } from './text-takeoff';
-import { PageText } from './pdf-text';
+import { PageText, decodeSymbolFontText } from './pdf-text';
 
 const page = (items: { text: string; x: number; y: number }[]): PageText => ({
   page: 1, width: 2592, height: 1728,
@@ -160,5 +160,42 @@ describe('assembleTextTakeoff — provenance & withheld (PR 8)', () => {
     expect(facts.withheld ?? []).toEqual([
       expect.objectContaining({ field: 'length', kind: 'withheld', defaultApplied: null }),
     ]);
+  });
+});
+
+// Symbol-font callouts (PR 22): extractPageText decodes the font's shifted
+// glyphs before assembly (see pdf-text.ts decodeSymbolFontText). These items
+// are the verbatim raw extractions from Uxbridge Pool's servicing sheet,
+// passed through that same decode, as production items arrive.
+describe('assembleTextTakeoff — symbol-font callouts (Uxbridge dialect)', () => {
+  const decodedPage = (items: { text: string; x: number; y: number }[]): PageText => page(
+    items.map((i) => ({ ...i, text: decodeSymbolFontText(i.text) })),
+  );
+
+  it('assembles a complete symbol-font run callout', () => {
+    const facts = assembleTextTakeoff([decodedPage([
+      { text: '\u0018\u0011\u001aP\u0003\u0010\u0003\u0015\u0013\u0013PP\u0091\u000367250\u0003#\u0003\u0015\u0011\u0018\u0008', x: 1082, y: 241 }, // "5.7m - 200mmØ STORM @ 2.5%"
+    ])], 'T');
+    expect(facts.sewers).toHaveLength(1);
+    expect(facts.sewers[0]).toMatchObject({ length: 5.7, pipeDiameter: 200, slope: 2.5 });
+    expect(facts.sewers[0].runLabel).toContain('STM');
+  });
+
+  it('joins a symbol-font head with its plain-font slope tail', () => {
+    const facts = assembleTextTakeoff([decodedPage([
+      { text: '\u0014\u0011\u0016P\u0003\u0010\u0003\u0014\u0018\u0013PP\u0091\u000367250', x: 642, y: 1272 }, // "1.3m - 150mmØ STORM"
+      { text: '@ 2.0% (INSULATE)', x: 659, y: 1260 },
+    ])], 'T');
+    expect(facts.sewers).toHaveLength(1);
+    expect(facts.sewers[0]).toMatchObject({ length: 1.3, pipeDiameter: 150, slope: 2 });
+  });
+
+  it('does not mint entities from decoded legend lines for existing pipes', () => {
+    const facts = assembleTextTakeoff([decodedPage([
+      { text: '(;\u0011\u0003\u0016\u0013\u0013PP\u0091\u0003:$7(50$,1', x: 362, y: 609 }, // "EX. 300mmØ WATERMAIN"
+      { text: '(;\u0011\u0003\u0015\u0013\u0013PP\u0091\u00036$1,7$5<', x: 301, y: 1010 }, // "EX. 200mmØ SANITARY"
+    ])], 'T');
+    expect(facts.sewers).toHaveLength(0);
+    expect(facts.watermain).toHaveLength(0);
   });
 });

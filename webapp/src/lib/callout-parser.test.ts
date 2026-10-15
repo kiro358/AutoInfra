@@ -213,6 +213,16 @@ describe('parseElevation', () => {
     expect(parseElevation('83.7m-375mmØ SAN @ 0.02%')).toBeNull();
     expect(parseElevation('224.95')).toBeNull();
   });
+  it('parses LID as a top-of-grate elevation (Uxbridge dialect, PR 22)', () => {
+    // Uxbridge Pool writes the rim elevation as "LID." beside directional
+    // inverts ("W INV. 274.63" / "LID. 276.58" on the same structure).
+    expect(parseElevation('LID. 276.58')).toEqual({ type: 'TG', direction: null, value: 276.58 });
+    expect(parseElevation('LID 276.48')).toEqual({ type: 'TG', direction: null, value: 276.48 });
+  });
+  it('never reads the stormwater sense of LID (low-impact development prose)', () => {
+    expect(parseElevation('LID CONTROLS ARE REQUIRED FOR ALL CATCHBASINS')).toBeNull();
+    expect(parseElevation('STORMWATER LID FACILITY 276.58')).toBeNull();
+  });
 });
 
 describe('parseWatermainCallout', () => {

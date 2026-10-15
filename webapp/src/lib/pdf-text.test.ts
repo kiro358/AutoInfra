@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
-import { extractPageText, isTextyPage, PageText } from './pdf-text';
+import { extractPageText, isTextyPage, PageText, decodeSymbolFontText } from './pdf-text';
 
 async function makeFixturePdf(lines: { text: string; x: number; y: number }[]): Promise<Buffer> {
   const doc = await PDFDocument.create();
@@ -31,6 +31,37 @@ describe('extractPageText', () => {
     const buf = await makeFixturePdf([{ text: 'only page', x: 50, y: 700 }]);
     const pages = await extractPageText(buf, [1, 99]);
     expect(pages).toHaveLength(1);
+  });
+});
+
+// Symbol-font callouts (PR 22): some CAD plots set dimension callouts in a
+// font whose glyphs sit +0x1D from ASCII, so extraction returns control
+// characters. The raw strings below are verbatim items from Uxbridge Pool's
+// servicing sheet, whose 23 truth runs previously extracted as zero.
+describe('decodeSymbolFontText', () => {
+  it('decodes symbol-font callouts to the text the drafter wrote', () => {
+    expect(decodeSymbolFontText('\u0018\u0011\u001aP\u0003\u0010\u0003\u0015\u0013\u0013PP\u0091\u000367250\u0003#\u0003\u0015\u0011\u0018\u0008'))
+      .toBe('5.7m - 200mmØ STORM @ 2.5%');
+    expect(decodeSymbolFontText('(;\u0011\u0003\u0016\u0013\u0013PP\u0091\u0003:$7(50$,1'))
+      .toBe('EX. 300mmØ WATERMAIN');
+    expect(decodeSymbolFontText('\u0017\u0014\u0011\u0016P\u0003\u0010\u0003\u0016\u0013\u0013PP\u0091'))
+      .toBe('41.3m - 300mmØ');
+  });
+  it('leaves ordinary text untouched', () => {
+    expect(decodeSymbolFontText('83.7m-375mmØ SAN @ 0.02%')).toBe('83.7m-375mmØ SAN @ 0.02%');
+    expect(decodeSymbolFontText('INV = 275.20')).toBe('INV = 275.20');
+    expect(decodeSymbolFontText('STMH 1')).toBe('STMH 1');
+  });
+  it('leaves mixed-font items untouched — one real-font letter disqualifies', () => {
+    // Verbatim from Uxbridge's notes sheet: a different encoded font whose
+    // items interleave real lowercase letters with control codes. Decoding
+    // these would mangle readable prose, so the gate refuses them whole.
+    const mixed = '\u0004>>\u0003dZ\u0004&&/\u0012\u0003\u0012KEdZK>\u0003\u0004E\u0018\u0003^/\'E';
+    expect(decodeSymbolFontText(mixed)).toBe(mixed);
+  });
+  it('requires at least two control characters and a letter in the result', () => {
+    expect(decodeSymbolFontText('ABC\u0003DEF')).toBe('ABC\u0003DEF'); // one control char only
+    expect(decodeSymbolFontText('\u0013\u0013')).toBe('\u0013\u0013'); // decodes to "00" — no letter, not text
   });
 });
 

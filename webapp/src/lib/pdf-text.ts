@@ -26,6 +26,53 @@ export interface PageText {
   items: PositionedText[];
 }
 
+// --- Symbol-font encoded callouts ---------------------------------------------
+// Some CAD plots set their dimension callouts in a symbol font whose glyphs
+// sit at code points shifted +0x1D from ASCII (the font's space is U+0003,
+// its '.' is U+0011, its 'm' is 'P', its '@' is '#', ...). pdf.js has no
+// ToUnicode map for such a font, so extraction returns the raw codes —
+// control characters and punctuation where the callout should be:
+//   "\u0018\u0011\u001aP\u0003\u0010\u0003\u0015\u0013\u0013PP\u0091\u000367250\u0003#\u0003\u0015\u0011\u0018\u0008"
+// is the drafter's "5.7m - 200mmØ STORM @ 2.5%". Structure labels and
+// elevations on the same sheets use a normal font and extract cleanly, so the
+// page looks texty and yields structures while every run reads as garbage and
+// is silently dropped (Uxbridge Pool: 23 truth runs, 0 extracted).
+//
+// The decode is gated so tightly that it can only fire on this font's items:
+//   - at least two characters below U+0020 (real text items never carry
+//     control characters), AND
+//   - EVERY character at or below U+0060, or in the glyph table below — the
+//     shifted font's raw alphabet tops out at 'P' (its 'm'); a single
+//     lowercase letter or other real-font character disqualifies the item,
+//     so mixed-font prose is never rewritten.
+// The result must still look like text (a letter survives, no control
+// residue); anything else returns the item unchanged. Decoding is purely
+// normalisation: the decoded string faces the same strict callout grammar
+// as any other line, so a symbol-font item that is not a callout (a title,
+// a legal description) decodes to prose the parsers ignore, exactly as the
+// raw codes were ignored before.
+const SYMBOL_FONT_SHIFT = 0x1d;
+const SYMBOL_FONT_GLYPHS: Record<number, string> = { 0x91: 'Ø' };
+
+export function decodeSymbolFontText(text: string): string {
+  let controls = 0;
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    if (code < 0x20) controls++;
+    else if (code > 0x60 && !(code in SYMBOL_FONT_GLYPHS)) return text;
+  }
+  if (controls < 2) return text;
+  let out = '';
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    if (code in SYMBOL_FONT_GLYPHS) { out += SYMBOL_FONT_GLYPHS[code]; continue; }
+    const shifted = code + SYMBOL_FONT_SHIFT;
+    out += shifted >= 0x20 && shifted <= 0x7e ? String.fromCharCode(shifted) : ch;
+  }
+  if (!/[A-Za-z]/.test(out) || /[\u0000-\u001f]/.test(out)) return text;
+  return out;
+}
+
 export async function extractPageText(pdfBuffer: Buffer, pages?: number[]): Promise<PageText[]> {
   const lib = await getPdfjs();
   const doc = await lib.getDocument({ data: new Uint8Array(pdfBuffer.buffer.slice(pdfBuffer.byteOffset, pdfBuffer.byteOffset + pdfBuffer.byteLength)), isEvalSupported: false, useSystemFonts: true }).promise;
@@ -40,7 +87,7 @@ export async function extractPageText(pdfBuffer: Buffer, pages?: number[]): Prom
         const content = await page.getTextContent();
         const items: PositionedText[] = [];
         for (const it of content.items as any[]) {
-          const text = String(it.str || '').trim();
+          const text = decodeSymbolFontText(String(it.str || '').trim());
           if (!text) continue;
           // transform = [a, b, c, d, e, f]; e/f are the glyph origin in user space.
           items.push({ text, x: it.transform[4], y: it.transform[5], width: it.width ?? 0, height: it.height ?? 0 });

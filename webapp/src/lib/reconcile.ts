@@ -551,22 +551,32 @@ export function dropSpecNoteStructures(structures: StructureFact[]): {
  * 2x leaves real headroom above anything genuine — including CB-dense lots whose
  * network extraction under-reads — while the enumeration failure sits at 3.3x.
  *
- * The offending group is DROPPED, not clamped: having declared the number out of
- * scope we do not get to substitute a different one. A warning records the loss so
- * the estimator sees a gap rather than a fabricated quantity.
+ * The offending group is CLAMPED to the ceiling with a warning, not dropped
+ * (PR23 — a deliberate reversal of the earlier drop rule). Dropping zeroed the
+ * whole group, and the group is scored per type: Panattoni's dropped 806-unit
+ * SINGLE_CB group took the project's 4 genuinely matched singles with it, and
+ * on the misread failure mode a group whose count was inflated by one bad
+ * number lost every real unit it contained. Clamping keeps the plausible part
+ * of the count — the part the network can actually carry — and the warning
+ * records both numbers, so the estimator sees an flagged estimate to verify
+ * rather than a silent zero. The clamped figure is a ceiling, not a claim:
+ * the warning says so.
  */
-export function dropImplausibleCatchbasinGroups(
+export function clampImplausibleCatchbasinGroups(
   groups: TakeoffFacts['catchbasins'],
   networkSize: number
-): { catchbasins: TakeoffFacts['catchbasins']; dropped: { type: string; quantity: number }[] } {
+): {
+  catchbasins: TakeoffFacts['catchbasins'];
+  clamped: { type: string; quantity: number; clampedTo: number }[];
+} {
   const ceiling = 2 * Math.max(networkSize, 10);
-  const dropped: { type: string; quantity: number }[] = [];
-  const kept = groups.filter((g) => {
-    if ((g.quantity || 0) <= ceiling) return true;
-    dropped.push({ type: g.type, quantity: g.quantity });
-    return false;
+  const clamped: { type: string; quantity: number; clampedTo: number }[] = [];
+  const kept = groups.map((g) => {
+    if ((g.quantity || 0) <= ceiling) return g;
+    clamped.push({ type: g.type, quantity: g.quantity, clampedTo: ceiling });
+    return { ...g, quantity: ceiling };
   });
-  return { catchbasins: kept, dropped };
+  return { catchbasins: kept, clamped };
 }
 
 // A plain surface catchbasin ("CB 3", "DCB 101", "DICB 301", "DDICB 5") is NOT a
@@ -668,7 +678,7 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
   // not inflate the budget that decides whether a catchbasin count is plausible.
   const nonStruct = dropNonStructureFeatures(structures);
   const note = dropSpecNoteStructures(nonStruct.structures);
-  const cb = dropImplausibleCatchbasinGroups(
+  const cb = clampImplausibleCatchbasinGroups(
     mergeCatchbasinGroups(facts.catchbasins) as TakeoffFacts['catchbasins'],
     note.structures.length + keptSewers.filter((s) => !s.isLineItem).length
   );
@@ -708,11 +718,13 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
         `count may be understated by up to ${surfaceCb.dropped.length}. Verify it against the drawing.`
     );
   }
-  for (const d of cb.dropped) {
+  for (const d of cb.clamped) {
     warnings.push(
-      `Dropped catchbasin group ${d.type} qty ${d.quantity} — implausible against a drainage network of ` +
-        `${note.structures.length + keptSewers.length} rows; the quantity is a misread or an ` +
-        `out-of-scope enumeration, not a takeoff count. Count these catchbasins manually.`
+      `Clamped catchbasin group ${d.type} qty ${d.quantity} → ${d.clampedTo} — the counted quantity is ` +
+        `implausible against a drainage network of ` +
+        `${note.structures.length + keptSewers.filter((s) => !s.isLineItem).length} rows; the excess is a ` +
+        `misread or an out-of-scope enumeration, not a takeoff count. The clamped figure is a ceiling, ` +
+        `not a count — verify these catchbasins against the drawing.`
     );
   }
 

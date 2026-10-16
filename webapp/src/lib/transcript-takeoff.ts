@@ -37,6 +37,10 @@ interface Sink {
   catchbasinLabels: Map<CatchbasinGroupFact['type'], Set<string>>;
   /** Provenance of the first label seen per CB type — the group's source. */
   catchbasinFirstSource: Map<CatchbasinGroupFact['type'], FactSource>;
+  /** PR23: site-wide enumeration scope analysis (see analyzeEnumerationScope). */
+  scope: EnumerationScope;
+  /** Raw descriptions of structures skipped as enumeration-only, for the warning. */
+  demotedStructures: string[];
   sewers: SewerFact[];
   watermain: WatermainFact[];
   /** Values the transcripts never stated (see WithheldItem in types.ts). */
@@ -50,6 +54,194 @@ interface Sink {
   mentionedStructures: Map<string, string>;
   mentionedCatchbasins: Map<CatchbasinGroupFact['type'], Map<string, string>>;
   mentionedExisting: Set<string>;
+}
+
+/**
+ * PR23 — site-wide enumeration scope guards.
+ *
+ * A development-wide sheet (grading plan, site plan, structure/CB schedule)
+ * enumerates EVERY numbered asset on the site; the estimator's takeoff scopes
+ * one servicing contract inside it. Label-counting assembly cannot tell the
+ * two apart by label alone — Panattoni's transcripts carry a hyphenated
+ * catchbasin enumeration `CB-1`…`CB-805` next to the plan reads, and two
+ * complete CBMH sequences (CBMH1–140 and CBMH1–159, one per drawing vintage)
+ * next to the servicing network — and the unions became 806 phantom CB units
+ * and ~111 phantom structures. What separates an enumeration from plan reads
+ * is its SHAPE, measurable from the transcripts themselves:
+ *
+ *  - an enumeration is LONG and COMPLETE: dozens of same-kind labels forming
+ *    a near-unbroken numeric sequence (the corpus's real ones score 140–805
+ *    labels at density 1.00; the largest genuine single-tile plan cluster in
+ *    the golden corpus is 32 labels at 0.73, and the largest at density ≥0.9
+ *    is 15 — the bar below sits between, at 40 labels / 0.90 density);
+ *  - the CB enumeration additionally speaks a different dialect: hyphenated
+ *    (`CB-101`) where plan callouts are plain (`CB101`, `CB 101`). Corpus
+ *    census: hyphenated CB labels occur on exactly one other project
+ *    (Riocan: 4 labels, density 0.36 — scattered plan reads, far under the
+ *    bar), so the dialect test alone would be safe, but the guard requires
+ *    BOTH the dialect and the enumeration shape before excluding anything.
+ *
+ * A structure label inside an enumeration cluster is excluded ONLY when no
+ * non-enumeration tile reads it — a label the plan sheets also carry keeps
+ * its plan read (corroboration). That is what keeps this guard from touching
+ * genuine multi-sheet networks (White Oak's two blocks, PropComm's merged
+ * workbooks): their labels are read from plan callouts all over the set,
+ * while an enumeration-only field is read from the enumeration and nowhere
+ * else. Tile→page attribution is not stored on TileTranscript, so sheet class
+ * cannot be keyed directly; the enumeration shape + corroboration tests are
+ * the signals the assembler actually carries, and every exclusion is warned,
+ * never silent.
+ */
+interface EnumerationScope {
+  /** Per CB type: normalized labels forming a hyphenated enumeration. An
+   *  occurrence of one of these labels is excluded only when the occurrence
+   *  itself is hyphenated (see hyphenatedCbOccurrence). */
+  cbLabels: Map<CatchbasinGroupFact['type'], Set<string>>;
+  /** Normalized structure descriptions seen only inside enumeration clusters. */
+  structureLabels: Set<string>;
+}
+
+const ENUMERATION_MIN_LABELS = 40;
+const ENUMERATION_MIN_DENSITY = 0.9;
+/** Hyphen between the kind token and the number in the RAW text (`CB-101`). */
+const HYPHENATED_CB_FORM = /(?:DDICB|DICB|DCB|CB)\s*-\s*(\d+)/i;
+
+function labelSequenceNumber(norm: string): number | null {
+  const m = /(\d+)[A-Z]*$/.exec(norm);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+function sequenceDensity(nums: Iterable<number>): number {
+  const set = new Set(nums);
+  if (set.size === 0) return 0;
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const n of set) {
+    if (n < lo) lo = n;
+    if (n > hi) hi = n;
+  }
+  return set.size / (hi - lo + 1);
+}
+
+interface LabelOccurrence {
+  key: string;
+  kind: ParsedStructure['kind'];
+  cbType: CatchbasinGroupFact['type'] | null;
+  num: number | null;
+  hyphenated: boolean;
+  tile: number;
+}
+
+/**
+ * True when THIS occurrence of a CB label is written in the hyphenated form
+ * (`CB-101`) — the raw text names this label's own number after a hyphen.
+ * Exclusion is occurrence-based, never label-based: a label with both a
+ * hyphenated schedule occurrence and a plain plan occurrence still counts
+ * (its plan read is real evidence), so every consumer tests the occurrence
+ * in front of it, not the label in the abstract.
+ */
+function hyphenatedCbOccurrence(text: string, parsed: ParsedStructure): boolean {
+  const num = labelSequenceNumber(normalizeLabel(parsed.label));
+  if (num == null) return false;
+  const hm = HYPHENATED_CB_FORM.exec(text);
+  return hm != null && parseInt(hm[1], 10) === num;
+}
+
+/**
+ * Every structure/CB label the assembler will see, with the provenance the
+ * scope tests need. Walks exactly the assembler's line stream (usable blocks,
+ * joined lines, schedule-row cells minus the "#" header dialect), one
+ * occurrence per line/cell. Assembly itself is block-scoped (first structure
+ * line wins a block), so this can see a label assembly would not emit — it
+ * feeds DETECTION only, and both detection tests err toward keeping.
+ */
+function collectLabelOccurrences(transcripts: TileTranscript[]): LabelOccurrence[] {
+  const occ: LabelOccurrence[] = [];
+  const push = (text: string, tile: number) => {
+    const parsed = parseStructureLabel(text);
+    if (!parsed || parsed.existing) return;
+    const cbType = cbKindType(parsed.kind);
+    if (cbType) {
+      const key = normalizeLabel(parsed.label);
+      if (!key) return;
+      occ.push({
+        key, kind: parsed.kind, cbType, num: labelSequenceNumber(key), tile,
+        hyphenated: hyphenatedCbOccurrence(text, parsed),
+      });
+    } else {
+      const key = normalizeLabel(structureDescription(parsed));
+      if (!key) return;
+      occ.push({ key, kind: parsed.kind, cbType: null, num: labelSequenceNumber(key), hyphenated: false, tile });
+    }
+  };
+  for (const tile of transcripts) {
+    for (const block of usableBlocks(tile)) {
+      for (const line of joinBlockLines(block)) {
+        if (line.includes(' | ')) {
+          for (const cell of line.split(' | ').map((c) => c.trim())) {
+            if (!HASH_STRUCTURE_HEADER_RE.test(cell)) push(cell, tile.tile);
+          }
+        } else {
+          push(line, tile.tile);
+        }
+      }
+    }
+  }
+  return occ;
+}
+
+function analyzeEnumerationScope(transcripts: TileTranscript[]): EnumerationScope {
+  const occ = collectLabelOccurrences(transcripts);
+  const cbLabels = new Map<CatchbasinGroupFact['type'], Set<string>>();
+  const structureLabels = new Set<string>();
+
+  // (a) CB: hyphenated labels of one type forming a long, near-complete
+  // numeric sequence are a site-wide enumeration, not plan reads.
+  const hyphByType = new Map<CatchbasinGroupFact['type'], Map<string, number>>();
+  for (const o of occ) {
+    if (!o.cbType || !o.hyphenated || o.num == null) continue;
+    const byKey = hyphByType.get(o.cbType) ?? new Map<string, number>();
+    byKey.set(o.key, o.num);
+    hyphByType.set(o.cbType, byKey);
+  }
+  for (const [type, byKey] of hyphByType) {
+    if (byKey.size >= ENUMERATION_MIN_LABELS && sequenceDensity(byKey.values()) >= ENUMERATION_MIN_DENSITY) {
+      cbLabels.set(type, new Set(byKey.keys()));
+    }
+  }
+
+  // (b) Structures: a single tile carrying one kind as a long, near-complete
+  // numeric sequence is an enumeration table. Its labels are out of scope
+  // only when no non-enumeration tile reads them (corroboration).
+  const byTileKind = new Map<string, Map<string, number | null>>();
+  for (const o of occ) {
+    if (o.cbType) continue;
+    const k = `${o.tile}|${o.kind}`;
+    const labels = byTileKind.get(k) ?? new Map<string, number | null>();
+    if (!labels.has(o.key)) labels.set(o.key, o.num);
+    byTileKind.set(k, labels);
+  }
+  const firing = new Set<string>();
+  const candidates = new Set<string>();
+  for (const [k, labels] of byTileKind) {
+    const nums = [...labels.values()].filter((n): n is number => n != null);
+    if (nums.length >= ENUMERATION_MIN_LABELS && sequenceDensity(nums) >= ENUMERATION_MIN_DENSITY) {
+      firing.add(k);
+      for (const [key, num] of labels) if (num != null) candidates.add(key);
+    }
+  }
+  if (candidates.size > 0) {
+    const corroborated = new Set<string>();
+    for (const o of occ) {
+      if (o.cbType || !candidates.has(o.key)) continue;
+      if (!firing.has(`${o.tile}|${o.kind}`)) corroborated.add(o.key);
+    }
+    for (const key of candidates) {
+      if (!corroborated.has(key)) structureLabels.add(key);
+    }
+  }
+
+  return { cbLabels, structureLabels };
 }
 
 /**
@@ -69,11 +261,18 @@ function noteMention(sink: Sink, line: string): void {
   }
   const cbType = cbKindType(parsed.kind);
   if (cbType) {
+    // Enumeration occurrences are accounted for by the scope warning, not by
+    // the coverage check — they were deliberately not counted, not lost. A
+    // plain occurrence of the same label mentions (and counts) as usual.
+    if (sink.scope.cbLabels.get(cbType)?.has(norm) && hyphenatedCbOccurrence(line, parsed)) return;
     const byLabel = sink.mentionedCatchbasins.get(cbType) ?? new Map<string, string>();
     if (!byLabel.has(norm)) byLabel.set(norm, parsed.label);
     sink.mentionedCatchbasins.set(cbType, byLabel);
-  } else if (!sink.mentionedStructures.has(norm)) {
-    sink.mentionedStructures.set(norm, parsed.label);
+  } else {
+    if (sink.scope.structureLabels.has(normalizeLabel(structureDescription(parsed)))) return;
+    if (!sink.mentionedStructures.has(norm)) {
+      sink.mentionedStructures.set(norm, parsed.label);
+    }
   }
 }
 
@@ -255,15 +454,31 @@ function processLines(lines: string[], out: Sink, warnings: string[], tile: numb
 
     const cbType = cbKindType(parsed.kind);
     if (cbType) {
-      const labels = out.catchbasinLabels.get(cbType) ?? new Set<string>();
-      labels.add(normalizeLabel(parsed.label));
-      out.catchbasinLabels.set(cbType, labels);
-      if (!out.catchbasinFirstSource.has(cbType)) {
-        out.catchbasinFirstSource.set(cbType, { method: 'transcript', tile, evidence: structureLine });
+      // PR23 scope guard: a hyphenated occurrence of an enumeration label is
+      // a schedule read, not a plan read — it is not counted (the exclusion
+      // is warned about at the end of assembly). A plain occurrence of the
+      // same label still counts: the label was seen on a plan.
+      const enumerationOccurrence =
+        out.scope.cbLabels.get(cbType)?.has(normalizeLabel(parsed.label)) &&
+        hyphenatedCbOccurrence(structureLine, parsed);
+      if (!enumerationOccurrence) {
+        const labels = out.catchbasinLabels.get(cbType) ?? new Set<string>();
+        labels.add(normalizeLabel(parsed.label));
+        out.catchbasinLabels.set(cbType, labels);
+        if (!out.catchbasinFirstSource.has(cbType)) {
+          out.catchbasinFirstSource.set(cbType, { method: 'transcript', tile, evidence: structureLine });
+        }
       }
     } else {
+      // PR23 scope guard: a structure read only inside a site-wide numbering
+      // enumeration (never from a plan callout) is out of takeoff scope.
+      const description = structureDescription(parsed);
+      if (out.scope.structureLabels.has(normalizeLabel(description))) {
+        out.demotedStructures.push(description);
+        return true;
+      }
       out.structures.push({
-        description: structureDescription(parsed),
+        description,
         topElevation,
         lowInvert: inverts.length ? Math.min(...inverts) : null,
         highInvert: inverts.length >= 2 ? Math.max(...inverts) : null,
@@ -336,11 +551,34 @@ function processLines(lines: string[], out: Sink, warnings: string[], tile: numb
   return matched;
 }
 
+/**
+ * Tile-level sanity: filter out synthetic incrementing repeating sequences
+ * (e.g. a tile transcribing 80 repeating CB lines with identical T/G & inverts).
+ * Shared by the assembler and the enumeration scope analysis so both see the
+ * same blocks.
+ */
+function usableBlocks(tile: TileTranscript): string[][] {
+  const seenElevCount = new Map<string, number>();
+  return tile.blocks.filter((block) => {
+    const text = Array.isArray(block) ? block.join(' ') : String(block);
+    const m = text.match(/T\/?G\s*=\s*\d+\.\d+.*INV\s*=\s*\d+\.\d+/i);
+    if (m) {
+      const key = m[0].replace(/\s+/g, '');
+      const count = seenElevCount.get(key) || 0;
+      if (count >= 4) return false; // Synthetic repetition loop in tile
+      seenElevCount.set(key, count + 1);
+    }
+    return true;
+  });
+}
+
 export function assembleTranscriptTakeoff(transcripts: TileTranscript[], projectName: string): TakeoffFacts {
   const out: Sink = {
     structures: [],
     catchbasinLabels: new Map(),
     catchbasinFirstSource: new Map(),
+    scope: analyzeEnumerationScope(transcripts),
+    demotedStructures: [],
     sewers: [],
     watermain: [],
     withheld: [],
@@ -351,22 +589,7 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
   const warnings: string[] = [];
 
   for (const tile of transcripts) {
-    // Tile-level sanity: filter out synthetic incrementing repeating sequences
-    // (e.g. tile transcribing 80 repeating CB lines with identical T/G & inverts)
-    const seenElevCount = new Map<string, number>();
-    const validBlocks = tile.blocks.filter((block) => {
-      const text = Array.isArray(block) ? block.join(' ') : String(block);
-      const m = text.match(/T\/?G\s*=\s*\d+\.\d+.*INV\s*=\s*\d+\.\d+/i);
-      if (m) {
-        const key = m[0].replace(/\s+/g, '');
-        const count = seenElevCount.get(key) || 0;
-        if (count >= 4) return false; // Synthetic repetition loop in tile
-        seenElevCount.set(key, count + 1);
-      }
-      return true;
-    });
-
-    for (const block of validBlocks) {
+    for (const block of usableBlocks(tile)) {
       const joined = joinBlockLines(block);
 
       // Coverage bookkeeping: every label the grammar can see in this block,
@@ -430,6 +653,27 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
       }
       if (remaining.length > 0) processLines(remaining, out, warnings, tile.tile);
     }
+  }
+
+  // PR23: surface the enumeration scope exclusions — neither is silent.
+  for (const [type, labels] of out.scope.cbLabels) {
+    const counted = out.catchbasinLabels.get(type) ?? new Set<string>();
+    const excludedOnly = [...labels].filter((k) => !counted.has(k));
+    if (excludedOnly.length === 0) continue;
+    warnings.push(
+      `Scope: ${excludedOnly.length} ${type} label(s) arrive only as a hyphenated site-wide ` +
+        `enumeration (the CB-1, CB-2, … form) and were not counted — this takeoff counts ` +
+        `plan-evidenced catchbasins only. If this contract covers the enumerated catchbasins, ` +
+        `count them from the schedule manually.`
+    );
+  }
+  if (out.demotedStructures.length > 0) {
+    const unique = [...new Set(out.demotedStructures)].sort();
+    warnings.push(
+      `Scope: ${unique.length} structure(s) appear only inside a complete site-wide numbering ` +
+        `enumeration and are not read from any plan callout — excluded as out of takeoff scope: ` +
+        `${rawList(unique)}. If this contract covers them, add them manually.`
+    );
   }
 
   const catchbasins: CatchbasinGroupFact[] = Array.from(out.catchbasinLabels.entries()).map(([type, labels]) => ({

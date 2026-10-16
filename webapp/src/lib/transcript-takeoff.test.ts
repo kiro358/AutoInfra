@@ -343,3 +343,95 @@ describe('assembleTranscriptTakeoff — provenance & withheld (PR 8)', () => {
     expect(group!.source).toEqual({ method: 'transcript', tile: 5, evidence: 'CB 1' });
   });
 });
+
+describe('assembleTranscriptTakeoff — PR23 enumeration scope guards', () => {
+  const cbBlocks = (kind: string, from: number, to: number, hyphen = false) =>
+    Array.from({ length: to - from + 1 }, (_, i) => {
+      const n = from + i;
+      return [`${kind}${hyphen ? '-' : ''}${n}`, 'TOP=100.00'];
+    });
+  const cbmhBlocks = (from: number, to: number) =>
+    Array.from({ length: to - from + 1 }, (_, i) => [`CBMH${from + i}(1200Ø)`, 'TOP=100.00']);
+
+  it('does not count a hyphenated site-wide CB enumeration; plan-evidenced labels still count', () => {
+    // Panattoni shape: tile 49 carries CB-1..CB-805 (hyphenated enumeration)
+    // alongside plain plan reads. Scaled down: 45 hyphenated labels form the
+    // enumeration; CB1/CB2 have plain plan occurrences too and must count.
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: cbBlocks('CB', 1, 45, true) },
+      { tile: 2, blocks: [['CB1', 'TOP=99.10'], ['CB2', 'TOP=99.20'], ['CB46', 'TOP=99.30'], ['DCB100', 'TOP=99.40']] },
+    ], 'T');
+    const single = facts.catchbasins.find((g) => g.type === 'SINGLE_CB');
+    expect(single).toBeDefined();
+    expect(single!.quantity).toBe(3); // CB1, CB2 (plan reads of enumerated labels) + CB46
+    expect(facts.catchbasins.find((g) => g.type === 'DOUBLE_CB')!.quantity).toBe(1);
+    const scope = facts.warnings.find((w) => w.startsWith('Scope:') && w.includes('SINGLE_CB'));
+    expect(scope).toBeDefined();
+    expect(scope).toContain('43 SINGLE_CB'); // 45 enumerated − CB1/CB2, which plan reads rescued
+  });
+
+  it('an enumeration-only CB set produces no group, but says so', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: cbBlocks('CB', 1, 45, true) },
+    ], 'T');
+    expect(facts.catchbasins).toEqual([]);
+    expect(facts.warnings.some((w) => w.startsWith('Scope:') && w.includes('45 SINGLE_CB'))).toBe(true);
+  });
+
+  it('counts a small hyphenated CB set (a plan that numbers CB-101 style)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [...cbBlocks('CB', 100, 103, true), ['CB 1', 'TOP=99.00']] },
+    ], 'T');
+    const single = facts.catchbasins.find((g) => g.type === 'SINGLE_CB');
+    expect(single!.quantity).toBe(5);
+    expect(facts.warnings.some((w) => w.startsWith('Scope:'))).toBe(false);
+  });
+
+  it('counts a long CONTIGUOUS plain-form CB set in full — contiguity alone is not an enumeration', () => {
+    // 45 plain CB labels on one tile + enough network that the reconcile
+    // ceiling does not bite: the hyphen dialect is a required part of the
+    // enumeration signature.
+    const structures = Array.from({ length: 30 }, (_, i) => [`MH ${300 + i}`, 'T/G=100.00']);
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [...cbBlocks('CB', 1, 45), ...structures] },
+    ], 'T');
+    const single = facts.catchbasins.find((g) => g.type === 'SINGLE_CB');
+    expect(single!.quantity).toBe(45);
+    expect(facts.warnings.some((w) => w.startsWith('Scope:'))).toBe(false);
+  });
+
+  it('excludes structures read only inside a complete enumeration; plan-corroborated labels survive', () => {
+    // Panattoni shape: one tile enumerates CBMH1..CBMH45 (two such tiles in
+    // the real set, one per vintage); plan tiles read the servicing subset.
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: cbmhBlocks(1, 45) },
+      { tile: 2, blocks: [['CBMH7(1200Ø)', 'TOP=101.00'], ['CBMH100(1200Ø)', 'TOP=101.00'], ['CBMH101(1200Ø)', 'TOP=101.00']] },
+    ], 'T');
+    const labels = facts.structures.map((s) => s.description).sort();
+    expect(labels).toEqual(['CBMH100', 'CBMH101', 'CBMH7']);
+    const scope = facts.warnings.find((w) => w.startsWith('Scope:') && w.includes('structure'));
+    expect(scope).toBeDefined();
+    expect(scope).toContain('44 structure(s)');
+  });
+
+  it('keeps a dense but sub-threshold single-tile cluster (a real plan area)', () => {
+    // Ultimate shape: 15 same-kind labels on one tile, contiguous — a plan
+    // area, not an enumeration table. The bar is 40. (Elevations vary per
+    // block so the tile repetition filter does not eat the fixture.)
+    const blocks = Array.from({ length: 15 }, (_, i) => [
+      `MH${i + 1}`, `T/G=${(100 + i * 0.37).toFixed(2)}`, `INV=${(98 + i * 0.37).toFixed(2)}`,
+    ]);
+    const facts = assembleTranscriptTakeoff([{ tile: 1, blocks }], 'T');
+    expect(facts.structures).toHaveLength(15);
+    expect(facts.warnings.some((w) => w.startsWith('Scope:'))).toBe(false);
+  });
+
+  it('keeps a large single-tile cluster whose numbers are not a complete sequence', () => {
+    // 45 same-kind labels but spanning 1..90 at 50% density — scattered plan
+    // reads across a big sheet, not an enumeration.
+    const blocks = Array.from({ length: 45 }, (_, i) => [`CBMH${(i + 1) * 2}(1200Ø)`, 'TOP=100.00']);
+    const facts = assembleTranscriptTakeoff([{ tile: 1, blocks }], 'T');
+    expect(facts.structures).toHaveLength(45);
+    expect(facts.warnings.some((w) => w.startsWith('Scope:'))).toBe(false);
+  });
+});

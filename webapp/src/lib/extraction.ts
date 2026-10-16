@@ -18,7 +18,7 @@ import { getSinglePassPrompt, getPageLocatorPrompt, getTranscriptionPrompt, getW
 import { renderTilesFlat, renderPageThumbnails, IMAGE_MIME } from './rasterize';
 import { normalizeLabel, runSignature } from './compare-facts';
 import { assembleTranscriptTakeoff } from './transcript-takeoff';
-import { mergeTakeoffs, dropSpecNoteStructures, dropImplausibleCatchbasinGroups, reconcileTakeoff } from './reconcile';
+import { mergeTakeoffs, dropSpecNoteStructures, clampImplausibleCatchbasinGroups, reconcileTakeoff } from './reconcile';
 import { appendCoverageWarnings } from './coverage-checks';
 import { appendPhysicsWarnings } from './physics-checks';
 import { withConfidence } from './confidence';
@@ -1645,16 +1645,16 @@ async function extractFromPDFInner(
           console.log(`      [extraction.ts] dropped ${note.dropped.length} spec-note structure(s).`);
         }
         const networkSize = facts.structures.length + facts.sewers.filter((s) => !s.isLineItem).length;
-        const cb = dropImplausibleCatchbasinGroups(facts.catchbasins, networkSize);
-        if (cb.dropped.length > 0) {
+        const cb = clampImplausibleCatchbasinGroups(facts.catchbasins, networkSize);
+        if (cb.clamped.length > 0) {
           facts.catchbasins = cb.catchbasins;
-          for (const d of cb.dropped) {
+          for (const d of cb.clamped) {
             facts.warnings.push(
-              `Dropped catchbasin group ${d.type} qty ${d.quantity} — implausible against a drainage network ` +
-                `of ${networkSize} rows; the quantity is a misread or an out-of-scope enumeration, ` +
-                `not a takeoff count. Count these catchbasins manually.`
+              `Clamped catchbasin group ${d.type} qty ${d.quantity} → ${d.clampedTo} — implausible against a drainage network ` +
+                `of ${networkSize} rows; the excess is a misread or an out-of-scope enumeration, ` +
+                `not a takeoff count. The clamped figure is a ceiling, not a count — verify these catchbasins against the drawing.`
             );
-            console.log(`      [extraction.ts] dropped implausible catchbasin group ${d.type} x${d.quantity}.`);
+            console.log(`      [extraction.ts] clamped implausible catchbasin group ${d.type} x${d.quantity} -> x${d.clampedTo}.`);
           }
         }
       }

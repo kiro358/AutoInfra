@@ -7,7 +7,7 @@ import {
   isSpecNoteDescription,
   isNonStructureFeature,
   dropNonStructureFeatures,
-  dropImplausibleCatchbasinGroups,
+  clampImplausibleCatchbasinGroups,
   isSurfaceCatchbasin,
   dropSurfaceCatchbasinStructures,
   getEndpointSignature,
@@ -381,44 +381,49 @@ describe('isNonStructureFeature — non-structure civil features vs structure id
   });
 });
 
-describe('dropImplausibleCatchbasinGroups — misread quantities', () => {
+describe('clampImplausibleCatchbasinGroups — misread quantities', () => {
   const grp = (type: any, quantity: number) => ({ type, quantity, wallThickness: null, depth: null });
 
-  it('drops a quantity far beyond what the drainage network can carry', () => {
+  it('clamps a quantity far beyond what the drainage network can carry, keeping the group', () => {
     // The real case: 249 single CBs on a site whose whole extracted network is 16 rows.
-    const r = dropImplausibleCatchbasinGroups([grp('SINGLE_CB', 249), grp('DOUBLE_CB', 2)], 16);
-    expect(r.catchbasins).toEqual([grp('DOUBLE_CB', 2)]);
-    expect(r.dropped).toEqual([{ type: 'SINGLE_CB', quantity: 249 }]);
+    // Ceiling is 2x the network = 32; the group survives at the ceiling (PR23: the
+    // earlier drop rule zeroed groups like this, real units included).
+    const r = clampImplausibleCatchbasinGroups([grp('SINGLE_CB', 249), grp('DOUBLE_CB', 2)], 16);
+    expect(r.catchbasins).toEqual([grp('SINGLE_CB', 32), grp('DOUBLE_CB', 2)]);
+    expect(r.clamped).toEqual([{ type: 'SINGLE_CB', quantity: 249, clampedTo: 32 }]);
   });
 
   it('keeps the largest genuine counts in the golden set', () => {
     // Eric Smith Way: 27 single + 4 double against a 25-row network — the highest real
     // catchbasins-to-network ratio observed, and it must survive untouched.
     const groups = [grp('SINGLE_CB', 27), grp('DOUBLE_CB', 4)];
-    expect(dropImplausibleCatchbasinGroups(groups, 25).dropped).toEqual([]);
+    expect(clampImplausibleCatchbasinGroups(groups, 25).clamped).toEqual([]);
     // Panattoni: 28 double-ditch-inlets on a large network.
-    expect(dropImplausibleCatchbasinGroups([grp('DOUBLE_DITCH_INLET_CB', 28)], 174).dropped).toEqual([]);
+    expect(clampImplausibleCatchbasinGroups([grp('DOUBLE_DITCH_INLET_CB', 28)], 174).clamped).toEqual([]);
     // A CB-dense lot whose network under-reads: 30 singles drained by an 18-row
     // extracted network (1.7x) is unusual but genuine — it must survive too.
-    expect(dropImplausibleCatchbasinGroups([grp('SINGLE_CB', 30)], 18).dropped).toEqual([]);
+    expect(clampImplausibleCatchbasinGroups([grp('SINGLE_CB', 30)], 18).clamped).toEqual([]);
   });
 
-  it('drops a site-wide numbering enumeration counted as units (Panattoni)', () => {
+  it('clamps a site-wide numbering enumeration counted as units, preserving the true units (Panattoni)', () => {
     // The grading plan numbers every catchbasin CB0-CB805 and label-counting assembly
     // summed them into one group. 806 against an extracted network of 246 rows (3.3x)
-    // is beyond twice the network — out of scope, not a takeoff count. The small
-    // genuine group alongside it is untouched.
-    const r = dropImplausibleCatchbasinGroups([grp('SINGLE_CB', 806), grp('DOUBLE_CB', 4)], 246);
-    expect(r.catchbasins).toEqual([grp('DOUBLE_CB', 4)]);
-    expect(r.dropped).toEqual([{ type: 'SINGLE_CB', quantity: 806 }]);
+    // is beyond twice the network. Under the old drop rule the group vanished and the
+    // project's genuinely matched singles scored zero; clamped to the 492 ceiling the
+    // group survives, and the small genuine group alongside it is untouched.
+    const r = clampImplausibleCatchbasinGroups([grp('SINGLE_CB', 806), grp('DOUBLE_CB', 4)], 246);
+    expect(r.catchbasins).toEqual([grp('SINGLE_CB', 492), grp('DOUBLE_CB', 4)]);
+    expect(r.clamped).toEqual([{ type: 'SINGLE_CB', quantity: 806, clampedTo: 492 }]);
   });
 
   it('does not squeeze a tiny drawing (floor of 10 network rows)', () => {
-    expect(dropImplausibleCatchbasinGroups([grp('SINGLE_CB', 20)], 0).dropped).toEqual([]);
-    expect(dropImplausibleCatchbasinGroups([grp('SINGLE_CB', 21)], 0).dropped).toHaveLength(1);
+    expect(clampImplausibleCatchbasinGroups([grp('SINGLE_CB', 20)], 0).clamped).toEqual([]);
+    const r = clampImplausibleCatchbasinGroups([grp('SINGLE_CB', 21)], 0);
+    expect(r.catchbasins).toEqual([grp('SINGLE_CB', 20)]);
+    expect(r.clamped).toHaveLength(1);
   });
 
-  it('drops through reconcileTakeoff and warns, without inventing a replacement count', () => {
+  it('clamps through reconcileTakeoff and warns with both numbers', () => {
     const r = reconcileTakeoff(
       emptyFacts({
         structures: [struct({ description: 'MH 1' })],
@@ -426,7 +431,9 @@ describe('dropImplausibleCatchbasinGroups — misread quantities', () => {
         catchbasins: [grp('SINGLE_CB', 249), grp('DOUBLE_CB', 2)],
       })
     );
-    expect(r.catchbasins).toEqual([grp('DOUBLE_CB', 2)]);
+    // Network is 2 rows, floored to 10 for the ceiling: 249 clamps to 20, not to zero.
+    expect(r.catchbasins).toEqual([grp('SINGLE_CB', 20), grp('DOUBLE_CB', 2)]);
+    expect(r.warnings.join(' ')).toContain('Clamped catchbasin group SINGLE_CB qty 249 → 20');
     expect(r.warnings.join(' ')).toContain('misread');
   });
 });

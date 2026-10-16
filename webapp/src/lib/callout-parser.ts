@@ -592,9 +592,12 @@ export function parseStructureLabel(line: string): ParsedStructure | null {
 // Directions may sit on either side of the keyword ("OUT INV 150.20" and "INV OUT = 150.20"
 // are both in the corpus). Longest-first again so OUTLET is not truncated to OUT.
 const ELEV_DIR = 'NORTH|SOUTH|EAST|WEST|UPSTREAM|DOWNSTREAM|BOTTOM|OUTLET|INLET|OUT|IN|BOT|TOP|US|DS|NE|NW|SE|SW|N|S|E|W';
-// Top-of-grate synonyms (T/G, T.G., TG, TOP, TOP OF GRATE, RIM, GRATE) and invert synonyms
-// (INV, INV., INVERT). INVERT precedes INV so the whole word is consumed.
-const ELEV_TYPE = 'T\\/G|T\\.\\s?G|TG|TOP(?:\\s+OF)?(?:\\s+GRATE|\\s+GRATING)?|RIM|GRATE|GRATING|INVERT|INV';
+// Top-of-grate synonyms (T/G, T.G., TG, TOP, TOP OF GRATE, RIM, GRATE, LID) and invert synonyms
+// (INV, INV., INVERT). INVERT precedes INV so the whole word is consumed. LID is the
+// lid/rim elevation some offices write on every structure ("LID. 276.58" beside
+// "W INV. 274.63"); the whole-line anchor keeps the stormwater sense of "LID"
+// (low-impact development, always mid-sentence in notes) from ever matching.
+const ELEV_TYPE = 'T\\/G|T\\.\\s?G|TG|TOP(?:\\s+OF)?(?:\\s+GRATE|\\s+GRATING)?|RIM|GRATE|GRATING|LID|INVERT|INV';
 const ELEV_RE = new RegExp(
   `^\\s*(?:(${ELEV_DIR})[\\s.]+)?(${ELEV_TYPE})\\.?(?:\\s+EL(?:EV(?:ATION)?)?\\.?)?\\s*(?:(${ELEV_DIR})\\b\\.?\\s*)?[:=]?\\s*(\\d{2,3}(?:\\.\\d{1,3})?)\\s*±?\\s*$`,
   'i',
@@ -610,7 +613,7 @@ export function parseElevation(line: string): ParsedElevation | null {
   // Collapse the keyword's punctuation so "T/G", "T.G." and "T G" classify identically.
   const keyword = m[2].toUpperCase().replace(/[\s./]/g, '');
   const isTopOfGrate = keyword.startsWith('TG') || keyword.startsWith('TOP')
-    || keyword === 'RIM' || keyword.startsWith('GRAT');
+    || keyword === 'RIM' || keyword === 'LID' || keyword.startsWith('GRAT');
   const rawDirection = m[1] ?? m[3];
   const direction = rawDirection
     ? (DIR_ALIASES[rawDirection.toUpperCase()] ?? rawDirection.toUpperCase())

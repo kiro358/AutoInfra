@@ -113,6 +113,17 @@ function addAuditSheet(
     const fallbackNote = loc.tileAllFallback ? '; locator returned nothing — all pages tiled' : '';
     ws.getCell(`A${row++}`).value =
       `Located pages: ${loc.finalPages.length > 0 ? loc.finalPages.join(', ') : 'none'} (mode ${diag.mode})${unionNote}${fallbackNote}.`;
+    // Vision fallbacks (PR #41 / PR24): pages the text layer could not read
+    // — nothing at all, or structures but no pipe runs — that were ALSO
+    // vision-transcribed. Named per page so the routing is never silent.
+    const zyPages = diag.pages.filter((p) => p.zeroYieldFallback).map((p) => p.page);
+    const zrPages = diag.pages.filter((p) => p.zeroRunYieldFallback).map((p) => p.page);
+    if (zyPages.length > 0 || zrPages.length > 0) {
+      const parts: string[] = [];
+      if (zyPages.length > 0) parts.push(`p${zyPages.join(', p')} yielded no entities from the text layer`);
+      if (zrPages.length > 0) parts.push(`p${zrPages.join(', p')} yielded structures but no pipe runs from the text layer (text+vision)`);
+      ws.getCell(`A${row++}`).value = `Vision fallback: ${parts.join('; ')} — also vision-transcribed.`;
+    }
     if (diag.tiles.planned != null) {
       const t = diag.tiles;
       ws.getCell(`A${row++}`).value =

@@ -8,6 +8,7 @@ import { PageText, PositionedText } from './pdf-text';
 import {
   parseRunCallout, parseStructureLabel, parseElevation, parseWatermainCallout,
   isDanglingRunHead, isRunContinuation, parseSubdrainCallout, ParsedStructure,
+  parseComponentStructures,
   structureDescription, chamberWarning,
 } from './callout-parser';
 import { reconcileTakeoff } from './reconcile';
@@ -115,6 +116,14 @@ export function assembleTextTakeoff(pages: PageText[], projectName: string): Tak
       if (structure) {
         if (!structure.existing) {
           liveStructures.push({ parsed: structure, x: line.x, y: line.y, topElevation: null, inverts: [], evidence: line.text });
+          // PR25: component structures named in the host's callout parentheses
+          // ("CBMH33 (OGS3-EF04)") are separate takeoff rows — see
+          // parseComponentStructures. Same coordinates as the host; the host
+          // was pushed first, so step 3's nearest-elevation attachment (first
+          // wins on ties) keeps the block's readings on the host.
+          for (const component of parseComponentStructures(line.text)) {
+            liveStructures.push({ parsed: component, x: line.x, y: line.y, topElevation: null, inverts: [], evidence: line.text });
+          }
         }
         continue;
       }

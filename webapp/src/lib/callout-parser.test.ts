@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   parseRunCallout, parseStructureLabel, parseElevation, parseWatermainCallout,
   isDanglingRunHead, isRunContinuation, parseSubdrainCallout, HASH_STRUCTURE_HEADER_RE,
-  parseScheduleRunRow,
+  parseScheduleRunRow, parseComponentStructures,
 } from './callout-parser';
 
 describe('parseRunCallout', () => {
@@ -556,10 +556,22 @@ describe('parseStructureLabel — abbreviated headwall / outlet codes', () => {
 
 describe('parseStructureLabel — SWM chamber model designations', () => {
   it('parses the hyphenated and spaced model codes', () => {
-    expect(parseStructureLabel('MC-3500')).toEqual({ label: 'MC-3500', kind: 'CHAMBER', diameterMm: null, existing: false });
-    expect(parseStructureLabel('SC-740')).toEqual({ label: 'SC-740', kind: 'CHAMBER', diameterMm: null, existing: false });
     expect(parseStructureLabel('STC 4000')).toEqual({ label: 'STC 4000', kind: 'CHAMBER', diameterMm: null, existing: false });
     expect(parseStructureLabel('DCVC-200')).toEqual({ label: 'DCVC-200', kind: 'CHAMBER', diameterMm: null, existing: false });
+  });
+
+  it('rejects manufacturer model designations the takeoff never carries (PR25)', () => {
+    // StormTech "MC-3500" and Stormceptor "SC-800" were admitted as chamber
+    // structures on Milton, Loretto Abbey and Wigmore; the estimator's
+    // structures table carries them zero times in the golden corpus (the
+    // systems are priced outside it), so the model shapes are not structures.
+    // The estimator's own codes (STC/DC/DCVC above, C-HD below) still parse.
+    expect(parseStructureLabel('MC-3500')).toBeNull();
+    expect(parseStructureLabel('MC 3500')).toBeNull();
+    expect(parseStructureLabel('SC-740')).toBeNull();
+    expect(parseStructureLabel('SC-800')).toBeNull();
+    expect(parseStructureLabel('ADS STORMTECH MC-3500 CHAMBER')).toBeNull();
+    expect(parseStructureLabel('MC-3500 CHAMBER')).toBeNull();
   });
 
   it('parses the heavy-duty C-series code, whose HD suffix is unambiguous', () => {
@@ -588,7 +600,6 @@ describe('parseStructureLabel — SWM chamber model designations', () => {
   it('requires the multi-letter model codes to stand alone or be brand-qualified', () => {
     // "DRAWING OF MC-3500 UNIT" is a detail reference on the sheet, not a unit being built.
     expect(parseStructureLabel('DRAWING OF MC-3500 UNIT')).toBeNull();
-    expect(parseStructureLabel('MC-3500 CHAMBER')!.label).toBe('MC-3500');
     expect(parseStructureLabel('EX. STC 6000')).toEqual({ label: 'STC 6000', kind: 'CHAMBER', diameterMm: null, existing: true });
   });
 
@@ -836,3 +847,66 @@ describe('parseScheduleRunRow', () => {
     expect(parseScheduleRunRow(['ST1', '29.6 m', '250 mm dia.', 'PVC DR35', '55%'])).toBeNull();
   });
 });
+
+describe('PR25 grammar extensions', () => {
+  it('parses MHTEE structures (Panattoni manhole tees)', () => {
+    expect(parseStructureLabel('MHTEE112 (1200Ø)')).toEqual({
+      label: 'MHTEE112', kind: 'MHTEE', diameterMm: 1200, existing: false,
+    });
+    expect(parseStructureLabel('MHTEE 117')!.kind).toBe('MHTEE');
+    // The kind must not swallow a plain MH whose id merely starts nearby.
+    expect(parseStructureLabel('MH 112')!.kind).toBe('MH');
+  });
+
+  it('gives a MODEL: designation priority over its parenthesised sub-component', () => {
+    // Ontario Tech's OGS detail: the unit is the Stormceptor; the Jellyfish
+    // code in parentheses is a component spec, not the structure.
+    expect(parseStructureLabel('MODEL: STC 4000 (JF6-3-1)')).toEqual({
+      label: 'STC 4000', kind: 'CHAMBER', diameterMm: null, existing: false,
+    });
+  });
+
+  it('refuses the fused AASHTO loading token but keeps genuine spaced HS ids', () => {
+    expect(parseStructureLabel('HS20')).toBeNull();
+    expect(parseStructureLabel('HS-20')).toBeNull();
+    expect(parseStructureLabel('STRUCTURE SHALL MEET AASHTO HS-20, ASSUMING EARTH COVER')).toBeNull();
+    expect(parseStructureLabel('HS 20')!.kind).toBe('HS');
+    expect(parseStructureLabel('HS 6')!.label).toBe('HS 6');
+    expect(parseStructureLabel('HS 4')!.label).toBe('HS 4');
+  });
+
+  it('parses the chamber inlet under the estimator\u2019s bare name', () => {
+    expect(parseStructureLabel('CHAMBER INLET')).toEqual({
+      label: 'INLET', kind: 'CHAMBER', diameterMm: null, existing: false,
+    });
+    expect(parseStructureLabel('INLET')!.label).toBe('INLET');
+    expect(parseStructureLabel('EX. CHAMBER INLET')!.existing).toBe(true);
+    // Mid-sentence, the word is not a label.
+    expect(parseStructureLabel('STORM INLET FILTER PRIOR TO DISCHARGE')).toBeNull();
+  });
+
+  it('extracts the EF component from an OGS parenthetical', () => {
+    expect(parseComponentStructures('CBMH33 (OGS3-EF04)')).toEqual([
+      { label: 'EF 04', kind: 'EF', diameterMm: null, existing: false },
+    ]);
+    expect(parseComponentStructures('MH25 (OGS2-EF08)')[0].label).toBe('EF 08');
+    expect(parseComponentStructures('CBMH33 (1200Ø)')).toEqual([]);
+    // Slash-note forms are the estimator's single-row convention — not split.
+    expect(parseComponentStructures('MH 3/OGS/EF 06')).toEqual([]);
+  });
+
+  it('reads WTM and bare-DOMESTIC watermain callouts, and never as sewer runs', () => {
+    expect(parseWatermainCallout('250mmØ DOM. WTM')!.diameterMm).toBe(250);
+    expect(parseWatermainCallout('150mmØ WTM')!.diameterMm).toBe(150);
+    expect(parseWatermainCallout('EX. 300mmØ WTM')!.existing).toBe(true);
+    const dom = parseWatermainCallout('PROP. 68.00m - 150mmØ PVC DOMESTIC')!;
+    expect(dom.diameterMm).toBe(150);
+    expect(dom.lengthM).toBe(68);
+    // The same callouts must not leak into the sewer grammar.
+    expect(parseRunCallout('PROP. 68.00m - 150mmØ PVC DOMESTIC')).toBeNull();
+    expect(parseRunCallout('250mmØ DOM. WTM')).toBeNull();
+    // And plain sewer callouts are untouched.
+    expect(parseRunCallout('45.0m - 250mmØ PVC STM @ 0.50%')).not.toBeNull();
+  });
+});
+

@@ -11,7 +11,7 @@
  */
 import {
   parseRunCallout, parseStructureLabel, parseElevation, parseWatermainCallout,
-  parseScheduleRunRow,
+  parseScheduleRunRow, parseComponentStructures,
   structureDescription, chamberWarning, HASH_STRUCTURE_HEADER_RE,
   isDanglingRunHead, isRunContinuation, ParsedStructure, ParsedRun,
 } from './callout-parser';
@@ -489,6 +489,23 @@ function processLines(lines: string[], out: Sink, warnings: string[], tile: numb
         source: { method: 'transcript', tile, evidence: structureLine },
       });
       if (parsed.kind === 'CHAMBER') warnings.push(chamberWarning(parsed.label, lines));
+    }
+    // PR25: component structures named in the host's own callout parentheses
+    // ("CBMH33 (OGS3-EF04)") are separate takeoff rows — emit them alongside
+    // the host, with the host's callout as their evidence. They carry no
+    // elevations of their own: the block's readings belong to the host.
+    for (const component of parseComponentStructures(structureLine)) {
+      out.structures.push({
+        description: structureDescription(component),
+        topElevation: null,
+        lowInvert: null,
+        highInvert: null,
+        pipeOutDiameter: null,
+        structureType: null,
+        depth: null,
+        diameter: null,
+        source: { method: 'transcript', tile, evidence: structureLine },
+      });
     }
     return true;
   }

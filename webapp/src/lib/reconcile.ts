@@ -629,6 +629,43 @@ export function dropSurfaceCatchbasinStructures(structures: StructureFact[]): {
   return { structures: kept, dropped };
 }
 
+// PR25: a headwall ("HW 11", "HEADWALL 2") is NOT a structure row in the
+// estimator's schema either — across the whole golden corpus, truth carries
+// ZERO headwalls in `structures`; a headwall is the terminal of its outlet
+// run and is priced with that run ("HW 11-MH 10" is a run label, its headwall
+// end included). Extraction nonetheless emits fully-read headwall callouts
+// (label + rim + invert, e.g. Crimson's HW1/HW2/HW3 blocks) as structure rows,
+// where every one is an unmatched false positive. HS is deliberately NOT
+// routed: the estimator DOES inventory HS structures ("HS 4/RIP RAP",
+// "HS 6"), so the filter keys on the HW/HEADWALL spelling only, anchored at
+// the start of the normalized label so a headwall note on a real structure
+// ("MH 5 C/W HW") is never caught.
+const HEADWALL_ID = /^(?:HW|HEADWALL)\d/;
+
+/** True when a structure description is a headwall id (see above). */
+export function isHeadwallStructure(description: string): boolean {
+  return HEADWALL_ID.test(normalizeLabel(description || ''));
+}
+
+/**
+ * Route headwalls out of `structures`, with the same contract as the surface
+ * catchbasin routing above: the reader saw them on the drawing, the caller is
+ * told so in a warning, and nothing is invented to compensate — the headwall's
+ * cost rides on its outlet run, which extraction emits separately.
+ */
+export function dropHeadwallStructures(structures: StructureFact[]): {
+  structures: StructureFact[];
+  dropped: string[];
+} {
+  const dropped: string[] = [];
+  const kept = structures.filter((s) => {
+    if (!isHeadwallStructure(s.description)) return true;
+    dropped.push(s.description);
+    return false;
+  });
+  return { structures: kept, dropped };
+}
+
 export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
   // 1. structures: merge by normalized label
   const byLabel = new Map<string, StructureFact[]>();
@@ -688,6 +725,9 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
   // the very rows the catchbasin block is meant to hold would push it toward dropping
   // the legitimate counts.
   const surfaceCb = dropSurfaceCatchbasinStructures(note.structures);
+  // Headwalls route out by the same convention (see dropHeadwallStructures):
+  // real parts of the drainage network, never structure rows.
+  const headwall = dropHeadwallStructures(surfaceCb.structures);
 
   const warnings = [...facts.warnings];
   if (suffixCollapse.collapsed.length > 0) {
@@ -718,6 +758,15 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
         `count may be understated by up to ${surfaceCb.dropped.length}. Verify it against the drawing.`
     );
   }
+  if (headwall.dropped.length > 0) {
+    warnings.push(
+      `Moved ${headwall.dropped.length} headwall(s) out of the structure list — the estimator ` +
+        `prices a headwall with its outlet run, not as a structure row: ` +
+        `${headwall.dropped.slice(0, 8).join(' | ')}${headwall.dropped.length > 8 ? ' | …' : ''}. ` +
+        `They were read off the drawing; if this contract prices headwalls as separate ` +
+        `structures, add them back manually.`
+    );
+  }
   for (const d of cb.clamped) {
     warnings.push(
       `Clamped catchbasin group ${d.type} qty ${d.quantity} → ${d.clampedTo} — the counted quantity is ` +
@@ -730,7 +779,7 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
 
   return {
     ...facts,
-    structures: surfaceCb.structures,
+    structures: headwall.structures,
     sewers: keptSewers,
     // 3. catchbasins: merge duplicate label groups by type (see mergeCatchbasinGroups)
     catchbasins: cb.catchbasins,

@@ -435,3 +435,31 @@ describe('assembleTranscriptTakeoff — PR23 enumeration scope guards', () => {
     expect(facts.warnings.some((w) => w.startsWith('Scope:'))).toBe(false);
   });
 });
+
+describe('assembleTranscriptTakeoff — PR25 grammar extensions', () => {
+  it('emits the EF component named in an OGS parenthetical alongside its host', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['CBMH33 (OGS3-EF04)', 'T/G=210.49', 'S INV=208.61'],
+        ['MH25 (OGS2-EF08)', '(2400mmØ)', 'T/G=209.45'],
+      ]},
+    ], 'CRIMSON');
+    const descriptions = facts.structures.map((s) => s.description).sort();
+    expect(descriptions).toEqual(['CBMH33', 'EF 04', 'EF 08', 'MH25']);
+    // The component carries no elevations of its own — the block's are the host's.
+    const ef = facts.structures.find((s) => s.description === 'EF 04')!;
+    expect(ef.topElevation).toBeNull();
+    expect(ef.lowInvert).toBeNull();
+  });
+
+  it('assembles MHTEE blocks and the MODEL: Stormceptor, not its JF component', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['MHTEE112 (1200Ø)', 'T/G = 100.50', 'INV = 98.25'],
+        ['MODEL: STC 4000 (JF6-3-1)'],
+      ]},
+    ], 'TEST');
+    const descriptions = facts.structures.map((s) => s.description).sort();
+    expect(descriptions).toEqual(['MHTEE112', 'STC 4000']);
+  });
+});

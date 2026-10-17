@@ -42,6 +42,31 @@ describe('reconcileTakeoff', () => {
     expect(r.sewers.map((s) => s.runLabel)).toContain('ST12');
   });
 
+  // PR25 (Disease 2a calibration): a dimension-callout twin of an
+  // endpoint-labelled run — same diameter, length within the stitch
+  // tolerance, no conflicting slope/class — collapses into the endpoint run,
+  // whose label wins. The dangerous near-miss must NOT collapse: two
+  // endpoint-labelled pipes of the same diameter and near-identical length
+  // are parallel pipes, and distinct endpoint signatures never merge.
+  it('collapses a dimension-callout twin into its endpoint-labelled run, never parallel pipes (PR25)', () => {
+    const twin = reconcileTakeoff(emptyFacts({
+      sewers: [
+        run({ runLabel: 'MH 1-MH 2', length: 20.0, pipeDiameter: 250, slope: 1.0 }),
+        run({ runLabel: '20.2m-250mm STM', length: 20.2, pipeDiameter: 250, slope: 1.0 }),
+      ],
+    }));
+    expect(twin.sewers).toHaveLength(1);
+    expect(twin.sewers[0].runLabel).toBe('MH 1-MH 2');
+
+    const parallel = reconcileTakeoff(emptyFacts({
+      sewers: [
+        run({ runLabel: 'MH 1-MH 2', length: 20.0, pipeDiameter: 250, slope: 1.0 }),
+        run({ runLabel: 'MH 3-MH 4', length: 20.2, pipeDiameter: 250, slope: 1.0 }),
+      ],
+    }));
+    expect(parallel.sewers).toHaveLength(2);
+  });
+
   it('merges duplicate structures across fragments, keeping the most complete data', () => {
     const facts = emptyFacts({
       structures: [
@@ -133,11 +158,10 @@ describe('reconcileTakeoff', () => {
 
   // Outfalls are the terminal structure of a storm system; the junk filters must not
   // mistake them for headings, notes, or surface catchbasins.
-  it('keeps outfall / headwall / outlet structures', () => {
+  it('keeps outfall / outlet structures', () => {
     const r = reconcileTakeoff(
       emptyFacts({
         structures: [
-          struct({ description: 'HW 1', lowInvert: 219.8 }),
           struct({ description: 'OCS 1', topElevation: 222.4 }),
           struct({ description: 'HS 2' }),
           struct({ description: 'FLARED END SECTION' }),
@@ -146,8 +170,27 @@ describe('reconcileTakeoff', () => {
       })
     );
     expect(r.structures.map((s) => s.description).sort()).toEqual([
-      'FLARED END SECTION', 'HS 2', 'HW 1', 'MH 1', 'OCS 1',
+      'FLARED END SECTION', 'HS 2', 'MH 1', 'OCS 1',
     ]);
+  });
+
+  // PR25: headwalls are priced with their outlet run, never as structure rows
+  // (zero HW/HEADWALL rows in the golden truths' structures, across 26
+  // projects), so they route out of `structures` with a warning — the same
+  // convention as surface catchbasins. HS rows stay: truth inventories them.
+  it('routes headwalls out of structures with a warning (PR25)', () => {
+    const r = reconcileTakeoff(
+      emptyFacts({
+        structures: [
+          struct({ description: 'HW 1', lowInvert: 219.8 }),
+          struct({ description: 'HEADWALL 2' }),
+          struct({ description: 'HS 2' }),
+          struct({ description: 'MH 1' }),
+        ],
+      })
+    );
+    expect(r.structures.map((s) => s.description).sort()).toEqual(['HS 2', 'MH 1']);
+    expect(r.warnings.some((w) => w.includes('headwall') && w.includes('HW 1'))).toBe(true);
   });
 
   it('is idempotent', () => {

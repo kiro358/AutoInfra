@@ -38,7 +38,7 @@ export interface ParsedRun {
 export interface ParsedStructure {
   label: string;
   kind: 'MH' | 'CBMH' | 'DCBMH' | 'CB' | 'DCB' | 'DICB' | 'DDICB' | 'HS' | 'OS' | 'JF' | 'EF'
-    | 'CHAMBER' | 'HW' | 'OCS' | 'FES' | 'VAULT' | 'TANK';
+    | 'CHAMBER' | 'HW' | 'OCS' | 'FES' | 'VAULT' | 'TANK' | 'MHTEE';
   diameterMm: number | null;
   existing: boolean;
   /** Sewer system the label names ("SAN MH 1" vs "STMH 1"), when it says. Storm and
@@ -80,7 +80,19 @@ const ROMAN_CLASS: Record<string, number> = { I: 1, II: 2, III: 3, IV: 4, V: 5 }
 const INSULATED_RE = /\bINS(?:UL(?:ATED|ATION))?\b/i;
 // Watermain, including the branch forms that never say "water" at all (fire service,
 // hydrant lead). Deliberately NOT a bare \bWATER\b — that would swallow "WATER QUALITY UNIT".
-const WM_RE = /\b(?:WATERMAIN|WATER\s+MAIN|WM|W\/M)\b|\b(?:DOMESTIC|FIRE)\s+(?:WATER|SERVICE|LINE)\b|\bWATER\s+SERVICE\b|\bHYD(?:RANT)?\s+LEAD\b/i;
+// PR25: two dialect gaps closed. "WTM" is the standard abbreviation a whole office
+// (Project Crimson) uses for every watermain callout ("250mmØ DOM. WTM", "150mmØ WTM");
+// without it those callouts parsed as nothing at all. And a bare "DOMESTIC" names the
+// domestic water service in this dialect ("PROP. 68.00m - 150mmØ PVC DOMESTIC",
+// "100mmØ DOMESTIC") — sewers here are "SANITARY", never "domestic" — so the bare word
+// is a watermain token too; without it such callouts parsed as SEWER runs, because
+// parseRunCallout's only protection is this regex (it refuses WM_RE lines outright).
+// A bare "FIRE" was tried and REVERTED in the same PR: it minted watermain rows out
+// of spec prose ("A 50MM OUTLET ON 100MM AND LARGER LINES … ON FIRE LINES, FLUSHING
+// OUTLET …"), costing Loretto Abbey 8.3 detF1 points. The trailing form
+// ("…150mmØ PVC FIRE", Stevenson) therefore still reads as a run — documented
+// residue; FIRE needs a companion word (SERVICE/LINE/WATER) to count.
+const WM_RE = /\b(?:WATERMAIN|WATER\s+MAIN|WM|W\/M|WTM)\b|\b(?:DOMESTIC|FIRE)\s+(?:WATER|SERVICE|LINE)\b|\bDOMESTIC\b|\bWATER\s+SERVICE\b|\bHYD(?:RANT)?\s+LEAD\b/i;
 const SUBDRAIN_RE = /\bSUB[\s-]?DRAIN\b/i;
 // Shared pattern: diameter in millimetres (used by both watermain and subdrain parsers)
 const DIA_MM_RE = /(\d{2,4})\s*mm/i;
@@ -214,7 +226,7 @@ const SCHEDULE_SLOPE_RE = /^(\d+(?:\.\d+)?)\s*%$/;
 // transcript-takeoff for the scope reasoning).
 const STRUCTURE_SERIES = new Set([
   'MH', 'STMH', 'SANMH', 'CBMH', 'DCBMH', 'DICBMH', 'CB', 'DCB', 'DICB',
-  'DDICB', 'HS', 'HW', 'OS', 'OCS', 'FES', 'JF', 'EF',
+  'DDICB', 'HS', 'HW', 'OS', 'OCS', 'FES', 'JF', 'EF', 'MHTEE',
 ]);
 
 /**
@@ -352,7 +364,7 @@ export function isRunContinuation(line: string): boolean {
 // (Note: the widened (?:^|[\s(]) delimiter applies to every kind, not just JF.)
 // OCS (outlet control structure), HW (headwall) and FES (flared end section) are the
 // abbreviated spellings; their written-out forms go through NAMED_STRUCTURES below.
-const STRUCT_RE = /(?:^|[\s(])(EX\.?\s*|(?:NEW|PROP(?:OSED)?|PR)\.?\s+)?(?:(?:SAN(?:ITARY)?|STM|STORM)\s+)?(DDICB|DCBMH|DICB|CB\/MH|DBL\/CB|CBMH|DCB|STMH|SANMH|OCS|FES|CB|MH|HS|HW|OS|JF|EF)(\s?-?\s?|\s?#\s?)(\d+(?:-\d+)*[A-Z]?)\s*(?:\((\d{3,4})\s*(?:MM)?\s*[ØO]?\))?/i;
+const STRUCT_RE = /(?:^|[\s(])(EX\.?\s*|(?:NEW|PROP(?:OSED)?|PR)\.?\s+)?(?:(?:SAN(?:ITARY)?|STM|STORM)\s+)?(DDICB|DCBMH|DICB|MHTEE|CB\/MH|DBL\/CB|CBMH|DCB|STMH|SANMH|OCS|FES|CB|MH|HS|HW|OS|JF|EF)(\s?-?\s?|\s?#\s?)(\d+(?:-\d+)*[A-Z]?)\s*(?:\((\d{3,4})\s*(?:MM)?\s*[ØO]?\))?/i;
 // Global copy for matchAll iteration. matchAll clones the regex internally, so no shared
 // lastIndex state leaks between calls (do NOT add 'g' to STRUCT_RE itself and call exec in a loop).
 const STRUCT_RE_G = new RegExp(STRUCT_RE.source, 'gi');
@@ -380,7 +392,7 @@ const COMPOUND_KINDS: Record<string, { kind: ParsedStructure['kind']; code: stri
  * harvest them is the schedule-table work's decision, not the block
  * grammar's. Keep the kind alternation in step with STRUCT_RE's.
  */
-export const HASH_STRUCTURE_HEADER_RE = /^\s*(?:EX\.?\s*|(?:NEW|PROP(?:OSED)?|PR)\.?\s+)?(?:(?:SAN(?:ITARY)?|STM|STORM)\s+)?(?:DDICB|DCBMH|DICB|CB\/MH|DBL\/CB|CBMH|DCB|STMH|SANMH|OCS|FES|CB|MH|HS|HW|OS|JF|EF)\s*#\s*\d+(?:-\d+)*[A-Z]?\s*(?:\(\d{3,4}\s*(?:MM)?\s*[ØO]?\))?\s*$/i;
+export const HASH_STRUCTURE_HEADER_RE = /^\s*(?:EX\.?\s*|(?:NEW|PROP(?:OSED)?|PR)\.?\s+)?(?:(?:SAN(?:ITARY)?|STM|STORM)\s+)?(?:DDICB|DCBMH|DICB|MHTEE|CB\/MH|DBL\/CB|CBMH|DCB|STMH|SANMH|OCS|FES|CB|MH|HS|HW|OS|JF|EF)\s*#\s*\d+(?:-\d+)*[A-Z]?\s*(?:\(\d{3,4}\s*(?:MM)?\s*[ØO]?\))?\s*$/i;
 
 // Id-first headers: "SA3 (MH)", "ST1 (CBMH)", "ST3 (CB)" — the structure's id leads
 // and its kind trails in parentheses, prefixed by a two-letter system code (SA =
@@ -439,7 +451,15 @@ const NAMED_STRUCTURE_RES: { re: RegExp; kind: ParsedStructure['kind'] }[] = NAM
 //
 // JF is deliberately absent: Jellyfish model codes (JF1000, JF2000) are NOT structures;
 // only the hyphenated Jellyfish ids ("JF 6-3-1") are, and STRUCT_RE already handles those.
-const MODEL_CODE = '(?:DCVC|STC|SC|MC|DC)[\\s-]?\\d{2,4}(?:[\\s-]?HD)?';
+//
+// PR25: MC (StormTech arch chambers, "MC-3500") and SC (Stormceptor, "SC-800") are
+// absent for the same reason, on golden-corpus evidence: those model designations were
+// admitted as structures on four projects (Milton, Loretto Abbey, Wigmore) and the
+// estimator's takeoff carries them ZERO times — the systems are priced outside the
+// structures table. The codes that remain (DCVC, STC, DC) are the estimator's own
+// chamber codes and ARE carried ("DCVC-200", "STC 4000", "DC 150"), as is the Cultec
+// C-HD series below ("C100 CHAMBER").
+const MODEL_CODE = '(?:DCVC|STC|DC)[\\s-]?\\d{2,4}(?:[\\s-]?HD)?';
 const CULTEC_CODE = 'C[\\s-]?\\d{2,4}(?:[\\s-]?HD)?';
 // Whole-line form: the code is the entire callout, bar an existing/proposed prefix and a
 // trailing noun. Anchoring is what keeps prose ("DRAWING OF MC-3500 UNIT", "SEE DETAIL ON
@@ -488,7 +508,50 @@ export function chamberWarning(label: string, lines: string[]): string {
   return `Chamber system ${label}${area ? ` (bed area ${area[1]} m²)` : ''} needs manual pricing — it is listed as a structure row with no precast cost.`;
 }
 
+/**
+ * PR25: component structures named inside a host structure's own callout.
+ *
+ * An oil-grit separator's callout carries its end-of-flow component in
+ * parentheses — "CBMH33 (OGS3-EF04)", "MH25 (OGS2-EF08)" — and the estimator
+ * inventories that component as its own structure row ("EF 04", "EF 08").
+ * The host parses through parseStructureLabel as usual; this returns the
+ * component structures the same line names, for the assemblers to emit
+ * alongside it. Deliberately the one component shape the corpus shows:
+ * slash-note forms ("MH 3/OGS/EF 06") are the estimator's single-row
+ * convention for the same idea and are NOT split.
+ */
+const OGS_EF_COMPONENT_RE = /\(\s*OGS\s*\d+\s*-\s*EF\s*(\d+)\s*\)/i;
+export function parseComponentStructures(line: string): ParsedStructure[] {
+  const m = OGS_EF_COMPONENT_RE.exec(line);
+  if (!m) return [];
+  return [{ label: `EF ${m[1]}`, kind: 'EF', diameterMm: null, existing: false }];
+}
+
 export function parseStructureLabel(line: string): ParsedStructure | null {
+  // PR25: a "MODEL:" callout names the unit by its designation — the designation
+  // right after the prefix is the structure, and anything in parentheses after it
+  // is a sub-component spec, not a rival label. Without this priority the scan
+  // below reached inside the parentheses and returned the component's code
+  // ("MODEL: STC 4000 (JF6-3-1)" came back as a Jellyfish "JF6-3-1", a structure
+  // the takeoff does not carry, while the Stormceptor it names went unread).
+  const modelPrefix = /^\s*MODEL\s*:\s*/i.exec(line);
+  if (modelPrefix) {
+    const designation = line.slice(modelPrefix[0].length).split('(')[0].trim();
+    if (designation) {
+      const parsed = parseStructureLabel(designation);
+      if (parsed) return parsed;
+    }
+  }
+
+  // PR25: the chamber inlet is a structure the estimator inventories under the
+  // bare name "INLET" (Loretto Abbey). The drawing writes it out as a whole-line
+  // label, "CHAMBER INLET" — whole-line anchoring is the guard, exactly as for
+  // NAMED_STRUCTURES below: mid-sentence, "inlet" is just a word.
+  const inlet = /^\s*(EX\.?\s+)?(?:CHAMBER\s+)?INLET\s*$/i.exec(line);
+  if (inlet) {
+    return { label: 'INLET', kind: 'CHAMBER', diameterMm: null, existing: Boolean(inlet[1]) || LEADING_EX_RE.test(line) };
+  }
+
   const cultec = CULTEC_PRODUCT_RE.exec(line);
   if (cultec) {
     return { label: `${cultec[1]} HD`, kind: 'CHAMBER', diameterMm: null, existing: LEADING_EX_RE.test(line) };
@@ -511,6 +574,16 @@ export function parseStructureLabel(line: string): ParsedStructure | null {
     // JF ids must be hyphenated to distinguish real structures (JF 6-3-1) from Jellyfish
     // product model numbers (JF1000, JF2000). EF ids are not hyphenated in the corpus.
     if (kind === 'JF' && !m[4].includes('-')) {
+      continue; // Try the next candidate match, not this one
+    }
+
+    // PR25: "HS20" / "HS-20" is the AASHTO loading designation, not a headwall —
+    // it lives in spec prose ("STRUCTURE SHALL MEET AASHTO HS-20, ASSUMING EARTH
+    // COVER") and the scan above happily extracted it as a structure. Genuine
+    // headwalls in the corpus are written spaced ("HS 4", "HS 6"), so only the
+    // fused/hyphenated form of the number 20 is refused; a spaced "HS 20" still
+    // parses, and every other HS id is untouched.
+    if (kind === 'HS' && m[4] === '20' && !/\s/.test(m[3])) {
       continue; // Try the next candidate match, not this one
     }
 

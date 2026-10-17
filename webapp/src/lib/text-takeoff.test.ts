@@ -199,3 +199,22 @@ describe('assembleTextTakeoff — symbol-font callouts (Uxbridge dialect)', () =
     expect(facts.watermain).toHaveLength(0);
   });
 });
+
+describe('assembleTextTakeoff — PR25 grammar extensions', () => {
+  it('emits the EF component named in an OGS parenthetical alongside its host', () => {
+    const facts = assembleTextTakeoff([page([
+      { text: 'CBMH33 (OGS3-EF04)', x: 100, y: 100 },
+    ])], 'CRIMSON');
+    expect(facts.structures.map((s) => s.description).sort()).toEqual(['CBMH33', 'EF 04']);
+  });
+
+  it('reads a DOMESTIC callout as watermain, not as a sewer run', () => {
+    const facts = assembleTextTakeoff([page([
+      { text: 'PROP. 68.00m - 150mmØ PVC DOMESTIC', x: 100, y: 100 },
+    ])], 'STEVENSON');
+    expect(facts.sewers).toEqual([]);
+    expect(facts.watermain).toHaveLength(1);
+    expect(facts.watermain[0].pipeDiameter).toBe(150);
+    expect(facts.watermain[0].length).toBe(68);
+  });
+});

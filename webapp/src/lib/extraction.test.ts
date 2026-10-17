@@ -775,6 +775,147 @@ describe('assembleHybridTakeoff — zero-yield fallback routing', () => {
   });
 });
 
+describe('assembleHybridTakeoff — zero-RUN-yield fallback routing (PR24)', () => {
+  const ptPage = (page: number, items: { text: string; x: number; y: number }[]): PageText => ({
+    page, width: 2592, height: 1728,
+    items: items.map((i) => ({ ...i, width: 120, height: 12 })),
+  });
+
+  // The Eric Smith shape: a servicing strip repeated on every sheet yields
+  // structures + catchbasins from the text layer, but every pipe run on the
+  // sheet is drawn as strokes — the text grammar reads ZERO runs. Texty by
+  // both classifier gates (T/G + INV density + annotation forms).
+  const stripPage = ptPage(5, [
+    { text: 'MH1', x: 100, y: 900 }, { text: 'T/G=224.95', x: 105, y: 885 }, { text: 'N INV=223.35', x: 105, y: 870 }, { text: 'S INV=223.50', x: 105, y: 855 },
+    { text: 'MH2', x: 300, y: 900 }, { text: 'T/G=225.10', x: 305, y: 885 }, { text: 'N INV=223.60', x: 305, y: 870 }, { text: 'S INV=223.75', x: 305, y: 855 },
+    { text: 'MH3', x: 500, y: 900 }, { text: 'T/G=225.40', x: 505, y: 885 }, { text: 'N INV=224.00', x: 505, y: 870 }, { text: 'S INV=224.15', x: 505, y: 855 },
+    { text: 'MH4', x: 700, y: 800 }, { text: 'T/G=225.60', x: 705, y: 785 }, { text: 'N INV=224.20', x: 705, y: 770 }, { text: 'S INV=224.35', x: 705, y: 755 },
+    { text: 'CB1', x: 900, y: 900 }, { text: 'CB2', x: 950, y: 900 }, { text: 'CB3', x: 1000, y: 900 },
+  ]);
+
+  // A lone structure parsed out of a sizes/spec list: total yield 1. The
+  // yield-1 fragment class (a manufacturer's detail sheet is the census's
+  // real example) must NOT trigger a vision pass.
+  const fragmentPage = ptPage(6, [
+    { text: 'STMH 1', x: 100, y: 900 }, { text: 'T/G=224.95', x: 105, y: 885 }, { text: 'N INV=223.35', x: 105, y: 870 },
+    { text: '250mm 300mm 375mm 450mm 525mm 600mm 750mm 900mm 1050mm 1200mm', x: 100, y: 700 },
+  ]);
+
+  // Structures + a WATERMAIN run, zero sewers: pipe-run yield is 1, so the
+  // page is not run-blind and must stay text-only.
+  const wmPage = ptPage(7, [
+    { text: 'MH1', x: 100, y: 900 }, { text: 'T/G=224.95', x: 105, y: 885 }, { text: 'N INV=223.35', x: 105, y: 870 },
+    { text: 'MH2', x: 300, y: 900 }, { text: 'T/G=225.10', x: 305, y: 885 }, { text: 'N INV=223.60', x: 305, y: 870 },
+    { text: '120.0m - 150mmØ PVC WATERMAIN', x: 400, y: 800 },
+    { text: '250mmØ PVC', x: 600, y: 800 }, { text: '300mmØ PVC', x: 600, y: 750 },
+  ]);
+
+  // Vision's read of the strip page: it re-reads two of the strip
+  // structures (MH1 with a CONFLICTING rim — text must win), finds one
+  // structure the strip did not name, and reads the stroke-only run.
+  const stripTiles: TileTranscript[] = [
+    { tile: 1, blocks: [
+      ['MH1', 'RIM: 999.99', 'INV: 223.35'],
+      ['MH2', 'RIM: 225.10', 'INV: 223.60'],
+      ['MH 9', 'RIM: 226.00', 'INV: 224.50'],
+      ['45.0m - 250mmØ PVC STM @ 0.50%'],
+    ] },
+  ];
+
+  it('fixtures have the routing properties the tests rely on', () => {
+    expect(isTextyPage(stripPage)).toBe(true);
+    expect(isTextyPage(fragmentPage)).toBe(true);
+    expect(isTextyPage(wmPage)).toBe(true);
+    const strip = assembleTextTakeoff([stripPage], 'T');
+    expect(strip.structures).toHaveLength(4);
+    expect(strip.sewers).toHaveLength(0);
+    expect(strip.watermain).toHaveLength(0);
+    expect(countEntities(assembleTextTakeoff([fragmentPage], 'T'))).toBe(1);
+    const wm = assembleTextTakeoff([wmPage], 'T');
+    expect(wm.sewers).toHaveLength(0);
+    expect(wm.watermain).toHaveLength(1);
+  });
+
+  it('fires on a structures-but-zero-runs page and merges vision as ADDITIVE (no double-count, text wins)', async () => {
+    const transcribe = vi.fn(async (_pages: number[]) => stripTiles);
+    const out = await assembleHybridTakeoff([stripPage], [5], 'T', transcribe);
+
+    expect(transcribe).toHaveBeenCalledTimes(1);
+    expect(transcribe).toHaveBeenCalledWith([5]);
+    expect(out.runFallbackPageNums).toEqual([5]);
+    expect(out.fallbackPageNums).toEqual([]);
+    expect(out.rasterPageNums).toEqual([5]);
+    expect(out.textyPageRunYields[5]).toBe(0);
+    expect(out.textyPageYields[5]).toBe(5);
+
+    // Structures: the four text structures + vision's one new structure —
+    // the two re-read structures are NOT duplicated.
+    const labels = out.facts.structures.map((s) => s.description.replace(/\s+/g, ''));
+    expect(labels.sort()).toEqual(['MH1', 'MH2', 'MH3', 'MH4', 'MH9']);
+    // Text wins the field both paths read: MH1's rim stays the text layer's
+    // 224.95, not vision's conflicting 999.99.
+    const mh1 = out.facts.structures.find((s) => s.description.replace(/\s+/g, '') === 'MH1')!;
+    expect(mh1.topElevation).toBe(224.95);
+    expect(mh1.lowInvert).toBe(223.35);
+    // The stroke-only run lands exactly once; the catchbasin group is the
+    // text layer's, unchanged.
+    expect(out.facts.sewers).toHaveLength(1);
+    expect(out.facts.sewers[0].length).toBe(45);
+    expect(out.facts.sewers[0].pipeDiameter).toBe(250);
+    expect(out.facts.catchbasins).toEqual([
+      expect.objectContaining({ type: 'SINGLE_CB', quantity: 3 }),
+    ]);
+  });
+
+  it('does NOT fire on a page that yields sewer runs', async () => {
+    const yielding = ptPage(1, [
+      { text: 'STMH 1', x: 100, y: 900 },
+      { text: 'T/G=224.95', x: 105, y: 885 },
+      { text: 'N INV=223.35', x: 105, y: 870 },
+      { text: '45.0m - 250mmØ PVC STM @ 0.50%', x: 400, y: 900 },
+      { text: '60.0m - 300mmØ PVC STM @ 0.35%', x: 400, y: 800 },
+      { text: '30.0m - 200mmØ PVC SAN @ 1.00%', x: 400, y: 700 },
+    ]);
+    const transcribe = vi.fn(async (_pages: number[]) => stripTiles);
+    const out = await assembleHybridTakeoff([yielding], [1], 'T', transcribe);
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(out.runFallbackPageNums).toEqual([]);
+    expect(out.textyPageRunYields[1]).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does NOT fire on a page whose only pipe yield is watermain', async () => {
+    const transcribe = vi.fn(async (_pages: number[]) => stripTiles);
+    const out = await assembleHybridTakeoff([wmPage], [7], 'T', transcribe);
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(out.runFallbackPageNums).toEqual([]);
+    expect(out.textyPageRunYields[7]).toBe(1);
+    expect(out.facts.watermain).toHaveLength(1);
+  });
+
+  it('does NOT fire on a yield-1 fragment page (lone entity is not a bearing plan page)', async () => {
+    const transcribe = vi.fn(async (_pages: number[]) => stripTiles);
+    const out = await assembleHybridTakeoff([fragmentPage], [6], 'T', transcribe);
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(out.runFallbackPageNums).toEqual([]);
+    expect(out.fallbackPageNums).toEqual([]);
+    expect(out.rasterPageNums).toEqual([]);
+  });
+
+  it('keeps the two fallbacks disjoint: zero-yield pages stay zero-yield, strip pages are run-fallbacks', async () => {
+    const zeroYield = ptPage(2, [
+      { text: 'PIPE SIZES SHOWN ARE NOMINAL', x: 100, y: 900 },
+      { text: '250mm 300mm 375mm 450mm 525mm 600mm 750mm 900mm 1050mm 1200mm', x: 100, y: 850 },
+    ]);
+    const transcribe = vi.fn(async (_pages: number[]) => stripTiles);
+    const out = await assembleHybridTakeoff([zeroYield, stripPage], [2, 5], 'T', transcribe);
+    expect(transcribe).toHaveBeenCalledTimes(1);
+    expect(transcribe).toHaveBeenCalledWith([2, 5]);
+    expect(out.fallbackPageNums).toEqual([2]);
+    expect(out.runFallbackPageNums).toEqual([5]);
+    expect(out.rasterPageNums).toEqual([2, 5]);
+  });
+});
+
 describe('unionLocatedPages — locator union with text-layer-bearing pages', () => {
   const ptPage = (page: number, texts: string[]): PageText => ({
     page, width: 2592, height: 1728,

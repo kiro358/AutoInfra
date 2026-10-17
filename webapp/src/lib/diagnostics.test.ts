@@ -133,6 +133,29 @@ describe('diagnostics on a hybrid run fixture', () => {
     ]);
     expect(record.locator.finalPages).toEqual([1, 2, 3]);
   });
+
+  it('carries the zero-run-yield fallback flag through the record verbatim (PR24)', () => {
+    const record = buildExtractionDiagnostics({
+      mode: 'hybrid',
+      durationMs: 1,
+      locator: { ran: true, rawPicks: [5], unionAdded: [], finalPages: [5], tileAllFallback: false },
+      pages: [
+        { page: 5, route: 'vision', textChars: 900, textYield: 5, tilesPlanned: 20, tilesRendered: 20, zeroRunYieldFallback: true },
+      ],
+      tiles: { planned: 20, rendered: 20, uploaded: 20, transcribed: 3, missingAfterRetry: 0, degenerateDiscarded: 0, blocks: 4 },
+      sources: [],
+      finalFacts: {
+        projectName: 'T', jobNumber: '', date: '', structures: [], catchbasins: [],
+        sewers: [], watermain: [], watermainSpecials: [], watermainValves: [],
+        confidence: 0, warnings: [],
+      },
+    });
+    // The page was text-routed AND vision-transcribed: route records the
+    // vision pass, the flag records WHY (text read structures, no runs).
+    expect(record.pages[0].route).toBe('vision');
+    expect(record.pages[0].zeroRunYieldFallback).toBe(true);
+    expect(record.pages[0].zeroYieldFallback).toBeUndefined();
+  });
 });
 
 describe('tileDiagnosticsWarnings — silent tile loss surfacing (audit 6c/6a)', () => {

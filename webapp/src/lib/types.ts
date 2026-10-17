@@ -303,6 +303,11 @@ export interface PageDiagnostics {
   /** A texty page that yielded zero entities and was re-routed to vision
    *  (the PR #41 fallback). */
   zeroYieldFallback?: boolean;
+  /** A texty page that yielded entities but ZERO pipe runs (sewers +
+   *  watermain) — any runs it carries exist only as drawing strokes — and
+   *  was ALSO vision-transcribed with its text facts kept (the PR24
+   *  zero-run-yield fallback; route 'vision', text+vision in effect). */
+  zeroRunYieldFallback?: boolean;
 }
 
 /** Tile-pipeline totals for one run. "Planned" sums tilesNeededPerPage over

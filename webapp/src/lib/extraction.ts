@@ -569,10 +569,14 @@ export interface HybridAssembly {
   transcript: TileTranscript[];
   /** Located pages routed to the text layer. */
   textyPageNums: number[];
-  /** Pages actually vision-transcribed (non-texty + zero-yield fallbacks). */
+  /** Pages actually vision-transcribed (non-texty + zero-yield and
+   *  zero-run-yield fallbacks). */
   rasterPageNums: number[];
   /** Texty pages re-routed to vision because their text layer yielded zero entities. */
   fallbackPageNums: number[];
+  /** Texty pages that yielded entities but ZERO pipe runs and were ALSO
+   *  vision-transcribed, text facts kept (the zero-run-yield fallback). */
+  runFallbackPageNums: number[];
   /** Entity counts of the text-path assembly, before the merge (diagnostics). */
   textCounts: EntityCounts;
   /** Entity counts of the transcript-path assembly, before the merge;
@@ -581,6 +585,9 @@ export interface HybridAssembly {
   /** Per-page text yield for texty pages — the counts the zero-yield
    *  fallback check itself computed (diagnostics; not recomputed). */
   textyPageYields: Record<number, number>;
+  /** Per-page PIPE-RUN yield (sewers + watermain) for texty pages — the
+   *  counts the zero-run-yield fallback check itself computed. */
+  textyPageRunYields: Record<number, number>;
 }
 
 /**
@@ -599,6 +606,24 @@ export interface HybridAssembly {
  * assembly. The guard is the cost control: the fallback fires ONLY on zero
  * yield, and when no page falls back the routing (and therefore the facts)
  * is byte-identical to the pre-fix behaviour.
+ *
+ * Zero-RUN-yield fallback: total yield is the wrong test for the SHX shape
+ * where a sheet's text layer carries SOME content while every pipe run on
+ * it exists only as vector strokes. Eric Smith's four sheets each repeat a
+ * servicing strip that yields 8 structures + a catchbasin group, so they
+ * never counted as zero-yield — vision never saw them, and their 14 truth
+ * runs were lost to routing (the loss budget's ROUTING bucket, the gate
+ * ruler's largest lever). A texty page whose solo assembly yields at
+ * least 2 entities but ZERO pipe runs (sewers + watermain) is therefore
+ * ALSO vision-transcribed; the merge keeps the text facts primary, so
+ * vision only adds what the strokes carry. The ≥2 floor is the locator
+ * union's measured lesson: a lone entity is a fragment parsed out of
+ * notes/details, not evidence of a bearing plan page (the 26-project
+ * census's single yield-1 zero-run page is a manufacturer's detail sheet
+ * whose one "structure" is a filter unit, with no truth-run endpoint on
+ * it). Census calibration: the trigger fires on 10 pages across 7 projects
+ * — all drawing-dense plan sheets — for at most 176 extra tiles corpus-
+ * wide (≤4 pages / ≤80 tiles in any one project). See pr24_evidence.md.
  */
 export async function assembleHybridTakeoff(
   pageTexts: PageText[],
@@ -614,12 +639,23 @@ export async function assembleHybridTakeoff(
   const textFacts = assembleTextTakeoff(textyPages, projectName);
 
   const fallbackPageNums: number[] = [];
+  const runFallbackPageNums: number[] = [];
   const textyPageYields: Record<number, number> = {};
+  const textyPageRunYields: Record<number, number> = {};
   for (const page of textyPages) {
-    const y = countEntities(assembleTextTakeoff([page], projectName));
+    const pageFacts = assembleTextTakeoff([page], projectName);
+    const y = countEntities(pageFacts);
+    const runY = pageFacts.sewers.length + pageFacts.watermain.length;
     textyPageYields[page.page] = y;
+    textyPageRunYields[page.page] = runY;
     if (y === 0) {
       fallbackPageNums.push(page.page);
+      rasterSet.add(page.page);
+    } else if (y >= 2 && runY === 0) {
+      // Yielded content but not one pipe run: the runs, if the sheet
+      // carries any, are strokes the text layer cannot read — vision
+      // gets the page too, and the merge adds whatever it finds.
+      runFallbackPageNums.push(page.page);
       rasterSet.add(page.page);
     }
   }
@@ -629,10 +665,10 @@ export async function assembleHybridTakeoff(
   const transcriptFacts = transcript.length > 0 ? assembleTranscriptTakeoff(transcript, projectName) : null;
   const facts = transcriptFacts ? mergeTakeoffs(textFacts, transcriptFacts) : textFacts;
   return {
-    facts, transcript, textyPageNums, rasterPageNums, fallbackPageNums,
+    facts, transcript, textyPageNums, rasterPageNums, fallbackPageNums, runFallbackPageNums,
     textCounts: entityCountsByKind(textFacts),
     transcriptCounts: transcriptFacts ? entityCountsByKind(transcriptFacts) : null,
-    textyPageYields,
+    textyPageYields, textyPageRunYields,
   };
 }
 
@@ -1383,6 +1419,9 @@ async function extractFromPDFInner(
         if (hybrid.fallbackPageNums.length > 0) {
           console.log(`      [extraction.ts] hybrid: texty page(s) ${hybrid.fallbackPageNums.join(', ')} yielded zero entities from the text layer — re-routed to vision transcription.`);
         }
+        if (hybrid.runFallbackPageNums.length > 0) {
+          console.log(`      [extraction.ts] hybrid: texty page(s) ${hybrid.runFallbackPageNums.join(', ')} yielded structures but zero pipe runs from the text layer — also vision-transcribed (text facts kept, vision adds).`);
+        }
 
         let facts = hybrid.facts;
 
@@ -1425,6 +1464,7 @@ async function extractFromPDFInner(
         const charsH = textCharsByPage(pageTexts);
         const rasterSetH = new Set(hybrid.rasterPageNums);
         const fallbackSetH = new Set(hybrid.fallbackPageNums);
+        const runFallbackSetH = new Set(hybrid.runFallbackPageNums);
         attachDiagnostics(facts, 'hybrid',
           unionPages.map((p) => ({
             page: p,
@@ -1434,6 +1474,7 @@ async function extractFromPDFInner(
             tilesPlanned: planH.get(p)?.planned ?? null,
             tilesRendered: planH.get(p)?.rendered ?? null,
             ...(fallbackSetH.has(p) ? { zeroYieldFallback: true } : {}),
+            ...(runFallbackSetH.has(p) ? { zeroRunYieldFallback: true } : {}),
           })),
           tilesDiagH,
           [

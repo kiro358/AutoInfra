@@ -351,6 +351,36 @@ describe('populateTemplate — AUDIT sheet (PR 8)', () => {
     expect(joined).toContain('transcript: 1 structures');
   });
 
+  it('names vision-fallback pages and why on the AUDIT sheet (PR #41 / PR24)', async () => {
+    const { wb } = await build(facts({
+      structures: [st('MH 1')],
+      diagnostics: {
+        version: 1, mode: 'hybrid', durationMs: 1000,
+        locator: {
+          ran: true, rawPicks: [1, 2, 5], unionAdded: [],
+          finalPages: [1, 2, 5], tileAllFallback: false,
+        },
+        pages: [
+          { page: 1, route: 'text', textChars: 500, textYield: 6, tilesPlanned: null, tilesRendered: null },
+          { page: 2, route: 'vision', textChars: 300, textYield: 0, tilesPlanned: 12, tilesRendered: 12, zeroYieldFallback: true },
+          { page: 5, route: 'vision', textChars: 900, textYield: 5, tilesPlanned: 20, tilesRendered: 20, zeroRunYieldFallback: true },
+        ],
+        tiles: { planned: 32, rendered: 32, uploaded: 32, transcribed: 6, missingAfterRetry: 0, degenerateDiscarded: 0, blocks: 10 },
+        assembly: {
+          sources: [{ path: 'transcript', counts: { structures: 1, sewers: 1, watermain: 0, catchbasins: 0 } }],
+          final: { structures: 1, sewers: 1, watermain: 0, catchbasins: 0 },
+        },
+      },
+    }));
+    const audit = wb.getWorksheet('AUDIT');
+    const texts: string[] = [];
+    audit!.eachRow({ includeEmpty: false }, (r) => r.eachCell({ includeEmpty: false }, (c) => texts.push(String(c.value))));
+    const joined = texts.join('\n');
+    expect(joined).toContain('Vision fallback:');
+    expect(joined).toContain('p2 yielded no entities from the text layer');
+    expect(joined).toContain('p5 yielded structures but no pipe runs from the text layer (text+vision)');
+  });
+
   it('says so when nothing was withheld', async () => {
     const { ex } = await build(facts({}));
     ex.withheld = [];

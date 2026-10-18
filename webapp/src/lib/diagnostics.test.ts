@@ -7,7 +7,7 @@
  * routes to vision.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { assembleHybridTakeoff, unionLocatedPages } from './extraction';
+import { assembleHybridTakeoff, unionLocatedPages, applyImageOnlyRecheck } from './extraction';
 import {
   buildExtractionDiagnostics,
   deriveRenderedPerPage,
@@ -132,6 +132,34 @@ describe('diagnostics on a hybrid run fixture', () => {
       { page: 3, reason: 'text-yield' },
     ]);
     expect(record.locator.finalPages).toEqual([1, 2, 3]);
+  });
+
+  it('records image-only locator additions with their admission reason (PR26)', () => {
+    const applied = applyImageOnlyRecheck([1], [4], new Set([4]));
+    expect(applied.added).toEqual([{ page: 4, reason: 'image-only-locator' }]);
+
+    const record = buildExtractionDiagnostics({
+      mode: 'hybrid',
+      durationMs: 1,
+      locator: {
+        ran: true,
+        rawPicks: [1],
+        unionAdded: applied.added.map((a) => ({ page: a.page, reason: a.reason })),
+        finalPages: applied.pages,
+        tileAllFallback: false,
+      },
+      pages: [],
+      tiles: { planned: null, rendered: null, uploaded: null, transcribed: null, missingAfterRetry: null, degenerateDiscarded: null, blocks: null },
+      sources: [],
+      finalFacts: {
+        projectName: 'T', jobNumber: '', date: '', structures: [], catchbasins: [],
+        sewers: [], watermain: [], watermainSpecials: [], watermainValves: [],
+        confidence: 0, warnings: [],
+      },
+    });
+
+    expect(record.locator.unionAdded).toEqual([{ page: 4, reason: 'image-only-locator' }]);
+    expect(record.locator.finalPages).toEqual([1, 4]);
   });
 
   it('carries the zero-run-yield fallback flag through the record verbatim (PR24)', () => {

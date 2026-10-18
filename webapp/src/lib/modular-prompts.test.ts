@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   getPageLocatorPrompt,
+  getImageOnlyRecheckPrompt,
   getSinglePassPrompt,
   getWatermainExtractionPrompt,
   getTranscriptionPrompt,
@@ -12,6 +13,16 @@ describe('modular-prompts', () => {
       const prompt = getPageLocatorPrompt(5);
       expect(prompt).toContain('5-page civil engineering drawing set');
       expect(prompt).toContain('SERVICING TAKEOFF DATA');
+    });
+  });
+
+  describe('getImageOnlyRecheckPrompt', () => {
+    it('frames a per-page second look with the servicing include/exclude classes', () => {
+      const prompt = getImageOnlyRecheckPrompt(2);
+      expect(prompt).toContain('re-checking 2 page(s)');
+      expect(prompt).toContain('CARRIES SERVICING TAKEOFF DATA');
+      expect(prompt).toContain('erosion / siltation / sediment control');
+      expect(prompt).toContain('relevantPages');
     });
   });
 

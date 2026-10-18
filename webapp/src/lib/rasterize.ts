@@ -132,7 +132,7 @@ export async function renderPdfPagesToTiles(
  */
 export async function renderPageThumbnails(
   pdfBuffer: Buffer,
-  opts: { maxPx?: number } = {}
+  opts: { maxPx?: number; pages?: number[] } = {}
 ): Promise<{ page: number; img: Buffer }[]> {
   const { maxPx = 1500 } = opts;
   const lib = await getPdfjs();
@@ -147,7 +147,10 @@ export async function renderPageThumbnails(
 
   const out: { page: number; img: Buffer }[] = [];
   try {
-    for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+    const wanted = opts.pages && opts.pages.length > 0
+      ? opts.pages.filter((p) => p >= 1 && p <= doc.numPages)
+      : Array.from({ length: doc.numPages }, (_, i) => i + 1);
+    for (const pageNum of wanted) {
       const page = await doc.getPage(pageNum);
       try {
         const base = page.getViewport({ scale: 1 });
@@ -161,6 +164,75 @@ export async function renderPageThumbnails(
         ctx.fillRect(0, 0, W, H);
         await page.render({ canvasContext: ctx as unknown as object, viewport, canvasFactory }).promise;
         out.push({ page: pageNum, img: await canvas.encode('jpeg', THUMB_JPEG_QUALITY) });
+      } finally {
+        page.cleanup?.();
+      }
+    }
+  } finally {
+    await doc.destroy?.();
+  }
+  return out;
+}
+
+/** Drawn-content census for one page, from its pdf.js operator list. */
+export interface DrawnContentStat {
+  /** Path construction/paint operators (constructPath, stroke, fill, …):
+   *  a vector CAD sheet carries tens of thousands; a text document a few
+   *  hundred at most; a pure scan ~zero (its content is one image). */
+  pathOps: number;
+  /** Painted raster images (photo bases, scanned sheets, logos). */
+  imageOps: number;
+}
+
+/**
+ * Measure how much DRAWN content the given pages carry, without rendering.
+ * Used by the locator's image-only pass (extraction.ts): pages the text
+ * layer cannot read at all are otherwise indistinguishable from blank or
+ * prose pages; a dense vector operator list (or, for scans, a painted
+ * full-page image behind an empty text layer) is the positive evidence
+ * that a page holds a drawing rather than a document. Pages outside the
+ * document range are skipped; a page whose operator list fails to load is
+ * simply absent from the result (no evidence → not a candidate).
+ */
+export async function measureDrawnContent(
+  pdfBuffer: Buffer,
+  pages: number[],
+): Promise<Map<number, DrawnContentStat>> {
+  const out = new Map<number, DrawnContentStat>();
+  if (pages.length === 0) return out;
+  const lib = await getPdfjs();
+  const OPS = lib.OPS;
+  const canvasFactory = new NodeCanvasFactory();
+  const data = new Uint8Array(pdfBuffer);
+  const doc = await lib.getDocument({
+    data,
+    isEvalSupported: false,
+    useSystemFonts: true,
+    canvasFactory,
+  }).promise;
+  try {
+    for (const pageNum of pages) {
+      if (pageNum < 1 || pageNum > doc.numPages) continue;
+      const page = await doc.getPage(pageNum);
+      try {
+        const ol = await page.getOperatorList();
+        let pathOps = 0;
+        let imageOps = 0;
+        for (const fn of ol.fnArray) {
+          if (
+            fn === OPS.constructPath || fn === OPS.stroke || fn === OPS.fill ||
+            fn === OPS.eoFill || fn === OPS.fillStroke || fn === OPS.eoFillStroke ||
+            fn === OPS.closeStroke || fn === OPS.closeFillStroke ||
+            fn === OPS.closeEOFillStroke || fn === OPS.endPath
+          ) pathOps++;
+          else if (
+            fn === OPS.paintImageXObject || fn === OPS.paintInlineImageXObject ||
+            fn === OPS.paintImageMaskXObject
+          ) imageOps++;
+        }
+        out.set(pageNum, { pathOps, imageOps });
+      } catch {
+        // No operator list → no drawn-content evidence for this page.
       } finally {
         page.cleanup?.();
       }

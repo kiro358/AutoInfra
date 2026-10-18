@@ -14,8 +14,8 @@ import { buildFewShotPromptSection } from './few-shot-examples';
 import { setGlobalDispatcher, Agent, ProxyAgent } from 'undici';
 import crypto from 'crypto';
 import { AsyncLocalStorage } from 'async_hooks';
-import { getSinglePassPrompt, getPageLocatorPrompt, getTranscriptionPrompt, getWatermainExtractionPrompt } from './modular-prompts';
-import { renderTilesFlat, renderPageThumbnails, IMAGE_MIME } from './rasterize';
+import { getSinglePassPrompt, getPageLocatorPrompt, getImageOnlyRecheckPrompt, getTranscriptionPrompt, getWatermainExtractionPrompt } from './modular-prompts';
+import { renderTilesFlat, renderPageThumbnails, measureDrawnContent, IMAGE_MIME, type DrawnContentStat } from './rasterize';
 import { normalizeLabel, runSignature } from './compare-facts';
 import { assembleTranscriptTakeoff } from './transcript-takeoff';
 import { mergeTakeoffs, dropSpecNoteStructures, clampImplausibleCatchbasinGroups, reconcileTakeoff } from './reconcile';
@@ -676,8 +676,10 @@ export interface LocatedPageAddition {
   page: number;
   /** 'text-yield': the text assembler reads ≥2 entities from the page.
    *  'annotation-form': callout-shaped text in the layer but ZERO yield —
-   *  the PR16-fallback class (real annotations, grammar-blind page). */
-  reason: 'annotation-form' | 'text-yield';
+   *  the PR16-fallback class (real annotations, grammar-blind page).
+   *  'image-only-locator': no usable text layer at all; admitted by the
+   *  PR26 image-only pass (drawn-content evidence + visual re-check). */
+  reason: 'annotation-form' | 'text-yield' | 'image-only-locator';
 }
 
 export interface LocatedUnion {
@@ -735,6 +737,143 @@ export function unionLocatedPages(
   }
   added.sort((a, b) => a.page - b.page);
   return { pages: [...located].sort((a, b) => a - b), added };
+}
+
+// --- Image-only locator pass (PR26) -----------------------------------------
+// The union above proves bearing pages from the TEXT layer. A page with no
+// usable text layer can offer no such proof, so a partial locator miss on
+// one was final: in the 26-project census, 43 pages sit unlocated after
+// locator ∪ union, and the bearing ones among them (a scanned plan &
+// profile sheet at Gerrard; the C101A/B servicing sheets at Panattoni)
+// carry takeoff content no downstream stage can ever see. The pass below
+// gives those pages a second, bounded route in:
+//
+//   1. Candidate gate (deterministic, $0): unlocated, not texty, no
+//      annotation form, solo text yield exactly 0 — the union-refused
+//      class. A yield-1 page stays refused (PR17's measured lesson: a
+//      lone fragment is not evidence of a bearing page).
+//   2. Drawn-content gate (deterministic, $0): the page must provably
+//      hold a DRAWING — ≥1000 vector path operators (a CAD sheet), or a
+//      painted raster image behind a literally empty text layer (a pure
+//      scan, the shape of the located sibling pages at Gerrard). On the
+//      census this refuses every prose/document page (appendix text,
+//      covers, tender forms: ≤950 path ops, text present) while keeping
+//      every dense drawing. It cannot separate servicing plans from
+//      ESC/notes/details sheets — they are the same drawn species — so:
+//   3. Visual re-check (one locator call, thumbnails of the survivors
+//      only): the model judges each survivor on its own content with the
+//      locator's include/exclude classes. Only its picks are admitted,
+//      capped per job. Every admission is logged with reason
+//      'image-only-locator' and lands in the diagnostics record.
+//
+// Census calibration (pr26_evidence.md): 36 gate-1 candidates corpus-wide,
+// 23 pass gate 2, no project sends more than 3 pages to the re-check, and
+// the worst-case admission cost is 4 pages ≈ ≤80 tiles per job. The
+// locator's own located sets routinely include ESC/grading sheets, so a
+// re-check false positive costs the same tiles the first pass already
+// spends on such pages elsewhere — it cannot invent a new cost class.
+export const MAX_IMAGE_ONLY_ADMISSIONS = 4;
+const MAX_IMAGE_ONLY_RECHECK_PAGES = 8;
+const MIN_DRAWN_PATH_OPS = 1000;
+
+/**
+ * Pure: the ranked re-check shortlist for the image-only pass (gates 1+2
+ * above). Ranking is by drawn-evidence strength (path operators; a pure
+ * scan ranks just above the vector threshold — its single image IS the
+ * drawing). At most MAX_IMAGE_ONLY_RECHECK_PAGES pages are returned.
+ * `drawn` carries measureDrawnContent's per-page operator census; a page
+ * with no entry has no drawn-content evidence and is refused.
+ */
+export function selectImageOnlyCandidates(
+  pageTexts: PageText[],
+  locatedPages: number[],
+  drawn: Map<number, DrawnContentStat>,
+  projectName: string,
+): number[] {
+  const located = new Set(locatedPages);
+  const ranked: { page: number; strength: number }[] = [];
+  for (const pt of pageTexts) {
+    if (located.has(pt.page)) continue;
+    if (isTextyPage(pt) || hasAnnotationForm(pt)) continue;
+    if (countEntities(assembleTextTakeoff([pt], projectName)) !== 0) continue;
+    const d = drawn.get(pt.page);
+    if (!d) continue;
+    const pureScan = pt.items.length === 0 && d.imageOps >= 1;
+    if (d.pathOps < MIN_DRAWN_PATH_OPS && !pureScan) continue;
+    ranked.push({ page: pt.page, strength: d.pathOps + (pureScan ? MIN_DRAWN_PATH_OPS : 0) });
+  }
+  ranked.sort((a, b) => b.strength - a.strength || a.page - b.page);
+  return ranked.slice(0, MAX_IMAGE_ONLY_RECHECK_PAGES).map((r) => r.page);
+}
+
+/**
+ * Pure: admit the re-check's picks from the candidate shortlist, capped
+ * at MAX_IMAGE_ONLY_ADMISSIONS per job (strongest evidence first — the
+ * shortlist arrives ranked). Never removes a located page; picks outside
+ * the shortlist are ignored.
+ */
+export function applyImageOnlyRecheck(
+  locatedPages: number[],
+  candidates: number[],
+  bearingPages: ReadonlySet<number>,
+): LocatedUnion {
+  const located = new Set(locatedPages);
+  const added: LocatedPageAddition[] = [];
+  for (const page of candidates) {
+    if (added.length >= MAX_IMAGE_ONLY_ADMISSIONS) break;
+    if (!bearingPages.has(page) || located.has(page)) continue;
+    added.push({ page, reason: 'image-only-locator' });
+    located.add(page);
+  }
+  added.sort((a, b) => a.page - b.page);
+  return { pages: [...located].sort((a, b) => a - b), added };
+}
+
+/**
+ * Visual re-check for the image-only pass: render thumbnails of ONLY the
+ * shortlisted pages and ask the model which of them carry servicing
+ * takeoff data. Mirrors locateRelevantPages (same call shape, its own
+ * prompt and eval-cache key). Returns the picked subset of `pages`.
+ */
+async function recheckImageOnlyPages(
+  ai: GoogleGenAI,
+  pdfBuffer: Buffer,
+  pages: number[],
+  sourceHash: string,
+  projectName: string,
+  cost?: CostAcc
+): Promise<number[]> {
+  const thumbs = await renderPageThumbnails(pdfBuffer, { maxPx: 1500, pages });
+  if (thumbs.length === 0) return [];
+
+  const prompt = getImageOnlyRecheckPrompt(thumbs.length);
+  const parts: any[] = [{ text: prompt }];
+  for (const t of thumbs) {
+    parts.push({ text: `Page ${t.page}:` });
+    parts.push({ inlineData: { mimeType: IMAGE_MIME, data: t.img.toString('base64') } });
+  }
+
+  const text = await getCachedOrCallLLM(`${sourceHash}_imageonlylocator`, prompt, 'locator', async () => {
+    const response = await callWithRetry(async () => ai.models.generateContent({
+      model: EXTRACTION_MODEL,
+      contents: [{ role: 'user', parts }],
+      config: { temperature: 0, responseMimeType: 'application/json' },
+    }));
+    if (cost) addUsage(cost, (response as any).usageMetadata);
+    return response.text || '{}';
+  }, projectName);
+
+  const wanted = new Set(pages);
+  try {
+    const parsed = JSON.parse(text);
+    const picked: unknown = parsed.relevantPages;
+    if (!Array.isArray(picked)) return [];
+    return Array.from(new Set(
+      picked.map((n) => Number(n)).filter((n) => Number.isInteger(n) && wanted.has(n))
+    )).sort((a, b) => a - b);
+  } catch {
+    return [];
+  }
 }
 
 /** Pure: turn recorded failures into warnings, or an error when nothing survived. */
@@ -898,6 +1037,44 @@ async function extractFromPDFInner(
           }
         } catch (e: any) {
           console.warn(`      [extraction.ts] Locator union skipped (${e.message}); keeping the locator's set.`);
+        }
+      }
+    }
+
+    // Image-only locator pass (PR26): pages with no usable text layer can
+    // offer the union no proof, so a partial locator miss on one was
+    // final. Under the same conditions as the union (a proper-subset
+    // located set), the drawn-content gates select the pages that provably
+    // hold drawings and one visual re-check admits the ones carrying
+    // servicing content. Disable with ENABLE_IMAGE_ONLY_LOCATOR=false.
+    if (locatorIndex && process.env.ENABLE_IMAGE_ONLY_LOCATOR !== 'false') {
+      const locatedSet = new Set([
+        ...locatorIndex.manholePages, ...locatorIndex.sewerPages, ...locatorIndex.watermainPages,
+      ]);
+      if (locatedSet.size > 0 && locatedSet.size < totalPages) {
+        try {
+          const pageTexts = unionPageTexts ?? await extractPageText(pdfBuffer);
+          const unlocatedPages = pageTexts.filter((pt) => !locatedSet.has(pt.page)).map((pt) => pt.page);
+          const drawn = await measureDrawnContent(pdfBuffer, unlocatedPages);
+          const candidates = selectImageOnlyCandidates(pageTexts, [...locatedSet], drawn, projectName);
+          if (candidates.length > 0) {
+            const bearing = await recheckImageOnlyPages(ai, pdfBuffer, candidates, sourceHash, projectName, cost);
+            const applied = applyImageOnlyRecheck([...locatedSet], candidates, new Set(bearing));
+            if (applied.added.length > 0) {
+              locatorIndex = { manholePages: applied.pages, sewerPages: applied.pages, watermainPages: applied.pages };
+              unionAdded = [...unionAdded, ...applied.added];
+              console.log(
+                `      [extraction.ts] Image-only locator: admitted ${applied.added.length} drawn page(s) ` +
+                `with no usable text layer: ${applied.added.map((a) => `p${a.page}`).join(', ')}.`
+              );
+            } else {
+              console.log(
+                `      [extraction.ts] Image-only locator: re-checked ${candidates.length} drawn page(s), none carry servicing content.`
+              );
+            }
+          }
+        } catch (e: any) {
+          console.warn(`      [extraction.ts] Image-only locator skipped (${e.message}); keeping the located set.`);
         }
       }
     }

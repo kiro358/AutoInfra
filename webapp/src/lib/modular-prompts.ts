@@ -28,6 +28,31 @@ Return ONLY JSON: { "relevantPages": [number, ...] }`;
 }
 
 /**
+ * Image-only locator re-check (PR26). The pages supplied here were NOT
+ * selected by the first-pass locator and their text layer is unusable, so
+ * this visual check is their only route into the takeoff. The set is
+ * small and pre-filtered to pages that provably carry drawn content, so
+ * each page is judged on its own: the question is binary per page, not
+ * "pick the best pages of a large set".
+ */
+export function getImageOnlyRecheckPrompt(pageCount: number): string {
+  return `You are re-checking ${pageCount} page(s) from a civil engineering drawing set. Each image is ONE page, labelled "Page N:" in the text immediately before it.
+
+These pages were NOT picked by a first-pass index of the set, and their text layer is unreadable, so a page you reject here is lost to the takeoff entirely. Judge EACH page on its own content, not relative to the others.
+
+A page CARRIES SERVICING TAKEOFF DATA if it shows any of:
+- A site SERVICING plan with PROPOSED storm or sanitary sewers, manholes, catchbasins, or watermain (pipe sizes, lengths, slopes, inverts, structure labels) — including a plan drawn over a photo / aerial base.
+- A PROFILE sheet for those pipes.
+- A pipe / manhole / catchbasin SCHEDULE table.
+
+A page does NOT carry takeoff data if it is only: erosion / siltation / sediment control, an existing-conditions or demolition plan, a grading-only plan, standard details (OPSD etc.), a cover or title sheet, general notes / specifications, a legend-only sheet, geotechnical, landscape, architectural, structural, electrical, mechanical, or a bid / tender form.
+
+Be INCLUSIVE within servicing: if a page shows ANY proposed pipe or structure takeoff data, include it. It is better to include a borderline servicing page than to drop one.
+
+Return ONLY JSON: { "relevantPages": [number, ...] }`;
+}
+
+/**
  * Single-pass extraction prompt — asks for ALL facts (structures, catchbasins,
  * sewers, watermain) in one structured call over high-DPI image tiles of the
  * located pages. Schedule-first. Output schema matches parseFacts().

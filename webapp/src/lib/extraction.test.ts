@@ -24,6 +24,9 @@ import {
   assembleHybridTakeoff,
   countEntities,
   unionLocatedPages,
+  selectImageOnlyCandidates,
+  applyImageOnlyRecheck,
+  MAX_IMAGE_ONLY_ADMISSIONS,
 } from './extraction';
 import { assembleTextTakeoff } from './text-takeoff';
 import { isTextyPage, hasAnnotationForm, PageText } from './pdf-text';
@@ -989,6 +992,108 @@ describe('unionLocatedPages — locator union with text-layer-bearing pages', ()
     // A located page stays located even when it carries no evidence itself.
     const kept = unionLocatedPages([4], [prosePage, annPage], 'T');
     expect(kept.pages).toEqual([2, 4]);
+  });
+});
+
+describe('image-only locator pass — selectImageOnlyCandidates / applyImageOnlyRecheck', () => {
+  const ptPage = (page: number, texts: string[]): PageText => ({
+    page, width: 2592, height: 1728,
+    items: texts.map((text, i) => ({ text, x: 100, y: 900 - i * 20, width: 120, height: 12 })),
+  });
+  const drawn = (entries: [number, { pathOps: number; imageOps: number }][]) => new Map(entries);
+
+  // Pure scan: literally no text layer, one painted image (the Gerrard
+  // plan & profile shape — its located siblings have the same signature).
+  const scanPage = ptPage(2, []);
+  // Dense vector CAD whose text layer is fragmented prose: no annotation
+  // form, zero yield (the Panattoni C101 shape).
+  const vectorPage = ptPage(3, ['CIVIL DRAWING', 'SCALE 1:500', 'SHEET C-101']);
+  // Prose document page: text present, almost no drawn content (the
+  // appendix/tender class the drawn gate exists to refuse).
+  const prosePage = ptPage(4, ['GENERAL NOTES', 'THE CONTRACTOR SHALL VERIFY ALL DIMENSIONS']);
+  // Blank separator: no text, no drawing, no image.
+  const blankPage = ptPage(5, []);
+  // Annotation-form page: the union's class, not this pass's — even drawn.
+  const annPage = ptPage(6, ['250mmØ PVC STM', '375mmØ PVC STM', 'PVC PIPE ALONG ALIGNMENT']);
+  // Yield-1 page with no annotation form: a lone fragment is not proof
+  // of a bearing page (PR17's lesson), however dense the drawing is.
+  const fragmentPage = ptPage(7, ['HEADWALL']);
+  // Genuinely texty page: many callouts — the text path's class.
+  const textyPage = ptPage(8, Array.from({ length: 6 }, () => '250mmØ PVC STM'));
+  const locatedPage = ptPage(1, ['TITLE BLOCK']);
+
+  const stats = drawn([
+    [1, { pathOps: 10, imageOps: 0 }],
+    [2, { pathOps: 1, imageOps: 1 }],
+    [3, { pathOps: 50000, imageOps: 2 }],
+    [4, { pathOps: 200, imageOps: 2 }],
+    [5, { pathOps: 0, imageOps: 0 }],
+    [6, { pathOps: 9000, imageOps: 0 }],
+    [7, { pathOps: 9000, imageOps: 0 }],
+    [8, { pathOps: 9000, imageOps: 0 }],
+  ]);
+  const allPages = [locatedPage, scanPage, vectorPage, prosePage, blankPage, annPage, fragmentPage, textyPage];
+
+  it('fixtures have the evidence properties the tests rely on', () => {
+    for (const p of [scanPage, vectorPage, prosePage, blankPage]) {
+      expect(hasAnnotationForm(p)).toBe(false);
+      expect(countEntities(assembleTextTakeoff([p], 'T'))).toBe(0);
+    }
+    expect(isTextyPage(scanPage)).toBe(false);
+    expect(isTextyPage(vectorPage)).toBe(false);
+    expect(hasAnnotationForm(annPage)).toBe(true);
+    expect(countEntities(assembleTextTakeoff([fragmentPage], 'T'))).toBe(1);
+    expect(hasAnnotationForm(fragmentPage)).toBe(false);
+    expect(isTextyPage(textyPage)).toBe(true);
+  });
+
+  it('shortlists the pure scan and the dense vector sheet, strongest evidence first', () => {
+    const out = selectImageOnlyCandidates(allPages, [1], stats, 'T');
+    expect(out).toEqual([3, 2]);
+  });
+
+  it('refuses prose, blank, annotation-form, yield-1, texty, and located pages', () => {
+    const out = selectImageOnlyCandidates(allPages, [1], stats, 'T');
+    for (const refused of [1, 4, 5, 6, 7, 8]) expect(out).not.toContain(refused);
+  });
+
+  it('refuses a page with no drawn-content measurement', () => {
+    const out = selectImageOnlyCandidates([vectorPage], [], new Map(), 'T');
+    expect(out).toEqual([]);
+  });
+
+  it('caps the re-check shortlist at 8, keeping the densest pages', () => {
+    const pages = Array.from({ length: 10 }, (_, i) => ptPage(10 + i, ['CIVIL DRAWING']));
+    const many = drawn(pages.map((p, i) => [p.page, { pathOps: 2000 * (i + 1), imageOps: 0 }] as [number, { pathOps: number; imageOps: number }]));
+    const out = selectImageOnlyCandidates(pages, [], many, 'T');
+    expect(out.length).toBe(8);
+    expect(out[0]).toBe(19); // 20000 path ops — densest first
+    expect(out).not.toContain(10);
+    expect(out).not.toContain(11);
+  });
+
+  it('admits only re-check picks inside the shortlist, with the image-only reason', () => {
+    const out = applyImageOnlyRecheck([1], [3, 2], new Set([2]));
+    expect(out.pages).toEqual([1, 2]);
+    expect(out.added).toEqual([{ page: 2, reason: 'image-only-locator' }]);
+    // A pick outside the shortlist is ignored; located pages are kept.
+    const stray = applyImageOnlyRecheck([1], [3, 2], new Set([9]));
+    expect(stray.pages).toEqual([1]);
+    expect(stray.added).toEqual([]);
+  });
+
+  it('caps admissions per job at MAX_IMAGE_ONLY_ADMISSIONS, strongest first', () => {
+    const candidates = [10, 11, 12, 13, 14, 15];
+    const out = applyImageOnlyRecheck([1], candidates, new Set(candidates));
+    expect(out.added.length).toBe(MAX_IMAGE_ONLY_ADMISSIONS);
+    expect(out.added.map((a) => a.page)).toEqual([10, 11, 12, 13]);
+    expect(out.pages).toEqual([1, 10, 11, 12, 13]);
+  });
+
+  it('no re-check picks → located set unchanged', () => {
+    const out = applyImageOnlyRecheck([1, 3], [2], new Set());
+    expect(out.pages).toEqual([1, 3]);
+    expect(out.added).toEqual([]);
   });
 });
 

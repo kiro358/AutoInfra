@@ -35,9 +35,14 @@
 // which keeps ML processing in the US multi-region; `global` is one env
 // var away). Locations are PER-ROLE so a future model can move
 // independently of the others: e.g. TRANSCRIPTION_LOCATION=global moves
-// only transcription. Location precedence mirrors model precedence:
-//   <ROLE>_LOCATION  >  GCP_LOCATION  >  built-in role default ('us').
+// only transcription. Location precedence per role:
+//   <ROLE>_LOCATION  >  built-in role default ('us').
 // (`single` shares TRANSCRIPTION_LOCATION, like it shares TRANSCRIPTION_MODEL.)
+// PR35: GCP_LOCATION is NOT a tier in this chain. PR34 had it between the
+// role var and the default, and prod's Cloud Run service carries a legacy
+// GCP_LOCATION=us-central1 (deploy.yml doesn't set it; it persists from
+// service creation) — on the 2026-10-19 PR34 smoke every call resolved to
+// us-central1 and 404'd. The var is no longer consulted for role locations.
 //
 // WHICH MODEL (PR34): Kiro directed "move to the latest" (2026-10-19),
 // superseding the availability memo's gemini-3.5-flash-lite primary
@@ -106,7 +111,8 @@ export function resolveRoleModels(env: Record<string, string | undefined> = proc
 // serves it, and the 3.x family is not served from us-central1 at all — so
 // the location is part of a role's assignment, resolved with the same
 // env-injectable pattern as the model. Precedence per role:
-//   <ROLE>_LOCATION  >  GCP_LOCATION  >  built-in role default ('us').
+//   <ROLE>_LOCATION  >  built-in role default ('us').
+// (PR35: no GCP_LOCATION tier — see the header note.)
 // The SDK accepts 'global' and the 'us'/'eu' multi-regions as plain
 // location strings (verified in the pinned @google/genai 2.3.0 source);
 // tile parts are GCS URIs, which any Vertex location can read, so moving a
@@ -135,7 +141,6 @@ export const ROLE_DEFAULT_LOCATION: Record<ModelRole, string> = {
 export function resolveRoleLocation(role: ModelRole, env: Record<string, string | undefined> = process.env): string {
   const roleVar = env[ROLE_LOCATION_ENV_VAR[role]];
   if (roleVar) return roleVar;
-  if (env.GCP_LOCATION) return env.GCP_LOCATION;
   return ROLE_DEFAULT_LOCATION[role];
 }
 

@@ -1,5 +1,4 @@
 import { describe, it, expect, vi } from 'vitest';
-import { ThinkingLevel } from '@google/genai';
 import { normalizeSlope, snapToPipeDiameter, snapToMHSize } from './geometry';
 import {
   repairTruncatedJson,
@@ -711,19 +710,19 @@ describe('PR30 role-based model assignment — module wiring (clean env)', () =>
       locator: 'gemini-2.5-flash-lite',
       recheck: 'gemini-2.5-flash-lite',
       verify: 'gemini-2.5-flash-lite',
-      transcription: 'gemini-3.1-flash-lite',
-      single: 'gemini-3.1-flash-lite',
+      transcription: 'gemini-2.5-flash',
+      single: 'gemini-2.5-flash',
       watermain: 'gemini-2.5-flash',
     });
   });
 
-  it('pins thinking OFF for locator/recheck/verify and maps transcription for its 3.x model', () => {
+  it('pins thinking OFF for locator/recheck/verify and passes the budget through for transcription (PR31: 2.5-flash)', () => {
     expect(ROLE_THINKING.locator).toEqual({ thinkingBudget: 0 });
     expect(ROLE_THINKING.recheck).toEqual({ thinkingBudget: 0 });
     expect(ROLE_THINKING.verify).toEqual({ thinkingBudget: 0 });
-    // Code-default THINKING_BUDGET=8192 → MEDIUM on gemini-3.1-flash-lite.
-    expect(ROLE_THINKING.transcription).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
-    expect(ROLE_THINKING.single).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
+    // PR31: transcription is back on gemini-2.5-flash → numeric budget passthrough.
+    expect(ROLE_THINKING.transcription).toEqual({ thinkingBudget: 8192 });
+    expect(ROLE_THINKING.single).toEqual({ thinkingBudget: 8192 });
     expect(ROLE_THINKING.watermain).toEqual({ thinkingBudget: 8192 });
   });
 });

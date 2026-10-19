@@ -24,9 +24,9 @@ describe('resolveRoleModel — no env (built-in Option B defaults)', () => {
     expect(resolveRoleModel('verify', {})).toBe('gemini-2.5-flash-lite');
   });
 
-  it('assigns gemini-3.1-flash-lite to transcription and single-pass', () => {
-    expect(resolveRoleModel('transcription', {})).toBe('gemini-3.1-flash-lite');
-    expect(resolveRoleModel('single', {})).toBe('gemini-3.1-flash-lite');
+  it('assigns gemini-2.5-flash to transcription and single-pass (PR31: 3.1-flash-lite 404s on Vertex)', () => {
+    expect(resolveRoleModel('transcription', {})).toBe('gemini-2.5-flash');
+    expect(resolveRoleModel('single', {})).toBe('gemini-2.5-flash');
   });
 
   it('keeps the watermain second pass on gemini-2.5-flash', () => {
@@ -118,15 +118,18 @@ describe('thinkingConfigFor — Gemini 3.x maps budgets to levels, never both fi
 });
 
 describe('roleThinkingConfig — per-role thinking under the three env conditions', () => {
-  it('(a) no env: locator/recheck/verify think 0 on flash-lite; transcription maps THINKING_BUDGET; watermain keeps its budget', () => {
+  it('(a) no env: locator/recheck/verify think 0 on flash-lite; transcription passes THINKING_BUDGET through (PR31: 2.5-flash); watermain keeps its budget', () => {
     const models = resolveRoleModels({});
     // Prod pins THINKING_BUDGET=1024; code default is 8192. Both are pinned here.
     expect(roleThinkingConfig('locator', models.locator, 1024)).toEqual({ thinkingBudget: 0 });
     expect(roleThinkingConfig('recheck', models.recheck, 1024)).toEqual({ thinkingBudget: 0 });
     expect(roleThinkingConfig('verify', models.verify, 1024)).toEqual({ thinkingBudget: 0 });
-    expect(roleThinkingConfig('transcription', models.transcription, 1024)).toEqual({ thinkingLevel: ThinkingLevel.LOW });
-    expect(roleThinkingConfig('transcription', models.transcription, 8192)).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
-    expect(roleThinkingConfig('single', models.single, 1024)).toEqual({ thinkingLevel: ThinkingLevel.LOW });
+    // PR31: transcription/single default to gemini-2.5-flash → numeric passthrough.
+    // (The 3.x level mapping itself stays pinned in the thinkingConfigFor block
+    // above and in (c), for whenever TRANSCRIPTION_MODEL selects a 3.x model.)
+    expect(roleThinkingConfig('transcription', models.transcription, 1024)).toEqual({ thinkingBudget: 1024 });
+    expect(roleThinkingConfig('transcription', models.transcription, 8192)).toEqual({ thinkingBudget: 8192 });
+    expect(roleThinkingConfig('single', models.single, 1024)).toEqual({ thinkingBudget: 1024 });
     expect(roleThinkingConfig('watermain', models.watermain, 1024)).toEqual({ thinkingBudget: 1024 });
   });
 

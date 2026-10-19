@@ -82,7 +82,7 @@ export const ROLE_MODELS = resolveRoleModels();
 // Per-role Vertex locations (PR34 — see model-config.ts). The 3.x models
 // are not served from us-central1, so each role's client is built for the
 // location its model is served from; precedence per role:
-//   <ROLE>_LOCATION  >  GCP_LOCATION  >  'us'.
+//   <ROLE>_LOCATION  >  'us'  (GCP_LOCATION is NOT consulted — PR35).
 export const ROLE_LOCATIONS = resolveRoleLocations();
 
 // Job-level fallback model (PR34): when a role family's configured model

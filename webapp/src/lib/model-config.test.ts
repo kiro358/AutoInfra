@@ -161,27 +161,31 @@ describe('roleThinkingConfig — per-role thinking under the three env condition
   });
 });
 
-// PR34 — per-role Vertex locations. Precedence per role:
-//   <ROLE>_LOCATION  >  GCP_LOCATION  >  built-in default ('us').
+// PR34 — per-role Vertex locations; PR35 — precedence per role:
+//   <ROLE>_LOCATION  >  built-in default ('us').
+// GCP_LOCATION is deliberately NOT consulted (PR35 — regression pinned below).
 // The 3.x models are served only from global/us/eu, never us-central1 —
 // the location is part of a role's assignment, like its model.
-describe('resolveRoleLocation — PR34 per-role locations', () => {
+describe('resolveRoleLocation — PR34 per-role locations, PR35 precedence fix', () => {
   it("defaults EVERY role to 'us' (where the 3.x models are served)", () => {
     for (const role of ROLES) expect(resolveRoleLocation(role, {})).toBe('us');
     expect(resolveRoleLocations({})).toEqual(ROLE_DEFAULT_LOCATION);
   });
 
-  it('GCP_LOCATION beats the built-in default for every role', () => {
-    for (const role of ROLES) expect(resolveRoleLocation(role, { GCP_LOCATION: 'global' })).toBe('global');
+  it('PR35 regression: GCP_LOCATION is ignored — the legacy prod GCP_LOCATION=us-central1 must not override the us defaults', () => {
+    for (const role of ROLES) expect(resolveRoleLocation(role, { GCP_LOCATION: 'us-central1' })).toBe('us');
+    expect(resolveRoleLocations({ GCP_LOCATION: 'us-central1' })).toEqual(ROLE_DEFAULT_LOCATION);
+    // No value of GCP_LOCATION affects any role.
+    for (const role of ROLES) expect(resolveRoleLocation(role, { GCP_LOCATION: 'global' })).toBe('us');
   });
 
-  it('a role var beats GCP_LOCATION for that role only', () => {
+  it('a role var wins for that role only, and GCP_LOCATION never leaks into the others', () => {
     const env = { GCP_LOCATION: 'us-central1', TRANSCRIPTION_LOCATION: 'global' };
     expect(resolveRoleLocation('transcription', env)).toBe('global');
     // TRANSCRIPTION_LOCATION also drives single (same family, like the model var).
     expect(resolveRoleLocation('single', env)).toBe('global');
-    expect(resolveRoleLocation('locator', env)).toBe('us-central1');
-    expect(resolveRoleLocation('watermain', env)).toBe('us-central1');
+    expect(resolveRoleLocation('locator', env)).toBe('us');
+    expect(resolveRoleLocation('watermain', env)).toBe('us');
   });
 
   it('each role var wins on its own role', () => {
@@ -193,7 +197,7 @@ describe('resolveRoleLocation — PR34 per-role locations', () => {
 
   it('an empty role var is ignored, not treated as a location', () => {
     expect(resolveRoleLocation('locator', { LOCATOR_LOCATION: '' })).toBe('us');
-    expect(resolveRoleLocation('locator', { LOCATOR_LOCATION: '', GCP_LOCATION: 'europe-west1' })).toBe('europe-west1');
+    expect(resolveRoleLocation('locator', { LOCATOR_LOCATION: '', GCP_LOCATION: 'europe-west1' })).toBe('us');
   });
 });
 

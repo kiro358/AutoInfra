@@ -51,7 +51,7 @@
  */
 import { StructureFact, TakeoffFacts } from './types';
 import { normalizeLabel } from './compare-facts';
-import { getEndpointSignature } from './reconcile';
+import { getEndpointSignature, derivedStructureDepth } from './reconcile';
 
 /** Inverts/rods are stated to 2–3 dp; below this, readings are "equal". */
 const ELEV_TOL = 0.02;
@@ -120,11 +120,16 @@ function structureWarnings(s: StructureFact): string[] {
       );
     }
     // Stated-depth cross-check (plan 4.1): where a path recorded a depth
-    // of its own, it must agree with the elevations it recorded.
-    if (s.depth != null && depth > 0 && Math.abs(s.depth - depth) > DEPTH_MATCH_TOL) {
+    // of its own, it must agree with the elevations it recorded. The
+    // expectation is the fact layer's own depth rule (reconcile's
+    // derivedStructureDepth — rim − low invert, plus the catchbasin sump
+    // for CB-family structures), so a depth recorded WITH its sump is not
+    // flagged for including it.
+    const expectedDepth = derivedStructureDepth(s);
+    if (s.depth != null && expectedDepth != null && Math.abs(s.depth - expectedDepth) > DEPTH_MATCH_TOL) {
       warnings.push(
         `Physics: structure ${name} stated depth ${f2(s.depth)}m disagrees with rim − low invert ` +
-          `(${f2(depth)}m) by ${f2(Math.abs(s.depth - depth))}m — verify which reading is right.`
+          `(${f2(expectedDepth)}m) by ${f2(Math.abs(s.depth - expectedDepth))}m — verify which reading is right.`
       );
     }
   }

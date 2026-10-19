@@ -34,8 +34,10 @@ describe('assembleTranscriptTakeoff', () => {
     const byLength = new Map(facts.sewers.map((s) => [s.length, s]));
     expect(byLength.get(25.0)).toMatchObject({ pipeDiameter: 300, slope: 1.0 });
     expect(byLength.get(45.0)).toMatchObject({ pipeDiameter: 250, slope: 0.5 });
-    expect(byLength.get(8.4)).toMatchObject({ pipeDiameter: 300, slope: 1.0 });
-    expect(byLength.get(15.5)).toMatchObject({ pipeDiameter: 450, slope: 0.3 });
+    // PR27: stated lengths are recorded in whole metres, rounding up
+    // (the estimator's convention) — 8.4m is recorded as 9, 15.5m as 16.
+    expect(byLength.get(9)).toMatchObject({ pipeDiameter: 300, slope: 1.0 });
+    expect(byLength.get(16)).toMatchObject({ pipeDiameter: 450, slope: 0.3 });
     expect(facts.warnings).toHaveLength(0);
   });
 
@@ -46,7 +48,8 @@ describe('assembleTranscriptTakeoff', () => {
       { tile: 1, blocks: [['8.4m - 300mm', 'PVC STM @ 1.00%', '@ 0.50%']] },
     ], 'T');
     expect(facts.sewers).toHaveLength(1);
-    expect(facts.sewers[0]).toMatchObject({ length: 8.4, pipeDiameter: 300, slope: 1.0 });
+    // Length 8.4m is recorded whole-metre-up as 9 (PR27).
+    expect(facts.sewers[0]).toMatchObject({ length: 9, pipeDiameter: 300, slope: 1.0 });
   });
 
   it('leaves a head untouched when no continuation completes it', () => {
@@ -76,10 +79,11 @@ describe('assembleTranscriptTakeoff', () => {
       ]]},
     ], 'T');
     expect(facts.sewers).toHaveLength(3);
+    // PR27: schedule lengths are recorded whole-metre-up (29.6 → 30, 41.6 → 42).
     expect(facts.sewers.find((s) => s.runLabel === 'ST1'))
-      .toMatchObject({ length: 29.6, pipeDiameter: 250, slope: 1.0 });
+      .toMatchObject({ length: 30, pipeDiameter: 250, slope: 1.0 });
     expect(facts.sewers.find((s) => s.runLabel === 'ST4A'))
-      .toMatchObject({ length: 41.6, pipeDiameter: 300, slope: 0.4 });
+      .toMatchObject({ length: 42, pipeDiameter: 300, slope: 0.4 });
     expect(facts.sewers.find((s) => s.runLabel === 'SA1'))
       .toMatchObject({ length: 10.0, pipeDiameter: 150, slope: 2.0 });
     expect(facts.warnings.filter((w) => w.includes('Unparseable schedule row'))).toHaveLength(0);

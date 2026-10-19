@@ -681,7 +681,9 @@ describe('cross-source dedup (schedule row vs plan callout)', () => {
     const r = reconcileTakeoff(facts);
     expect(r.sewers).toHaveLength(2);
     expect(r.sewers.map((s) => s.runLabel)).toContain('MH 1-MH 2');
-    expect(r.sewers.map((s) => s.runLabel)).toContain('44.8m-375mm SAN');
+    // PR27: the surviving dimension label is rewritten to its recorded
+    // whole-metre length (44.8m is recorded as 45).
+    expect(r.sewers.map((s) => s.runLabel)).toContain('45m-375mm SAN');
   });
 
   it('keeps two same-size pipes of genuinely different lengths', () => {
@@ -757,7 +759,8 @@ describe('stitchSewerRuns — multi-tile deduplication', () => {
     });
     const r = reconcileTakeoff(facts);
     expect(r.sewers).toHaveLength(1);
-    expect(r.sewers[0].length).toBe(29.3); // keeps max
+    // Keeps the max of the twin reads (29.3), recorded whole-metre-up: 30 (PR27).
+    expect(r.sewers[0].length).toBe(30);
   });
 
   it('preserves distinct valid runs with different endpoints', () => {
@@ -1031,7 +1034,8 @@ describe('stitchSewerRuns — bare schedule ids', () => {
     });
     const r = reconcileTakeoff(facts);
     expect(r.sewers).toHaveLength(1);
-    expect(r.sewers[0].length).toBe(29.6);
+    // Merged 29.6m reads, recorded whole-metre-up: 30 (PR27).
+    expect(r.sewers[0].length).toBe(30);
   });
 
   it('does not let a bare id swallow a distinct dimension callout of the same pipe size', () => {
@@ -1044,5 +1048,115 @@ describe('stitchSewerRuns — bare schedule ids', () => {
       ],
     });
     expect(reconcileTakeoff(facts).sewers).toHaveLength(2);
+  });
+});
+
+describe('PR27 — fact-layer field completion (derived depths, whole-metre lengths)', () => {
+  it('derives structure depth as rim − low invert and flags it derived', () => {
+    const r = reconcileTakeoff(emptyFacts({
+      structures: [struct({ description: 'MH 1', topElevation: 100.5, lowInvert: 97.25 })],
+    }));
+    expect(r.structures[0].depth).toBe(3.25);
+    const rec = (r.withheld ?? []).filter((w) => w.kind === 'derived' && w.field === 'depth');
+    expect(rec).toHaveLength(1);
+    expect(rec[0].entity).toBe('MH 1');
+    expect(rec[0].defaultApplied).toEqual({ value: 3.25, source: 'derived: topElevation − lowInvert' });
+  });
+
+  it('adds the 0.3m catchbasin sump for CB-family structures only', () => {
+    const r = reconcileTakeoff(emptyFacts({
+      structures: [
+        struct({ description: 'CBMH 5', topElevation: 100.5, lowInvert: 97.25 }),
+        struct({ description: 'SAN CBMH 3', topElevation: 100.5, lowInvert: 97.25 }),
+        struct({ description: 'DCBMH 14', topElevation: 100.5, lowInvert: 97.25 }),
+        struct({ description: 'STMH 5', topElevation: 100.5, lowInvert: 97.25 }),
+      ],
+    }));
+    const byDesc = new Map(r.structures.map((s) => [s.description, s.depth]));
+    expect(byDesc.get('CBMH 5')).toBe(3.55);
+    expect(byDesc.get('SAN CBMH 3')).toBe(3.55);
+    expect(byDesc.get('DCBMH 14')).toBe(3.55);
+    expect(byDesc.get('STMH 5')).toBe(3.25);
+  });
+
+  it('never overwrites a stated depth, and records nothing for it', () => {
+    const r = reconcileTakeoff(emptyFacts({
+      structures: [struct({ description: 'MH 1', topElevation: 100, lowInvert: 97, depth: 2.9 })],
+    }));
+    expect(r.structures[0].depth).toBe(2.9);
+    expect((r.withheld ?? []).filter((w) => w.field === 'depth')).toHaveLength(0);
+  });
+
+  it('never borrows a component from a neighbouring structure', () => {
+    const r = reconcileTakeoff(emptyFacts({
+      structures: [
+        struct({ description: 'MH 1', topElevation: 100, lowInvert: 97 }),
+        struct({ description: 'MH 2', topElevation: 101 }), // no invert of its own
+        struct({ description: 'MH 3', lowInvert: 96 }),     // no rim of its own
+      ],
+    }));
+    const byDesc = new Map(r.structures.map((s) => [s.description, s.depth]));
+    expect(byDesc.get('MH 1')).toBe(3);
+    expect(byDesc.get('MH 2')).toBeNull();
+    expect(byDesc.get('MH 3')).toBeNull();
+  });
+
+  it('refuses to derive from physically impossible elevations (rim at/below invert)', () => {
+    const r = reconcileTakeoff(emptyFacts({
+      structures: [struct({ description: 'MH 1', topElevation: 97, lowInvert: 97.5 })],
+    }));
+    expect(r.structures[0].depth).toBeNull();
+  });
+
+  it('pools components across duplicate reads, then derives once (idempotent)', () => {
+    const once = reconcileTakeoff(emptyFacts({
+      structures: [
+        struct({ description: 'MH 7', topElevation: 100 }),
+        struct({ description: 'MH 7', lowInvert: 96.5 }),
+      ],
+    }));
+    expect(once.structures).toHaveLength(1);
+    expect(once.structures[0].depth).toBe(3.5);
+    const twice = reconcileTakeoff(once);
+    expect(twice.structures[0].depth).toBe(3.5);
+    expect((twice.withheld ?? []).filter((w) => w.kind === 'derived' && w.field === 'depth')).toHaveLength(1);
+  });
+
+  it('records measured sewer lengths in whole metres, rounding up, label rewritten to match', () => {
+    const r = reconcileTakeoff(emptyFacts({
+      sewers: [run({ runLabel: '8.4m-250mm STM', length: 8.4, pipeDiameter: 250 })],
+    }));
+    expect(r.sewers[0].length).toBe(9);
+    expect(r.sewers[0].runLabel).toBe('9m-250mm STM');
+  });
+
+  it('ceil applies to schedule-id runs too (label carries no length to rewrite)', () => {
+    const r = reconcileTakeoff(emptyFacts({
+      sewers: [run({ runLabel: 'ST12', length: 18.2, pipeDiameter: 250 })],
+    }));
+    expect(r.sewers[0].length).toBe(19);
+    expect(r.sewers[0].runLabel).toBe('ST12');
+  });
+
+  it('refuses to normalize a merge artifact: label-stated length and fact length disagree', () => {
+    const r = reconcileTakeoff(emptyFacts({
+      sewers: [run({ runLabel: '1.8m-300mm', length: 2.1, pipeDiameter: 300 })],
+    }));
+    expect(r.sewers[0].length).toBe(2.1);
+    expect(r.sewers[0].runLabel).toBe('1.8m-300mm');
+  });
+
+  it('leaves integral, null and line-item lengths untouched — a diameter is never a length', () => {
+    const r = reconcileTakeoff(emptyFacts({
+      sewers: [
+        run({ runLabel: '9m-250mm', length: 9, pipeDiameter: 250 }),
+        run({ runLabel: 'MH 1-MH 2', length: null, pipeDiameter: 250 }),
+        run({ runLabel: 'VIDEO', isLineItem: true, length: 12.5 }),
+      ],
+    }));
+    const byLabel = new Map(r.sewers.map((s) => [s.runLabel, s.length]));
+    expect(byLabel.get('9m-250mm')).toBe(9);
+    expect(byLabel.get('MH 1-MH 2')).toBeNull();
+    expect(byLabel.get('VIDEO')).toBe(12.5);
   });
 });

@@ -371,6 +371,10 @@ export interface ExtractionDiagnostics {
   };
   pages: PageDiagnostics[];
   tiles: TileDiagnostics;
+  /** PR34: model-unavailability fallbacks that tripped during this run —
+   *  the configured model 404'd on Vertex and the role family finished
+   *  the job on the fallback model. Absent when no fallback fired. */
+  modelFallback?: { role: string; from: string; to: string }[];
   assembly: {
     /** Entity counts from each source path that ran, before merging. */
     sources: { path: 'text' | 'transcript' | 'vector' | 'single-pass'; counts: EntityCounts }[];

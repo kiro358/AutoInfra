@@ -27,10 +27,15 @@ import {
   selectImageOnlyCandidates,
   applyImageOnlyRecheck,
   MAX_IMAGE_ONLY_ADMISSIONS,
+  ROLE_LOCATIONS,
   ROLE_MODELS,
   ROLE_THINKING,
+  FALLBACK_MODEL,
+  getGenAI,
   type CostAcc,
 } from './extraction';
+import { ThinkingLevel } from '@google/genai';
+import { createModelFallbackState } from './model-config';
 import { assembleTextTakeoff } from './text-takeoff';
 import { isTextyPage, hasAnnotationForm, PageText } from './pdf-text';
 import { TileTranscript } from './types';
@@ -683,10 +688,11 @@ describe('two-pass watermain extraction', () => {
       expect(facts.watermainValves).toEqual([{ valveSize: '250mm Gate Valve', quantity: 1 }]);
       // PR30: usage is bucketed under the watermain role's resolved model and
       // thoughts tokens are accumulated (billed at the output rate downstream).
+      // PR34: the watermain role's resolved model is now gemini-3.8-flash.
       expect(cost.thoughtsTokens).toBe(25);
       expect(cost.byModel).toEqual({
-        'gemini-2.5-flash': {
-          model: 'gemini-2.5-flash',
+        'gemini-3.8-flash': {
+          model: 'gemini-3.8-flash',
           promptTokens: 100,
           outputTokens: 50,
           thoughtsTokens: 25,
@@ -701,30 +707,186 @@ describe('two-pass watermain extraction', () => {
 });
 
 
-describe('PR30 role-based model assignment — module wiring (clean env)', () => {
-  // resolution LOGIC under env variations is pinned in model-config.test.ts;
-  // this pins that extraction.ts actually resolved the Option B defaults and
-  // per-role thinking configs at module load (no env set in the test runner).
-  it('resolves the Option B defaults per role', () => {
-    expect(ROLE_MODELS).toEqual({
-      locator: 'gemini-2.5-flash-lite',
-      recheck: 'gemini-2.5-flash-lite',
-      verify: 'gemini-2.5-flash-lite',
-      transcription: 'gemini-2.5-flash',
-      single: 'gemini-2.5-flash',
-      watermain: 'gemini-2.5-flash',
+describe('PR34 model fallback — runSecondPassWatermain end-to-end', () => {
+  const err404 = () => Object.assign(
+    new Error('Publisher model `projects/x/locations/us/publishers/google/models/gemini-3.8-flash` was not found or your project does not have access to it'),
+    { status: 404 },
+  );
+  const wmStream = () => (async function* () {
+    yield {
+      text: JSON.stringify({
+        watermain: [{ sizeAndType: '250mm PVC WM', length: 120, pipeDiameter: 250 }],
+        watermainSpecials: [],
+        watermainValves: [],
+      }),
+      usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 50, thoughtsTokenCount: 25, totalTokenCount: 175 },
+      candidates: [{ finishReason: 'STOP' }],
+    };
+  })();
+  const freshCost = (): CostAcc => ({ promptTokens: 0, outputTokens: 0, totalTokens: 0, llmCalls: 0, tiles: 0, dpi: 150 });
+
+  async function withCacheOff<T>(fn: () => Promise<T>): Promise<T> {
+    const orig = process.env.ENABLE_EVAL_CACHE;
+    process.env.ENABLE_EVAL_CACHE = 'false';
+    try { return await fn(); } finally { process.env.ENABLE_EVAL_CACHE = orig; }
+  }
+
+  it('trips on a 404: retries once on the fallback, records the trip, buckets usage under the fallback, and sticks for the job', async () => {
+    await withCacheOff(async () => {
+      const facts = parseFacts({ watermain: [] }, 'Test Project');
+      const cost = freshCost();
+      const state = createModelFallbackState('gemini-3.5-flash-lite');
+      const seenModels: string[] = [];
+      const generateFn = vi.fn(async (args: any) => {
+        seenModels.push(args.model);
+        if (args.model === 'gemini-3.8-flash') throw err404();
+        return wmStream();
+      });
+      const preparePdfPart = vi.fn().mockResolvedValue({ inlineData: { mimeType: 'application/pdf', data: 'abc' } });
+      const opts = (f: any, c: CostAcc, h: string) => ({
+        projectName: 'Test Project', sourceHash: h, tileBatches: [[]],
+        pdfBuffer: Buffer.from('mock pdf'), preparePdfPart,
+        ai: { models: { generateContentStream: generateFn } }, cost: c, modelFallback: state,
+      });
+
+      const res = await runSecondPassWatermain(facts, opts(facts, cost, 'test-hash-wm-fallback'));
+      expect(res).toBe(true);
+      // Exactly one retry: configured model first, fallback second.
+      expect(seenModels).toEqual(['gemini-3.8-flash', 'gemini-3.5-flash-lite']);
+      expect(state.trips).toEqual([{ role: 'watermain', from: 'gemini-3.8-flash', to: 'gemini-3.5-flash-lite' }]);
+      // Telemetry follows the EFFECTIVE model: nothing is bucketed under 3.8.
+      expect(Object.keys(cost.byModel ?? {})).toEqual(['gemini-3.5-flash-lite']);
+      expect(cost.byModel!['gemini-3.5-flash-lite'].llmCalls).toBe(1);
+      expect(facts.watermain).toHaveLength(1);
+
+      // Sticks for the job: a later run sharing the state calls the
+      // fallback directly — the unavailable model is never retried.
+      const facts2 = parseFacts({ watermain: [] }, 'Test Project');
+      seenModels.length = 0;
+      const res2 = await runSecondPassWatermain(facts2, opts(facts2, freshCost(), 'test-hash-wm-fallback-2'));
+      expect(res2).toBe(true);
+      expect(seenModels).toEqual(['gemini-3.5-flash-lite']);
+      expect(state.trips).toHaveLength(1);
     });
   });
 
-  it('pins thinking OFF for locator/recheck/verify and passes the numeric budget through for transcription (PR33: 2.5-flash)', () => {
-    expect(ROLE_THINKING.locator).toEqual({ thinkingBudget: 0 });
-    expect(ROLE_THINKING.recheck).toEqual({ thinkingBudget: 0 });
-    expect(ROLE_THINKING.verify).toEqual({ thinkingBudget: 0 });
-    // PR33: transcription/single run on gemini-2.5-flash (2.5-era) → the
-    // code-default budget 8192 passes through as a numeric thinkingBudget.
-    expect(ROLE_THINKING.transcription).toEqual({ thinkingBudget: 8192 });
-    expect(ROLE_THINKING.single).toEqual({ thinkingBudget: 8192 });
-    expect(ROLE_THINKING.watermain).toEqual({ thinkingBudget: 8192 });
+  it('does NOT trip on a non-availability error: no fallback call, no trip, batch contributes nothing', async () => {
+    await withCacheOff(async () => {
+      const facts = parseFacts({ watermain: [] }, 'Test Project');
+      const state = createModelFallbackState('gemini-3.5-flash-lite');
+      const generateFn = vi.fn(async () => {
+        throw Object.assign(new Error('INVALID_ARGUMENT: bad request'), { status: 400 });
+      });
+      const res = await runSecondPassWatermain(facts, {
+        projectName: 'Test Project',
+        sourceHash: 'test-hash-wm-no-trip',
+        tileBatches: [[]],
+        pdfBuffer: Buffer.from('mock pdf'),
+        preparePdfPart: vi.fn().mockResolvedValue({ inlineData: { mimeType: 'application/pdf', data: 'abc' } }),
+        ai: { models: { generateContentStream: generateFn } },
+        cost: freshCost(),
+        modelFallback: state,
+      });
+      expect(res).toBe(false);
+      expect(generateFn).toHaveBeenCalledTimes(1);
+      expect(state.trips).toEqual([]);
+      expect(facts.watermain).toHaveLength(0);
+    });
+  });
+
+  it('when the fallback also 404s the trip is still recorded, but the batch fails cleanly after exactly one retry', async () => {
+    await withCacheOff(async () => {
+      const facts = parseFacts({ watermain: [] }, 'Test Project');
+      const state = createModelFallbackState('gemini-3.5-flash-lite');
+      const generateFn = vi.fn(async () => { throw err404(); });
+      const res = await runSecondPassWatermain(facts, {
+        projectName: 'Test Project',
+        sourceHash: 'test-hash-wm-double-404',
+        tileBatches: [[]],
+        pdfBuffer: Buffer.from('mock pdf'),
+        preparePdfPart: vi.fn().mockResolvedValue({ inlineData: { mimeType: 'application/pdf', data: 'abc' } }),
+        ai: { models: { generateContentStream: generateFn } },
+        cost: freshCost(),
+        modelFallback: state,
+      });
+      expect(res).toBe(false);
+      expect(generateFn).toHaveBeenCalledTimes(2);
+      expect(state.trips).toEqual([{ role: 'watermain', from: 'gemini-3.8-flash', to: 'gemini-3.5-flash-lite' }]);
+      expect(facts.watermain).toHaveLength(0);
+    });
+  });
+});
+
+describe('PR30 role-based model assignment — module wiring (clean env)', () => {
+  // resolution LOGIC under env variations is pinned in model-config.test.ts;
+  // this pins that extraction.ts actually resolved the defaults and
+  // per-role thinking configs at module load (no env set in the test runner).
+  it('resolves the role defaults per role (PR34: every role on gemini-3.8-flash)', () => {
+    expect(ROLE_MODELS).toEqual({
+      locator: 'gemini-3.8-flash',
+      recheck: 'gemini-3.8-flash',
+      verify: 'gemini-3.8-flash',
+      transcription: 'gemini-3.8-flash',
+      single: 'gemini-3.8-flash',
+      watermain: 'gemini-3.8-flash',
+    });
+  });
+
+  it('pins thinking levels for the 3.x defaults: MINIMAL for the verdict roles, MEDIUM at the code-default budget (PR34)', () => {
+    // 3.8-flash is a 3.x model → thinkingLevel, never a numeric budget.
+    // Locator/recheck/verify pin thinking OFF → MINIMAL on 3.x;
+    // transcription/single/watermain at the code-default budget 8192 → MEDIUM.
+    expect(ROLE_THINKING.locator).toEqual({ thinkingLevel: ThinkingLevel.MINIMAL });
+    expect(ROLE_THINKING.recheck).toEqual({ thinkingLevel: ThinkingLevel.MINIMAL });
+    expect(ROLE_THINKING.verify).toEqual({ thinkingLevel: ThinkingLevel.MINIMAL });
+    expect(ROLE_THINKING.transcription).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
+    expect(ROLE_THINKING.single).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
+    expect(ROLE_THINKING.watermain).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
+  });
+
+  it('resolves every role location to us and the fallback model to gemini-3.5-flash-lite (PR34)', () => {
+    expect(ROLE_LOCATIONS).toEqual({
+      locator: 'us',
+      recheck: 'us',
+      verify: 'us',
+      transcription: 'us',
+      single: 'us',
+      watermain: 'us',
+    });
+    expect(FALLBACK_MODEL).toBe('gemini-3.5-flash-lite');
+  });
+});
+
+describe('PR34 getGenAI — per-location client cache', () => {
+  // The SDK validates eagerly, and the test env carries no GCP project, so
+  // construct through the API-key branch (getGenAI reads the key at call
+  // time). Location is ignored by that branch — the cache semantics under
+  // test are the factory's own Map, identical on both branches.
+  function withApiKeyEnv(fn: () => void) {
+    const origKey = process.env.GEMINI_API_KEY;
+    const origVertex = process.env.USE_VERTEX_AI;
+    process.env.GEMINI_API_KEY = 'test-key-not-real';
+    delete process.env.USE_VERTEX_AI;
+    try { fn(); } finally {
+      if (origKey === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = origKey;
+      if (origVertex === undefined) delete process.env.USE_VERTEX_AI; else process.env.USE_VERTEX_AI = origVertex;
+    }
+  }
+
+  it('returns the SAME instance for the same location and distinct instances per location', () => {
+    withApiKeyEnv(() => {
+      expect(getGenAI('us')).toBe(getGenAI('us'));
+      expect(getGenAI('global')).toBe(getGenAI('global'));
+      expect(getGenAI('us')).not.toBe(getGenAI('global'));
+      expect(getGenAI('us')).not.toBe(getGenAI('eu'));
+    });
+  });
+
+  it('the no-arg call is the GCP_LOCATION default client (us-central1 in a clean env)', () => {
+    withApiKeyEnv(() => {
+      expect(getGenAI()).toBe(getGenAI('us-central1'));
+      expect(getGenAI()).not.toBe(getGenAI('us'));
+    });
   });
 });
 

@@ -134,6 +134,15 @@ function addAuditSheet(
       `${c.structures} structures / ${c.sewers} sewer runs / ${c.watermain} watermain / ${c.catchbasins} catchbasin groups`;
     const srcNote = diag.assembly.sources.map((s) => `${s.path}: ${fmtCounts(s.counts)}`).join('; ');
     ws.getCell(`A${row++}`).value = `Entities by source — ${srcNote} → final: ${fmtCounts(diag.assembly.final)}.`;
+    // Model fallback (PR34): the configured model was unavailable on
+    // Vertex (404) mid-job and a role family finished on the fallback
+    // model — name both, so a mixed-model job is never silent.
+    if (diag.modelFallback && diag.modelFallback.length > 0) {
+      for (const fb of diag.modelFallback) {
+        ws.getCell(`A${row++}`).value =
+          `Model fallback: the ${fb.role} model ${fb.from} was unavailable on Vertex AI (404) — this job ran those calls on ${fb.to} instead.`;
+      }
+    }
     row++;
   }
 

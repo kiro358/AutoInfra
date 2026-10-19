@@ -6,7 +6,11 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env.local') });
 import { GoogleGenAI } from '@google/genai';
 import { Storage } from '@google-cloud/storage';
 import { TakeoffFacts, CatchbasinGroupFact, TileTranscript, WatermainFact, WatermainSpecialFact, WatermainValveFact, EntityCounts, ExtractionDiagnostics, PageDiagnostics, TileDiagnostics, ModelUsageBucket } from './types';
-import { resolveRoleModels, roleThinkingConfig, type ModelRole, type RoleThinkingConfig } from './model-config';
+import {
+  resolveRoleModels, resolveRoleLocations, resolveFallbackModel, roleThinkingConfig,
+  createModelFallbackState, effectiveModelFor, tripModelFallback, modelFallbackWarning,
+  type ModelRole, type RoleThinkingConfig, type ModelFallbackState,
+} from './model-config';
 import { buildExtractionDiagnostics, deriveRenderedPerPage, entityCountsByKind, tileDiagnosticsWarnings } from './diagnostics';
 import type { ExtractionModeId } from './extraction-modes';
 import { PIPE_DIAMETERS } from './constants';
@@ -74,6 +78,18 @@ const BUCKET_NAME = process.env.GCS_BUCKET || 'autoinfra-ai-eval-data';
 // so EXTRACTION_MODEL=gemini-2.5-pro still runs the whole pipeline on one
 // model exactly as the existing A/B workflows expect.
 export const ROLE_MODELS = resolveRoleModels();
+
+// Per-role Vertex locations (PR34 — see model-config.ts). The 3.x models
+// are not served from us-central1, so each role's client is built for the
+// location its model is served from; precedence per role:
+//   <ROLE>_LOCATION  >  GCP_LOCATION  >  'us'.
+export const ROLE_LOCATIONS = resolveRoleLocations();
+
+// Job-level fallback model (PR34): when a role family's configured model
+// 404s on Vertex, that family finishes the job on this model (same
+// location) instead of losing every call. TRANSCRIPTION_FALLBACK_MODEL
+// overrides; the default is gemini-3.5-flash-lite.
+export const FALLBACK_MODEL = resolveFallbackModel();
 
 // Per-PDF prep is deterministic (located pages + rendered/uploaded tiles), so memoize it by
 // source hash. This makes GOLDEN_REPEATS (and any repeated extraction of the same PDF in one
@@ -188,29 +204,43 @@ const locatorMemo = new Map<string, number[]>();
 const tilePartsMemo = new Map<string, any[]>();
 
 
-function getGenAI() {
+// One client per Vertex location, built lazily and cached (PR34): roles
+// resolve their own locations (ROLE_LOCATIONS), and client construction is
+// pure config (no I/O), so a second client for a differing location is
+// free. The location applies ONLY to the Vertex branch — the AI Studio
+// backend has no locations, so every location maps to the same key-based
+// client there. The no-arg call keeps the pre-PR34 behaviour exactly
+// (LOCATION = GCP_LOCATION || 'us-central1').
+const genAIClients = new Map<string, GoogleGenAI>();
+
+export function getGenAI(location: string = LOCATION): GoogleGenAI {
+  const cached = genAIClients.get(location);
+  if (cached) return cached;
   const apiKey = process.env.GEMINI_API_KEY;
   const useVertex = process.env.USE_VERTEX_AI === 'true' || !apiKey;
 
+  let client: GoogleGenAI;
   if (useVertex) {
-    console.log(`      [extraction.ts] Initializing Gemini client using Vertex AI (Project: ${PROJECT_ID})`);
-    return new GoogleGenAI({
+    console.log(`      [extraction.ts] Initializing Gemini client using Vertex AI (Project: ${PROJECT_ID}, Location: ${location})`);
+    client = new GoogleGenAI({
       vertexai: true,
       project: PROJECT_ID,
-      location: LOCATION,
+      location,
       httpOptions: {
         timeout: 300000 // 5 minutes in milliseconds
       }
     });
   } else {
     console.log('      [extraction.ts] Initializing Gemini client using Google AI Studio (Free Tier)');
-    return new GoogleGenAI({
+    client = new GoogleGenAI({
       apiKey: apiKey,
       httpOptions: {
         timeout: 300000 // 5 minutes in milliseconds
       }
     });
   }
+  genAIClients.set(location, client);
+  return client;
 }
 
 import fs from 'fs';
@@ -993,6 +1023,26 @@ async function extractFromPDFInner(
   };
 
   const ai = getGenAI();
+  // Per-role clients (PR34): each role calls through a client built for
+  // ITS resolved location. When a role's location equals the default the
+  // factory returns the very same cached instance as `ai`, so the common
+  // single-location job still builds exactly one client. `ai` itself is
+  // retained for the backend-wide duties whose parts are
+  // location-independent (the AI Studio Files-API uploads in
+  // preparePdfPart/prepareImagePart; on Vertex those are GCS URIs any
+  // location can read).
+  const aiLocator = getGenAI(ROLE_LOCATIONS.locator);
+  const aiRecheck = getGenAI(ROLE_LOCATIONS.recheck);
+  const aiVerify = getGenAI(ROLE_LOCATIONS.verify);
+  const aiTranscription = getGenAI(ROLE_LOCATIONS.transcription);
+  const aiSingle = getGenAI(ROLE_LOCATIONS.single);
+  const aiWatermain = getGenAI(ROLE_LOCATIONS.watermain);
+  // Job-scoped model fallback (PR34): one state for the whole run, shared
+  // by tile transcription, the single-pass loop and the watermain second
+  // pass. A 404 on a family's configured model trips it once; the family
+  // then runs on FALLBACK_MODEL and attachDiagnostics records the trip on
+  // the facts (warning + diagnostics) at every return path.
+  const modelFallback = createModelFallbackState(FALLBACK_MODEL);
   const useVertex = process.env.USE_VERTEX_AI === 'true' || !process.env.GEMINI_API_KEY;
   const uploadedFiles: any[] = [];
   // Drawings are ingested as high-DPI image tiles (rasterize.ts) and the page
@@ -1030,7 +1080,7 @@ async function extractFromPDFInner(
         console.log(`      [extraction.ts] Reusing memoized locator pages (${relevant.length}).`);
       } else {
         try {
-          relevant = await locateRelevantPages(ai, pdfBuffer, sourceHash, projectName, cost);
+          relevant = await locateRelevantPages(aiLocator, pdfBuffer, sourceHash, projectName, cost);
           if (REUSE_PREP && relevant.length > 0) {
             if (locatorMemo.size > 64) locatorMemo.clear(); // bound memory in long-lived servers
             locatorMemo.set(sourceHash, relevant);
@@ -1104,7 +1154,7 @@ async function extractFromPDFInner(
           const drawn = await measureDrawnContent(pdfBuffer, unlocatedPages);
           const candidates = selectImageOnlyCandidates(pageTexts, [...locatedSet], drawn, projectName);
           if (candidates.length > 0) {
-            const bearing = await recheckImageOnlyPages(ai, pdfBuffer, candidates, sourceHash, projectName, cost);
+            const bearing = await recheckImageOnlyPages(aiRecheck, pdfBuffer, candidates, sourceHash, projectName, cost);
             const applied = applyImageOnlyRecheck([...locatedSet], candidates, new Set(bearing));
             if (applied.added.length > 0) {
               locatorIndex = { manholePages: applied.pages, sewerPages: applied.pages, watermainPages: applied.pages };
@@ -1281,6 +1331,17 @@ async function extractFromPDFInner(
       sources: ExtractionDiagnostics['assembly']['sources'],
       finalPages: number[],
     ): TakeoffFacts => {
+      // Model fallback (PR34): a tripped family already degraded this job
+      // to the fallback model — say so on the facts (warning) and in the
+      // diagnostics record, on every return path. Appended here, after
+      // each mode's confidence assessment, like the tile-loss warnings.
+      if (modelFallback.trips.length > 0) {
+        const existing = new Set(facts.warnings ?? []);
+        for (const trip of modelFallback.trips) {
+          const w = modelFallbackWarning(trip);
+          if (!existing.has(w)) facts.warnings = [...(facts.warnings ?? []), w];
+        }
+      }
       facts.diagnostics = buildExtractionDiagnostics({
         mode,
         durationMs: Date.now() - runStartedAt,
@@ -1295,6 +1356,7 @@ async function extractFromPDFInner(
         tiles,
         sources,
         finalFacts: facts,
+        modelFallback: modelFallback.trips.length > 0 ? modelFallback.trips : undefined,
       });
       return facts;
     };
@@ -1353,22 +1415,29 @@ async function extractFromPDFInner(
         batch: any[], tileOffset: number, cacheKey: string, label: string
       ): Promise<any> => {
         const prompt = getTranscriptionPrompt(batch.length, tileOffset);
+        const configured = ROLE_MODELS.transcription;
 
-        let text = '{}';
-        try {
-          text = await getCachedOrCallLLM(cacheKey, prompt, 'transcribe', async () => {
+        // One transcription call on ONE model. The model, its thinking
+        // config and the telemetry bucket all follow the model actually
+        // called, and the eval-cache key carries the model id so a
+        // transcript produced by one model never replays as another's
+        // (PR34; prod runs with the cache off — this protects local eval).
+        const runCall = async (model: string): Promise<string> =>
+          getCachedOrCallLLM(`${cacheKey}::${model}`, prompt, 'transcribe', async () => {
             // Same streaming pattern as the single-pass batch loop below: large
             // tiled inference takes many seconds, and a non-streaming request
             // leaves the socket idle long enough to be dropped (UND_ERR_SOCKET).
             return await callWithRetry(async () => {
-              const stream = await ai.models.generateContentStream({
-                model: ROLE_MODELS.transcription,
+              const stream = await aiTranscription.models.generateContentStream({
+                model,
                 contents: [{ role: 'user', parts: [{ text: prompt }, ...batch] }],
                 config: {
                   temperature: Number(process.env.EXTRACTION_TEMPERATURE || '0'),
                   responseMimeType: 'application/json',
                   maxOutputTokens: MAX_OUTPUT_TOKENS,
-                  thinkingConfig: ROLE_THINKING.transcription,
+                  thinkingConfig: model === configured
+                    ? ROLE_THINKING.transcription
+                    : roleThinkingConfig('transcription', model, THINKING_BUDGET),
                 },
               });
               let acc = '', usage: any = null, finishReason: string | null = null;
@@ -1381,16 +1450,36 @@ async function extractFromPDFInner(
                 const fr = chunk.candidates?.[0]?.finishReason;
                 if (fr) finishReason = String(fr);
               }
-              addUsage(cost, usage, ROLE_MODELS.transcription);
+              addUsage(cost, usage, model);
               if (finishReason && finishReason !== 'STOP') {
                 console.warn(`      [extraction.ts] finishReason=${finishReason} (response hit a limit — output may be truncated).`);
               }
               return acc || '{}';
             });
           }, projectName);
+
+        let text = '{}';
+        try {
+          text = await runCall(effectiveModelFor(modelFallback, 'transcription', configured));
         } catch (e: any) {
-          console.error(`      [extraction.ts] Transcribe ${label} failed: ${e.message}`);
-          recordCallFailure(`Transcription ${label}`, e);
+          // Model-unavailability fallback (PR34): a 404 means the configured
+          // model is not served here — trip the job state and retry THIS
+          // call once on the fallback model; later calls read the effective
+          // model directly. Any other error keeps the old behaviour
+          // (record the failure, this batch contributes nothing).
+          const fb = tripModelFallback(modelFallback, 'transcription', configured, e);
+          if (fb) {
+            console.warn(`      [extraction.ts] Transcribe ${label}: model ${configured} unavailable (${e.message}) — falling back to ${fb} for the rest of this job.`);
+            try {
+              text = await runCall(fb);
+            } catch (e2: any) {
+              console.error(`      [extraction.ts] Transcribe ${label} failed: ${e2.message}`);
+              recordCallFailure(`Transcription ${label}`, e2);
+            }
+          } else {
+            console.error(`      [extraction.ts] Transcribe ${label} failed: ${e.message}`);
+            recordCallFailure(`Transcription ${label}`, e);
+          }
         }
 
         try {
@@ -1531,7 +1620,7 @@ async function extractFromPDFInner(
               'Include an answer only when the sheet clearly shows the value; omit any question you cannot confirm from the drawing.',
             ].join('\n');
             const text = await getCachedOrCallLLM(`${sourceHash}_vectorverify_p${page}`, prompt, 'vector-verify', async () => {
-              const response = await callWithRetry(async () => ai.models.generateContent({
+              const response = await callWithRetry(async () => aiVerify.models.generateContent({
                 model: ROLE_MODELS.verify,
                 contents: [{ role: 'user', parts: [{ text: prompt }, { inlineData: { mimeType: IMAGE_MIME, data: thumb.img.toString('base64') } }] }],
                 config: { temperature: 0, responseMimeType: 'application/json', thinkingConfig: ROLE_THINKING.verify },
@@ -1591,9 +1680,10 @@ async function extractFromPDFInner(
             tileBatches: [],
             pdfBuffer,
             preparePdfPart,
-            ai,
+            ai: aiWatermain,
             cost,
             batchConcurrency: BATCH_CONCURRENCY,
+            modelFallback,
           });
           facts = reconcileTakeoff(facts);
         }
@@ -1656,9 +1746,10 @@ async function extractFromPDFInner(
             tileBatches: [],
             pdfBuffer,
             preparePdfPart,
-            ai,
+            ai: aiWatermain,
             cost,
             batchConcurrency: BATCH_CONCURRENCY,
+            modelFallback,
           });
           facts = reconcileTakeoff(facts);
         }
@@ -1764,15 +1855,18 @@ async function extractFromPDFInner(
 
       const parts = await mapLimit(tileBatches, BATCH_CONCURRENCY, async (batch, bi) => {
         const media = batch.length > 0 ? batch : [await preparePdfPart(pdfBuffer)];
-        let text = '{}';
-        try {
-          text = await getCachedOrCallLLM(`${sourceHash}_single_b${bi}of${tileBatches.length}`, prompt, 'single', async () => {
+        const configured = ROLE_MODELS.single;
+        // One single-pass call on ONE model (PR34: model, thinking config,
+        // telemetry bucket and eval-cache key all follow the model called,
+        // exactly as in transcribeCall above).
+        const runCall = async (model: string): Promise<string> =>
+          getCachedOrCallLLM(`${sourceHash}_single_b${bi}of${tileBatches.length}::${model}`, prompt, 'single', async () => {
             // Stream the response: large tiled inference takes many seconds, and a
             // non-streaming request leaves the socket idle long enough to be dropped
             // (UND_ERR_SOCKET). Streaming keeps tokens flowing so the socket stays live.
             return await callWithRetry(async () => {
-              const stream = await ai.models.generateContentStream({
-                model: ROLE_MODELS.single,
+              const stream = await aiSingle.models.generateContentStream({
+                model,
                 contents: [{ role: 'user', parts: [{ text: prompt }, ...media] }],
                 // gemini-2.5-flash thinking (~4k tokens) shares the maxOutputTokens
                 // budget with the JSON response. Vertex defaults this to 8192, so on
@@ -1784,7 +1878,9 @@ async function extractFromPDFInner(
                   temperature: Number(process.env.EXTRACTION_TEMPERATURE || '0'),
                   responseMimeType: 'application/json',
                   maxOutputTokens: MAX_OUTPUT_TOKENS,
-                  thinkingConfig: ROLE_THINKING.single,
+                  thinkingConfig: model === configured
+                    ? ROLE_THINKING.single
+                    : roleThinkingConfig('single', model, THINKING_BUDGET),
                 },
               });
               let acc = '', usage: any = null, finishReason: string | null = null;
@@ -1797,16 +1893,32 @@ async function extractFromPDFInner(
                 const fr = chunk.candidates?.[0]?.finishReason;
                 if (fr) finishReason = String(fr);
               }
-              addUsage(cost, usage, ROLE_MODELS.single);
+              addUsage(cost, usage, model);
               if (finishReason && finishReason !== 'STOP') {
                 console.warn(`      [extraction.ts] finishReason=${finishReason} (response hit a limit — output may be truncated).`);
               }
               return acc || '{}';
             });
           }, projectName);
+        let text = '{}';
+        try {
+          text = await runCall(effectiveModelFor(modelFallback, 'single', configured));
         } catch (e: any) {
-          console.error(`      [extraction.ts] Single-pass batch ${bi + 1}/${tileBatches.length} failed: ${e.message}`);
-          recordCallFailure(`Extraction batch ${bi + 1}/${tileBatches.length}`, e);
+          // Model-unavailability fallback (PR34) — same trip as
+          // transcribeCall; 'single' shares the transcription family state.
+          const fb = tripModelFallback(modelFallback, 'single', configured, e);
+          if (fb) {
+            console.warn(`      [extraction.ts] Single-pass batch ${bi + 1}/${tileBatches.length}: model ${configured} unavailable (${e.message}) — falling back to ${fb} for the rest of this job.`);
+            try {
+              text = await runCall(fb);
+            } catch (e2: any) {
+              console.error(`      [extraction.ts] Single-pass batch ${bi + 1}/${tileBatches.length} failed: ${e2.message}`);
+              recordCallFailure(`Extraction batch ${bi + 1}/${tileBatches.length}`, e2);
+            }
+          } else {
+            console.error(`      [extraction.ts] Single-pass batch ${bi + 1}/${tileBatches.length} failed: ${e.message}`);
+            recordCallFailure(`Extraction batch ${bi + 1}/${tileBatches.length}`, e);
+          }
         }
         try {
           const parsed = tryParseJSONWithRepair(text);
@@ -1866,9 +1978,10 @@ async function extractFromPDFInner(
           tileBatches,
           pdfBuffer,
           preparePdfPart,
-          ai,
+          ai: aiWatermain,
           cost,
           batchConcurrency: BATCH_CONCURRENCY,
+          modelFallback,
         });
       }
 
@@ -2698,12 +2811,16 @@ export async function runSecondPassWatermain(
     ai: any;
     cost: CostAcc;
     batchConcurrency?: number;
+    /** PR34: the job's model-fallback state. Optional so standalone
+     *  callers keep working; a private state is created when omitted. */
+    modelFallback?: ModelFallbackState;
   }
 ): Promise<boolean> {
   if (facts.watermain && facts.watermain.length > 0) {
     return false;
   }
   const { projectName, sourceHash, tileBatches, pdfBuffer, preparePdfPart, ai, cost, batchConcurrency = 3 } = options;
+  const fbState = options.modelFallback ?? createModelFallbackState(FALLBACK_MODEL);
   if (!tileBatches || (tileBatches.length === 0 && !pdfBuffer)) {
     return false;
   }
@@ -2714,18 +2831,22 @@ export async function runSecondPassWatermain(
 
   const wmParts = await mapLimit(batches, batchConcurrency, async (batch, bi) => {
     const media = batch.length > 0 ? batch : [await preparePdfPart(pdfBuffer)];
-    let text = '{}';
-    try {
-      text = await getCachedOrCallLLM(`${sourceHash}_watermain_b${bi}of${batches.length}`, wmPrompt, 'watermain', async () => {
+    const configured = ROLE_MODELS.watermain;
+    // One watermain call on ONE model (PR34: model, thinking config,
+    // telemetry bucket and eval-cache key follow the model called).
+    const runCall = async (model: string): Promise<string> =>
+      getCachedOrCallLLM(`${sourceHash}_watermain_b${bi}of${batches.length}::${model}`, wmPrompt, 'watermain', async () => {
         return await callWithRetry(async () => {
           const stream = await ai.models.generateContentStream({
-            model: ROLE_MODELS.watermain,
+            model,
             contents: [{ role: 'user', parts: [{ text: wmPrompt }, ...media] }],
             config: {
               temperature: Number(process.env.EXTRACTION_TEMPERATURE || '0'),
               responseMimeType: 'application/json',
               maxOutputTokens: MAX_OUTPUT_TOKENS,
-              thinkingConfig: ROLE_THINKING.watermain,
+              thinkingConfig: model === configured
+                ? ROLE_THINKING.watermain
+                : roleThinkingConfig('watermain', model, THINKING_BUDGET),
             },
           });
           let acc = '', usage: any = null, finishReason: string | null = null;
@@ -2735,16 +2856,32 @@ export async function runSecondPassWatermain(
             const fr = chunk.candidates?.[0]?.finishReason;
             if (fr) finishReason = String(fr);
           }
-          addUsage(cost, usage, ROLE_MODELS.watermain);
+          addUsage(cost, usage, model);
           if (finishReason && finishReason !== 'STOP') {
             console.warn(`      [extraction.ts] finishReason=${finishReason} (response hit a limit — output may be truncated).`);
           }
           return acc || '{}';
         });
       }, projectName);
+    let text = '{}';
+    try {
+      text = await runCall(effectiveModelFor(fbState, 'watermain', configured));
     } catch (e: any) {
-      console.error(`      [extraction.ts] Watermain batch ${bi + 1}/${batches.length} failed: ${e.message}`);
-      recordCallFailure(`Watermain batch ${bi + 1}/${batches.length}`, e);
+      // Model-unavailability fallback (PR34): trip once, retry this batch
+      // on the fallback model; other errors keep the old behaviour.
+      const fb = tripModelFallback(fbState, 'watermain', configured, e);
+      if (fb) {
+        console.warn(`      [extraction.ts] Watermain batch ${bi + 1}/${batches.length}: model ${configured} unavailable (${e.message}) — falling back to ${fb} for the rest of this job.`);
+        try {
+          text = await runCall(fb);
+        } catch (e2: any) {
+          console.error(`      [extraction.ts] Watermain batch ${bi + 1}/${batches.length} failed: ${e2.message}`);
+          recordCallFailure(`Watermain batch ${bi + 1}/${batches.length}`, e2);
+        }
+      } else {
+        console.error(`      [extraction.ts] Watermain batch ${bi + 1}/${batches.length} failed: ${e.message}`);
+        recordCallFailure(`Watermain batch ${bi + 1}/${batches.length}`, e);
+      }
     }
     try {
       const parsed = tryParseJSONWithRepair(text);

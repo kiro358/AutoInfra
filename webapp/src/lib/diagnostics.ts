@@ -71,6 +71,8 @@ export interface ExtractionDiagnosticsInput {
   tiles: TileDiagnostics;
   sources: ExtractionDiagnostics['assembly']['sources'];
   finalFacts: TakeoffFacts;
+  /** PR34: fallback trips recorded during the run (see model-config.ts). */
+  modelFallback?: { role: string; from: string; to: string }[];
 }
 
 /** Assemble the record. Final assembly counts are read from the finished
@@ -83,6 +85,7 @@ export function buildExtractionDiagnostics(input: ExtractionDiagnosticsInput): E
     locator: input.locator,
     pages: input.pages,
     tiles: input.tiles,
+    ...(input.modelFallback && input.modelFallback.length > 0 ? { modelFallback: input.modelFallback } : {}),
     assembly: {
       sources: input.sources,
       final: entityCountsByKind(input.finalFacts),

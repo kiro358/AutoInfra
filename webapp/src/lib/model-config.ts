@@ -1,4 +1,5 @@
-// model-config.ts — per-role model assignment + thinking-config mapping (PR30).
+// model-config.ts — per-role model assignment + thinking-config mapping (PR30),
+// per-role Vertex locations + the model-unavailability fallback (PR34).
 //
 // Until PR30 every LLM call in extraction.ts used the single EXTRACTION_MODEL
 // (gemini-2.5-flash in prod). The call sites do very different work though:
@@ -7,31 +8,53 @@
 // output tokens and is where reading quality lives. Option B (see
 // model_optimisation.md §4) assigns a model per ROLE:
 //
-//   locator       LOCATOR_MODEL        default gemini-2.5-flash-lite, thinking OFF
-//   recheck       RECHECK_MODEL        default gemini-2.5-flash-lite, thinking OFF
-//   verify        VERIFY_MODEL         default gemini-2.5-flash-lite, thinking OFF
-//   transcription TRANSCRIPTION_MODEL  default gemini-2.5-flash, thinking = THINKING_BUDGET
+//   locator       LOCATOR_MODEL        default gemini-3.8-flash, thinking OFF
+//   recheck       RECHECK_MODEL        default gemini-3.8-flash, thinking OFF
+//   verify        VERIFY_MODEL         default gemini-3.8-flash, thinking OFF
+//   transcription TRANSCRIPTION_MODEL  default gemini-3.8-flash, thinking = THINKING_BUDGET
 //   single        TRANSCRIPTION_MODEL  (same role family as transcription)
-//   watermain     WM_MODEL             default gemini-2.5-flash (unchanged), thinking = THINKING_BUDGET
-//
-// SETTLED (PR33, 2026-10-19) — transcription stays on gemini-2.5-flash.
-// Both 3.x Lite candidates were tried as the transcription default and
-// live-proved unavailable: gemini-3.1-flash-lite (PR30) and
-// gemini-3.5-flash-lite (PR32) each returned 404 NOT_FOUND on Vertex AI in
-// us-central1 for this project — GA on the Developer API is not Vertex
-// availability. Each smoke job failed all 66 transcription calls and lost
-// 36/36 tiles, while the 2.5-flash-lite locator call succeeded. Vertex
-// serves the 2.5 family to this project/region; no 3.x Lite model is
-// served here yet. The default returns to gemini-2.5-flash until a 3.x
-// Lite model is actually served on Vertex here — TRANSCRIPTION_MODEL can
-// select one the day that changes (the 3.x thinking-level mapping in
-// thinkingConfigFor stays in place for that day).
+//   watermain     WM_MODEL             default gemini-3.8-flash, thinking = THINKING_BUDGET
 //
 // PRECEDENCE (per role): role env var  >  EXTRACTION_MODEL  >  built-in role
 // default. EXTRACTION_MODEL deliberately beats the role DEFAULTS: existing
 // A/B workflows set EXTRACTION_MODEL=<model> to run the whole pipeline on one
 // model, and that must keep working exactly as before. Only an explicitly set
 // role var overrides it, for that one role.
+//
+// PR34 (2026-10-19) — VERTEX LATEST-MODEL MIGRATION. Two facts force it:
+//   1. Google retires the whole 2.5 family on Vertex on 2026-10-20
+//      (gemini-2.5-flash AND gemini-2.5-flash-lite; earliest enforcement —
+//      see model_vertex_availability.md §0). Every role ran on one of them.
+//   2. The 3.x Lite models are served on Vertex ONLY via the `global`
+//      endpoint and the `us`/`eu` multi-regions — never us-central1. That
+//      geography (not project enablement) is why gemini-3.1-flash-lite
+//      (PR30) and gemini-3.5-flash-lite (PR32) each 404'd NOT_FOUND on
+//      every transcription call from us-central1 while GA on the
+//      Developer API.
+// So every role resolves a LOCATION alongside its model (default `us`,
+// which keeps ML processing in the US multi-region; `global` is one env
+// var away). Locations are PER-ROLE so a future model can move
+// independently of the others: e.g. TRANSCRIPTION_LOCATION=global moves
+// only transcription. Location precedence mirrors model precedence:
+//   <ROLE>_LOCATION  >  GCP_LOCATION  >  built-in role default ('us').
+// (`single` shares TRANSCRIPTION_LOCATION, like it shares TRANSCRIPTION_MODEL.)
+//
+// WHICH MODEL (PR34): Kiro directed "move to the latest" (2026-10-19),
+// superseding the availability memo's gemini-3.5-flash-lite primary
+// recommendation. Every role's default is therefore gemini-3.8-flash —
+// the latest flagship Flash, GA, verified served at location `us`,
+// $0.75/$3.75 per M in/out (price doubles 2027-01-01). gemini-4-argon is
+// newer overall but UNVERIFIED on Vertex and 3–5× the price, so it was
+// not chosen; the per-role plumbing lets it be armed later with env vars
+// alone (e.g. TRANSCRIPTION_MODEL=gemini-4-argon).
+//
+// MODEL FALLBACK (PR34): if a role family's configured model proves
+// unavailable mid-job (Vertex 404), the job degrades the MODEL, not the
+// takeoff: the call is retried once on TRANSCRIPTION_FALLBACK_MODEL
+// (default gemini-3.5-flash-lite) at the same location, that model serves
+// the family for the rest of the job, and the trip is recorded on the
+// facts (warning + diagnostics). This is the fix for the PR30/PR32 failure
+// mode, where a 404ing default silently lost every tile in the job.
 
 import { ThinkingLevel } from '@google/genai';
 
@@ -50,12 +73,12 @@ const ROLE_ENV_VAR: Record<ModelRole, string> = {
 };
 
 export const ROLE_DEFAULT_MODEL: Record<ModelRole, string> = {
-  locator: 'gemini-2.5-flash-lite',
-  recheck: 'gemini-2.5-flash-lite',
-  verify: 'gemini-2.5-flash-lite',
-  transcription: 'gemini-2.5-flash',
-  single: 'gemini-2.5-flash',
-  watermain: 'gemini-2.5-flash',
+  locator: 'gemini-3.8-flash',
+  recheck: 'gemini-3.8-flash',
+  verify: 'gemini-3.8-flash',
+  transcription: 'gemini-3.8-flash',
+  single: 'gemini-3.8-flash',
+  watermain: 'gemini-3.8-flash',
 };
 
 /** Resolve the model id for one call-site role. `env` is injectable for tests. */
@@ -76,6 +99,156 @@ export function resolveRoleModels(env: Record<string, string | undefined> = proc
     single: resolveRoleModel('single', env),
     watermain: resolveRoleModel('watermain', env),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Per-role Vertex locations (PR34). A model is only callable where Vertex
+// serves it, and the 3.x family is not served from us-central1 at all — so
+// the location is part of a role's assignment, resolved with the same
+// env-injectable pattern as the model. Precedence per role:
+//   <ROLE>_LOCATION  >  GCP_LOCATION  >  built-in role default ('us').
+// The SDK accepts 'global' and the 'us'/'eu' multi-regions as plain
+// location strings (verified in the pinned @google/genai 2.3.0 source);
+// tile parts are GCS URIs, which any Vertex location can read, so moving a
+// role's location changes nothing about ingestion.
+// ---------------------------------------------------------------------------
+
+const ROLE_LOCATION_ENV_VAR: Record<ModelRole, string> = {
+  locator: 'LOCATOR_LOCATION',
+  recheck: 'RECHECK_LOCATION',
+  verify: 'VERIFY_LOCATION',
+  transcription: 'TRANSCRIPTION_LOCATION',
+  single: 'TRANSCRIPTION_LOCATION',
+  watermain: 'WM_LOCATION',
+};
+
+export const ROLE_DEFAULT_LOCATION: Record<ModelRole, string> = {
+  locator: 'us',
+  recheck: 'us',
+  verify: 'us',
+  transcription: 'us',
+  single: 'us',
+  watermain: 'us',
+};
+
+/** Resolve the Vertex location for one call-site role. `env` is injectable for tests. */
+export function resolveRoleLocation(role: ModelRole, env: Record<string, string | undefined> = process.env): string {
+  const roleVar = env[ROLE_LOCATION_ENV_VAR[role]];
+  if (roleVar) return roleVar;
+  if (env.GCP_LOCATION) return env.GCP_LOCATION;
+  return ROLE_DEFAULT_LOCATION[role];
+}
+
+/** Resolve every role's location at once — extraction.ts resolves once at module load. */
+export function resolveRoleLocations(env: Record<string, string | undefined> = process.env): Record<ModelRole, string> {
+  return {
+    locator: resolveRoleLocation('locator', env),
+    recheck: resolveRoleLocation('recheck', env),
+    verify: resolveRoleLocation('verify', env),
+    transcription: resolveRoleLocation('transcription', env),
+    single: resolveRoleLocation('single', env),
+    watermain: resolveRoleLocation('watermain', env),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Model-unavailability fallback (PR34). Job-scoped state, created per
+// extraction run in extraction.ts and threaded to the transcription-family
+// call sites (tile transcription, the single-pass loop, the watermain
+// second pass). When a call fails with a model-unavailable error the state
+// trips ONCE per role family: the failing call is retried on the fallback
+// model at the same location and every later call in that family uses the
+// fallback directly. Non-availability errors (429, 5xx, parse, transport)
+// never trip it — callWithRetry already owns those.
+// ---------------------------------------------------------------------------
+
+/** The fallback target when TRANSCRIPTION_FALLBACK_MODEL is unset. */
+export const DEFAULT_FALLBACK_MODEL = 'gemini-3.5-flash-lite';
+
+/** Resolve the job-level fallback model id. `env` is injectable for tests. */
+export function resolveFallbackModel(env: Record<string, string | undefined> = process.env): string {
+  return env.TRANSCRIPTION_FALLBACK_MODEL || DEFAULT_FALLBACK_MODEL;
+}
+
+/**
+ * True when an error means "this model is not available here" — the Vertex
+ * 404 shape (HTTP status 404, or a NOT_FOUND / "was not found" / "does not
+ * have access" message). Deliberately narrow: rate limits, server errors
+ * and transport failures are transient, not availability verdicts.
+ */
+export function isModelUnavailableError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as { status?: unknown; message?: unknown };
+  if (e.status === 404) return true;
+  const msg = typeof e.message === 'string' ? e.message : '';
+  return /NOT_FOUND|was not found|does not have access/i.test(msg);
+}
+
+/** Role families that share one fallback trip (single IS transcription). */
+export type ModelFallbackFamily = 'transcription' | 'watermain';
+
+export function modelFallbackFamily(role: ModelRole): ModelFallbackFamily | null {
+  if (role === 'transcription' || role === 'single') return 'transcription';
+  if (role === 'watermain') return 'watermain';
+  return null;
+}
+
+export interface ModelFallbackTrip {
+  /** The role family that tripped ('transcription' covers single-pass). */
+  role: ModelFallbackFamily;
+  /** The configured model that proved unavailable. */
+  from: string;
+  /** The fallback model serving the family for the rest of the job. */
+  to: string;
+}
+
+export interface ModelFallbackState {
+  fallbackModel: string;
+  effectiveByFamily: Partial<Record<ModelFallbackFamily, string>>;
+  trips: ModelFallbackTrip[];
+  /** Message of the first availability error that tripped a family. */
+  firstError?: string;
+}
+
+export function createModelFallbackState(fallbackModel: string): ModelFallbackState {
+  return { fallbackModel, effectiveByFamily: {}, trips: [] };
+}
+
+/** The model a call in `role` should use right now: the fallback once its family has tripped, else the configured model. */
+export function effectiveModelFor(state: ModelFallbackState, role: ModelRole, configured: string): string {
+  const fam = modelFallbackFamily(role);
+  return (fam && state.effectiveByFamily[fam]) || configured;
+}
+
+/**
+ * Record an availability failure for `role`'s family. Returns the fallback
+ * model id when THIS error trips the family (the caller retries the failed
+ * call once with it), or null when the error is not an availability error,
+ * the family already tripped, or the fallback is the configured model
+ * itself (nowhere to fall). The trip mutates the state — subsequent
+ * effectiveModelFor calls in the family return the fallback.
+ */
+export function tripModelFallback(
+  state: ModelFallbackState,
+  role: ModelRole,
+  configured: string,
+  err: unknown,
+): string | null {
+  const fam = modelFallbackFamily(role);
+  if (!fam) return null;
+  if (!isModelUnavailableError(err)) return null;
+  if (state.effectiveByFamily[fam]) return null;
+  if (state.fallbackModel === configured) return null;
+  state.effectiveByFamily[fam] = state.fallbackModel;
+  state.trips.push({ role: fam, from: configured, to: state.fallbackModel });
+  if (!state.firstError) state.firstError = String((err as { message?: unknown })?.message ?? err);
+  return state.fallbackModel;
+}
+
+/** The facts warning recorded when a family trips — one per trip. */
+export function modelFallbackWarning(trip: ModelFallbackTrip): string {
+  const label = trip.role === 'transcription' ? 'Transcription' : 'Watermain';
+  return `${label} model ${trip.from} unavailable (404) — fell back to ${trip.to} for the rest of this job.`;
 }
 
 /**

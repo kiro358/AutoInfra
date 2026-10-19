@@ -351,6 +351,33 @@ describe('populateTemplate — AUDIT sheet (PR 8)', () => {
     expect(joined).toContain('transcript: 1 structures');
   });
 
+  it('names a model fallback on the AUDIT sheet when the run recorded one (PR34)', async () => {
+    const { wb } = await build(facts({
+      structures: [st('MH 1')],
+      diagnostics: {
+        version: 1, mode: 'hybrid', durationMs: 1000,
+        locator: {
+          ran: true, rawPicks: [1], unionAdded: [],
+          finalPages: [1], tileAllFallback: false,
+        },
+        pages: [],
+        tiles: { planned: 24, rendered: 24, uploaded: 24, transcribed: 16, missingAfterRetry: 0, degenerateDiscarded: 0, blocks: 40 },
+        assembly: {
+          sources: [{ path: 'transcript', counts: { structures: 1, sewers: 0, watermain: 0, catchbasins: 0 } }],
+          final: { structures: 1, sewers: 0, watermain: 0, catchbasins: 0 },
+        },
+        modelFallback: [{ role: 'transcription', from: 'gemini-3.8-flash', to: 'gemini-3.5-flash-lite' }],
+      },
+    }));
+    const audit = wb.getWorksheet('AUDIT');
+    const texts: string[] = [];
+    audit!.eachRow({ includeEmpty: false }, (r) => r.eachCell({ includeEmpty: false }, (c) => texts.push(String(c.value))));
+    const joined = texts.join('\\n');
+    expect(joined).toContain('Model fallback:');
+    expect(joined).toContain('gemini-3.8-flash');
+    expect(joined).toContain('gemini-3.5-flash-lite');
+  });
+
   it('names vision-fallback pages and why on the AUDIT sheet (PR #41 / PR24)', async () => {
     const { wb } = await build(facts({
       structures: [st('MH 1')],

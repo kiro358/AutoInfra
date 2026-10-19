@@ -10,9 +10,18 @@
 //   locator       LOCATOR_MODEL        default gemini-2.5-flash-lite, thinking OFF
 //   recheck       RECHECK_MODEL        default gemini-2.5-flash-lite, thinking OFF
 //   verify        VERIFY_MODEL         default gemini-2.5-flash-lite, thinking OFF
-//   transcription TRANSCRIPTION_MODEL  default gemini-3.1-flash-lite, thinking = THINKING_BUDGET
+//   transcription TRANSCRIPTION_MODEL  default gemini-2.5-flash, thinking = THINKING_BUDGET
 //   single        TRANSCRIPTION_MODEL  (same role family as transcription)
 //   watermain     WM_MODEL             default gemini-2.5-flash (unchanged), thinking = THINKING_BUDGET
+//
+// PR31 — transcription default REVERTED from gemini-3.1-flash-lite to
+// gemini-2.5-flash: 3.1-flash-lite is GA on the Developer API but is NOT
+// served on Vertex AI in us-central1 for this project — the first prod smoke
+// job on the PR30 build (2026-10-19) got 404 NOT_FOUND on all 66
+// transcription calls and lost 36/36 tiles, while the 2.5-flash-lite locator
+// call succeeded. Next candidate to smoke-test on Vertex:
+// gemini-3.5-flash-lite. TRANSCRIPTION_MODEL can still select 3.1-flash-lite
+// (or any model) wherever it is available.
 //
 // PRECEDENCE (per role): role env var  >  EXTRACTION_MODEL  >  built-in role
 // default. EXTRACTION_MODEL deliberately beats the role DEFAULTS: existing
@@ -40,8 +49,8 @@ export const ROLE_DEFAULT_MODEL: Record<ModelRole, string> = {
   locator: 'gemini-2.5-flash-lite',
   recheck: 'gemini-2.5-flash-lite',
   verify: 'gemini-2.5-flash-lite',
-  transcription: 'gemini-3.1-flash-lite',
-  single: 'gemini-3.1-flash-lite',
+  transcription: 'gemini-2.5-flash',
+  single: 'gemini-2.5-flash',
   watermain: 'gemini-2.5-flash',
 };
 

@@ -379,6 +379,19 @@ export interface ExtractionDiagnostics {
   };
 }
 
+/** Token usage for ONE model within a job (PR30: jobs are mixed-model, so
+ *  cost telemetry buckets usage per model id and prices each bucket at that
+ *  model's rate). outputTokens counts candidates only; thoughtsTokens are
+ *  billed at the output rate. */
+export interface ModelUsageBucket {
+  model: string;
+  promptTokens: number;
+  outputTokens: number;
+  thoughtsTokens: number;
+  totalTokens: number;
+  llmCalls: number;
+}
+
 export interface TakeoffFacts {
   projectName: string;
   jobNumber: string;
@@ -403,7 +416,16 @@ export interface TakeoffFacts {
   locatorIndex?: { manholePages: number[]; sewerPages: number[]; watermainPages: number[] } | null;
   // Cost telemetry for a single extraction (all LLM calls summed): lets the eval
   // report tokens/tiles per project so cost changes (DPI, tile budget) are measurable.
-  cost?: { promptTokens: number; outputTokens: number; totalTokens: number; llmCalls: number; tiles: number; dpi: number };
+  cost?: {
+    promptTokens: number; outputTokens: number;
+    /** Thinking tokens across all calls (billed at each model's output rate).
+     *  Optional: pre-PR30 facts recorded none (their estimates underprice). */
+    thoughtsTokens?: number;
+    totalTokens: number; llmCalls: number; tiles: number; dpi: number;
+    /** Per-model usage buckets (PR30). Optional: legacy facts carry none and
+     *  are priced on the aggregate at the fallback rate card. */
+    byModel?: Record<string, ModelUsageBucket>;
+  };
   // Verbatim per-tile callout transcription (vision-as-transcriber path). Optional —
   // populated when EXTRACTION_MODE=transcribe|hybrid; persisted via predicted_facts.json.
   transcript?: TileTranscript[];

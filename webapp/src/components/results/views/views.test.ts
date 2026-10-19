@@ -44,11 +44,14 @@ import {
 } from './CostLedgerView';
 import {
   DEFAULT_TOKEN_RATES,
+  MODEL_TOKEN_RATES,
+  costCaption,
   estimateUsdCost,
   formatUsd,
   highlightJson,
   serializeFacts,
   telemetryFigures,
+  unknownCostModels,
 } from './TelemetryView';
 
 // ---------- fixtures ----------
@@ -598,6 +601,69 @@ describe('estimateUsdCost', () => {
     expect(
       estimateUsdCost({ promptTokens: 0, outputTokens: 0, totalTokens: 0, llmCalls: 0, tiles: 0, dpi: 0 })
     ).toBeNull();
+  });
+
+  it('bills thoughts tokens at the output rate (legacy aggregate path)', () => {
+    const cost = estimateUsdCost({
+      promptTokens: 0, outputTokens: 1_000_000, thoughtsTokens: 1_000_000,
+      totalTokens: 2_000_000, llmCalls: 1, tiles: 1, dpi: 150,
+    });
+    expect(cost).toBeCloseTo(2 * DEFAULT_TOKEN_RATES.outputPerMillion);
+  });
+});
+
+describe('estimateUsdCost — mixed-model jobs (PR30 per-model buckets)', () => {
+  const mixed = {
+    promptTokens: 3_000_000, outputTokens: 2_000_000, thoughtsTokens: 500_000,
+    totalTokens: 5_500_000, llmCalls: 3, tiles: 10, dpi: 150,
+    byModel: {
+      'gemini-3.1-flash-lite': {
+        model: 'gemini-3.1-flash-lite', promptTokens: 1_000_000, outputTokens: 1_000_000,
+        thoughtsTokens: 500_000, totalTokens: 2_500_000, llmCalls: 2,
+      },
+      'gemini-2.5-flash-lite': {
+        model: 'gemini-2.5-flash-lite', promptTokens: 2_000_000, outputTokens: 1_000_000,
+        thoughtsTokens: 0, totalTokens: 3_000_000, llmCalls: 1,
+      },
+    },
+  };
+
+  it('prices each bucket at its own model rate, thoughts at the output rate', () => {
+    // 3.1-flash-lite: 1M in × $0.25 + (1M out + 0.5M thoughts) × $1.50 = $2.50
+    // 2.5-flash-lite: 2M in × $0.10 + 1M out × $0.40 = $0.60
+    expect(estimateUsdCost(mixed)).toBeCloseTo(3.1);
+    expect(unknownCostModels(mixed)).toEqual([]);
+  });
+
+  it('the price table covers every model PR30 can assign by default', () => {
+    for (const m of ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-2.5-pro']) {
+      expect(MODEL_TOKEN_RATES[m]).toBeDefined();
+    }
+  });
+
+  it('an unknown model falls back to the 2.5-flash row AND is flagged, never silently priced', () => {
+    const cost = {
+      promptTokens: 1_000_000, outputTokens: 1_000_000, thoughtsTokens: 0,
+      totalTokens: 2_000_000, llmCalls: 1, tiles: 1, dpi: 150,
+      byModel: {
+        'gemini-9-ultra': {
+          model: 'gemini-9-ultra', promptTokens: 1_000_000, outputTokens: 1_000_000,
+          thoughtsTokens: 0, totalTokens: 2_000_000, llmCalls: 1,
+        },
+      },
+    };
+    // Fallback row: 1M × $0.30 + 1M × $2.50.
+    expect(estimateUsdCost(cost)).toBeCloseTo(2.8);
+    expect(unknownCostModels(cost)).toEqual(['gemini-9-ultra']);
+    expect(costCaption(cost)).toContain('⚠ gemini-9-ultra not in price table');
+    expect(costCaption(cost)).toContain('priced as gemini-2.5-flash');
+  });
+
+  it('the caption names the models actually used on a mixed-model job', () => {
+    const caption = costCaption(mixed);
+    expect(caption).toContain('gemini-3.1-flash-lite $0.25/M in · $1.5/M out');
+    expect(caption).toContain('gemini-2.5-flash-lite $0.1/M in · $0.4/M out');
+    expect(caption).not.toContain('⚠');
   });
 });
 

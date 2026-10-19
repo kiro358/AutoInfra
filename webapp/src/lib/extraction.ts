@@ -5,7 +5,8 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env.local') });
 
 import { GoogleGenAI } from '@google/genai';
 import { Storage } from '@google-cloud/storage';
-import { TakeoffFacts, CatchbasinGroupFact, TileTranscript, WatermainFact, WatermainSpecialFact, WatermainValveFact, EntityCounts, ExtractionDiagnostics, PageDiagnostics, TileDiagnostics } from './types';
+import { TakeoffFacts, CatchbasinGroupFact, TileTranscript, WatermainFact, WatermainSpecialFact, WatermainValveFact, EntityCounts, ExtractionDiagnostics, PageDiagnostics, TileDiagnostics, ModelUsageBucket } from './types';
+import { resolveRoleModels, roleThinkingConfig, type ModelRole, type RoleThinkingConfig } from './model-config';
 import { buildExtractionDiagnostics, deriveRenderedPerPage, entityCountsByKind, tileDiagnosticsWarnings } from './diagnostics';
 import type { ExtractionModeId } from './extraction-modes';
 import { PIPE_DIAMETERS } from './constants';
@@ -65,8 +66,14 @@ const LOCATION = process.env.GCP_LOCATION || 'us-central1';
 const storage = new Storage();
 const BUCKET_NAME = process.env.GCS_BUCKET || 'autoinfra-ai-eval-data';
 
-// Extraction model (override for A/B, e.g. EXTRACTION_MODEL=gemini-2.5-pro).
-const EXTRACTION_MODEL = process.env.EXTRACTION_MODEL || 'gemini-2.5-flash';
+// Per-role models (PR30, Option B — see model-config.ts). Until PR30 every
+// call used the single EXTRACTION_MODEL (gemini-2.5-flash). Now each call
+// site uses its role's model; precedence per role is:
+//   role env var (LOCATOR_MODEL / RECHECK_MODEL / VERIFY_MODEL /
+//   TRANSCRIPTION_MODEL / WM_MODEL)  >  EXTRACTION_MODEL  >  role default,
+// so EXTRACTION_MODEL=gemini-2.5-pro still runs the whole pipeline on one
+// model exactly as the existing A/B workflows expect.
+export const ROLE_MODELS = resolveRoleModels();
 
 // Per-PDF prep is deterministic (located pages + rendered/uploaded tiles), so memoize it by
 // source hash. This makes GOLDEN_REPEATS (and any repeated extraction of the same PDF in one
@@ -129,14 +136,53 @@ const MAX_OUTPUT_TOKENS = Number(process.env.MAX_OUTPUT_TOKENS) || 32768;
 // thinking masked this locally. Capping thinking fixes the truncation AND cuts cost.
 const THINKING_BUDGET = envNumber(process.env.THINKING_BUDGET, 8192);
 
-// Sum a streamed/one-shot response's usageMetadata into a per-extraction cost accumulator.
-export type CostAcc = { promptTokens: number; outputTokens: number; totalTokens: number; llmCalls: number; tiles: number; dpi: number };
-function addUsage(cost: CostAcc, usage: any) {
+// Per-role thinking configs (PR30): locator/recheck/verify pin thinking OFF
+// (they return tiny JSON verdicts; the locator previously set NO config and
+// burned dynamic thinking — 819 thought tokens for a 129-token answer on
+// Ultimate). Transcription/single/watermain keep the THINKING_BUDGET intent.
+// Gemini 3.x roles get a thinkingLevel instead of the numeric budget —
+// Vertex rejects thinkingBudget on 3.x and errors if both are sent
+// (model-config.ts thinkingConfigFor).
+export const ROLE_THINKING: Record<ModelRole, RoleThinkingConfig> = {
+  locator: roleThinkingConfig('locator', ROLE_MODELS.locator, THINKING_BUDGET),
+  recheck: roleThinkingConfig('recheck', ROLE_MODELS.recheck, THINKING_BUDGET),
+  verify: roleThinkingConfig('verify', ROLE_MODELS.verify, THINKING_BUDGET),
+  transcription: roleThinkingConfig('transcription', ROLE_MODELS.transcription, THINKING_BUDGET),
+  single: roleThinkingConfig('single', ROLE_MODELS.single, THINKING_BUDGET),
+  watermain: roleThinkingConfig('watermain', ROLE_MODELS.watermain, THINKING_BUDGET),
+};
+
+// Sum a streamed/one-shot response's usageMetadata into a per-extraction cost
+// accumulator. PR30: jobs are mixed-model, so usage is ALSO bucketed per model
+// (byModel) and thoughts tokens are accumulated separately — Google bills
+// thoughts at the output rate, and the old accumulator dropped them entirely
+// (telemetry underpriced jobs ~5–17%). `model` is the calling site's resolved
+// role model. thoughtsTokens/byModel are optional on the type so pre-PR30
+// facts and hand-built accumulators stay valid; addUsage fills them lazily.
+export type CostAcc = {
+  promptTokens: number; outputTokens: number; thoughtsTokens?: number;
+  totalTokens: number; llmCalls: number; tiles: number; dpi: number;
+  byModel?: Record<string, ModelUsageBucket>;
+};
+function addUsage(cost: CostAcc, usage: any, model: string) {
   if (!usage) return;
+  const prompt = usage.promptTokenCount || 0;
+  const output = usage.candidatesTokenCount || 0;
+  const thoughts = usage.thoughtsTokenCount || 0;
   cost.llmCalls++;
-  cost.promptTokens += usage.promptTokenCount || 0;
-  cost.outputTokens += usage.candidatesTokenCount || 0;
+  cost.promptTokens += prompt;
+  cost.outputTokens += output;
+  cost.thoughtsTokens = (cost.thoughtsTokens ?? 0) + thoughts;
   cost.totalTokens += usage.totalTokenCount || 0;
+  const byModel = (cost.byModel ??= {});
+  const bucket = (byModel[model] ??= {
+    model, promptTokens: 0, outputTokens: 0, thoughtsTokens: 0, totalTokens: 0, llmCalls: 0,
+  });
+  bucket.llmCalls++;
+  bucket.promptTokens += prompt;
+  bucket.outputTokens += output;
+  bucket.thoughtsTokens += thoughts;
+  bucket.totalTokens += usage.totalTokenCount || 0;
 }
 const locatorMemo = new Map<string, number[]>();
 const tilePartsMemo = new Map<string, any[]>();
@@ -508,11 +554,11 @@ async function locateRelevantPages(
 
   const text = await getCachedOrCallLLM(`${sourceHash}_pagelocator`, prompt, 'locator', async () => {
     const response = await callWithRetry(async () => ai.models.generateContent({
-      model: EXTRACTION_MODEL,
+      model: ROLE_MODELS.locator,
       contents: [{ role: 'user', parts }],
-      config: { temperature: 0, responseMimeType: 'application/json' },
+      config: { temperature: 0, responseMimeType: 'application/json', thinkingConfig: ROLE_THINKING.locator },
     }));
-    if (cost) addUsage(cost, (response as any).usageMetadata);
+    if (cost) addUsage(cost, (response as any).usageMetadata, ROLE_MODELS.locator);
     return response.text || '{}';
   }, projectName);
 
@@ -855,11 +901,11 @@ async function recheckImageOnlyPages(
 
   const text = await getCachedOrCallLLM(`${sourceHash}_imageonlylocator`, prompt, 'locator', async () => {
     const response = await callWithRetry(async () => ai.models.generateContent({
-      model: EXTRACTION_MODEL,
+      model: ROLE_MODELS.recheck,
       contents: [{ role: 'user', parts }],
-      config: { temperature: 0, responseMimeType: 'application/json' },
+      config: { temperature: 0, responseMimeType: 'application/json', thinkingConfig: ROLE_THINKING.recheck },
     }));
-    if (cost) addUsage(cost, (response as any).usageMetadata);
+    if (cost) addUsage(cost, (response as any).usageMetadata, ROLE_MODELS.recheck);
     return response.text || '{}';
   }, projectName);
 
@@ -964,7 +1010,7 @@ async function extractFromPDFInner(
     console.log(`      [extraction.ts] Total pages in merged PDF: ${totalPages}`);
 
     let locatorIndex: { manholePages: number[], sewerPages: number[], watermainPages: number[] } | null = null;
-    const cost: CostAcc = { promptTokens: 0, outputTokens: 0, totalTokens: 0, llmCalls: 0, tiles: 0, dpi: TILE_DPI };
+    const cost: CostAcc = { promptTokens: 0, outputTokens: 0, thoughtsTokens: 0, totalTokens: 0, llmCalls: 0, tiles: 0, dpi: TILE_DPI, byModel: {} };
 
     const allPages = Array.from({ length: totalPages }, (_, i) => i + 1);
 
@@ -1316,13 +1362,13 @@ async function extractFromPDFInner(
             // leaves the socket idle long enough to be dropped (UND_ERR_SOCKET).
             return await callWithRetry(async () => {
               const stream = await ai.models.generateContentStream({
-                model: EXTRACTION_MODEL,
+                model: ROLE_MODELS.transcription,
                 contents: [{ role: 'user', parts: [{ text: prompt }, ...batch] }],
                 config: {
                   temperature: Number(process.env.EXTRACTION_TEMPERATURE || '0'),
                   responseMimeType: 'application/json',
                   maxOutputTokens: MAX_OUTPUT_TOKENS,
-                  thinkingConfig: { thinkingBudget: THINKING_BUDGET },
+                  thinkingConfig: ROLE_THINKING.transcription,
                 },
               });
               let acc = '', usage: any = null, finishReason: string | null = null;
@@ -1335,7 +1381,7 @@ async function extractFromPDFInner(
                 const fr = chunk.candidates?.[0]?.finishReason;
                 if (fr) finishReason = String(fr);
               }
-              addUsage(cost, usage);
+              addUsage(cost, usage, ROLE_MODELS.transcription);
               if (finishReason && finishReason !== 'STOP') {
                 console.warn(`      [extraction.ts] finishReason=${finishReason} (response hit a limit — output may be truncated).`);
               }
@@ -1486,11 +1532,11 @@ async function extractFromPDFInner(
             ].join('\n');
             const text = await getCachedOrCallLLM(`${sourceHash}_vectorverify_p${page}`, prompt, 'vector-verify', async () => {
               const response = await callWithRetry(async () => ai.models.generateContent({
-                model: EXTRACTION_MODEL,
+                model: ROLE_MODELS.verify,
                 contents: [{ role: 'user', parts: [{ text: prompt }, { inlineData: { mimeType: IMAGE_MIME, data: thumb.img.toString('base64') } }] }],
-                config: { temperature: 0, responseMimeType: 'application/json' },
+                config: { temperature: 0, responseMimeType: 'application/json', thinkingConfig: ROLE_THINKING.verify },
               }));
-              if (cost) addUsage(cost, (response as any).usageMetadata);
+              if (cost) addUsage(cost, (response as any).usageMetadata, ROLE_MODELS.verify);
               return response.text || '{}';
             }, projectName);
             const parsed = JSON.parse(text);
@@ -1726,7 +1772,7 @@ async function extractFromPDFInner(
             // (UND_ERR_SOCKET). Streaming keeps tokens flowing so the socket stays live.
             return await callWithRetry(async () => {
               const stream = await ai.models.generateContentStream({
-                model: EXTRACTION_MODEL,
+                model: ROLE_MODELS.single,
                 contents: [{ role: 'user', parts: [{ text: prompt }, ...media] }],
                 // gemini-2.5-flash thinking (~4k tokens) shares the maxOutputTokens
                 // budget with the JSON response. Vertex defaults this to 8192, so on
@@ -1738,7 +1784,7 @@ async function extractFromPDFInner(
                   temperature: Number(process.env.EXTRACTION_TEMPERATURE || '0'),
                   responseMimeType: 'application/json',
                   maxOutputTokens: MAX_OUTPUT_TOKENS,
-                  thinkingConfig: { thinkingBudget: THINKING_BUDGET },
+                  thinkingConfig: ROLE_THINKING.single,
                 },
               });
               let acc = '', usage: any = null, finishReason: string | null = null;
@@ -1751,7 +1797,7 @@ async function extractFromPDFInner(
                 const fr = chunk.candidates?.[0]?.finishReason;
                 if (fr) finishReason = String(fr);
               }
-              addUsage(cost, usage);
+              addUsage(cost, usage, ROLE_MODELS.single);
               if (finishReason && finishReason !== 'STOP') {
                 console.warn(`      [extraction.ts] finishReason=${finishReason} (response hit a limit — output may be truncated).`);
               }
@@ -2673,13 +2719,13 @@ export async function runSecondPassWatermain(
       text = await getCachedOrCallLLM(`${sourceHash}_watermain_b${bi}of${batches.length}`, wmPrompt, 'watermain', async () => {
         return await callWithRetry(async () => {
           const stream = await ai.models.generateContentStream({
-            model: EXTRACTION_MODEL,
+            model: ROLE_MODELS.watermain,
             contents: [{ role: 'user', parts: [{ text: wmPrompt }, ...media] }],
             config: {
               temperature: Number(process.env.EXTRACTION_TEMPERATURE || '0'),
               responseMimeType: 'application/json',
               maxOutputTokens: MAX_OUTPUT_TOKENS,
-              thinkingConfig: { thinkingBudget: THINKING_BUDGET },
+              thinkingConfig: ROLE_THINKING.watermain,
             },
           });
           let acc = '', usage: any = null, finishReason: string | null = null;
@@ -2689,7 +2735,7 @@ export async function runSecondPassWatermain(
             const fr = chunk.candidates?.[0]?.finishReason;
             if (fr) finishReason = String(fr);
           }
-          addUsage(cost, usage);
+          addUsage(cost, usage, ROLE_MODELS.watermain);
           if (finishReason && finishReason !== 'STOP') {
             console.warn(`      [extraction.ts] finishReason=${finishReason} (response hit a limit — output may be truncated).`);
           }

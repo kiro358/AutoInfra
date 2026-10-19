@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { ThinkingLevel } from '@google/genai';
 import { normalizeSlope, snapToPipeDiameter, snapToMHSize } from './geometry';
 import {
   repairTruncatedJson,
@@ -27,6 +28,9 @@ import {
   selectImageOnlyCandidates,
   applyImageOnlyRecheck,
   MAX_IMAGE_ONLY_ADMISSIONS,
+  ROLE_MODELS,
+  ROLE_THINKING,
+  type CostAcc,
 } from './extraction';
 import { assembleTextTakeoff } from './text-takeoff';
 import { isTextyPage, hasAnnotationForm, PageText } from './pdf-text';
@@ -640,7 +644,7 @@ describe('two-pass watermain extraction', () => {
       watermain: [],
     }, 'Test Project');
 
-    const cost = { promptTokens: 0, outputTokens: 0, totalTokens: 0, llmCalls: 0, tiles: 0, dpi: 150 };
+    const cost: CostAcc = { promptTokens: 0, outputTokens: 0, totalTokens: 0, llmCalls: 0, tiles: 0, dpi: 150 };
     const mockStream = (async function* () {
       yield {
         text: JSON.stringify({
@@ -648,7 +652,7 @@ describe('two-pass watermain extraction', () => {
           watermainSpecials: [{ specialName: 'Hydrant Tee', quantity: 2 }],
           watermainValves: [{ valveSize: '250mm Gate Valve', quantity: 1 }],
         }),
-        usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 50, totalTokenCount: 150 },
+        usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 50, thoughtsTokenCount: 25, totalTokenCount: 175 },
         candidates: [{ finishReason: 'STOP' }],
       };
     })();
@@ -678,12 +682,51 @@ describe('two-pass watermain extraction', () => {
       expect(facts.watermain[0].length).toBe(120);
       expect(facts.watermainSpecials).toEqual([{ specialName: 'Hydrant Tee', quantity: 2 }]);
       expect(facts.watermainValves).toEqual([{ valveSize: '250mm Gate Valve', quantity: 1 }]);
+      // PR30: usage is bucketed under the watermain role's resolved model and
+      // thoughts tokens are accumulated (billed at the output rate downstream).
+      expect(cost.thoughtsTokens).toBe(25);
+      expect(cost.byModel).toEqual({
+        'gemini-2.5-flash': {
+          model: 'gemini-2.5-flash',
+          promptTokens: 100,
+          outputTokens: 50,
+          thoughtsTokens: 25,
+          totalTokens: 175,
+          llmCalls: 1,
+        },
+      });
     } finally {
       process.env.ENABLE_EVAL_CACHE = origCache;
     }
   });
 });
 
+
+describe('PR30 role-based model assignment — module wiring (clean env)', () => {
+  // resolution LOGIC under env variations is pinned in model-config.test.ts;
+  // this pins that extraction.ts actually resolved the Option B defaults and
+  // per-role thinking configs at module load (no env set in the test runner).
+  it('resolves the Option B defaults per role', () => {
+    expect(ROLE_MODELS).toEqual({
+      locator: 'gemini-2.5-flash-lite',
+      recheck: 'gemini-2.5-flash-lite',
+      verify: 'gemini-2.5-flash-lite',
+      transcription: 'gemini-3.1-flash-lite',
+      single: 'gemini-3.1-flash-lite',
+      watermain: 'gemini-2.5-flash',
+    });
+  });
+
+  it('pins thinking OFF for locator/recheck/verify and maps transcription for its 3.x model', () => {
+    expect(ROLE_THINKING.locator).toEqual({ thinkingBudget: 0 });
+    expect(ROLE_THINKING.recheck).toEqual({ thinkingBudget: 0 });
+    expect(ROLE_THINKING.verify).toEqual({ thinkingBudget: 0 });
+    // Code-default THINKING_BUDGET=8192 → MEDIUM on gemini-3.1-flash-lite.
+    expect(ROLE_THINKING.transcription).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
+    expect(ROLE_THINKING.single).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
+    expect(ROLE_THINKING.watermain).toEqual({ thinkingBudget: 8192 });
+  });
+});
 
 describe('assembleHybridTakeoff — zero-yield fallback routing', () => {
   const ptPage = (page: number, items: { text: string; x: number; y: number }[]): PageText => ({

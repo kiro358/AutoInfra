@@ -18,24 +18,61 @@ import { SummaryFigure, ViewSummary } from './ViewSummary';
  */
 
 /**
- * Gemini API list prices, USD per million tokens. These price the LLM CALL, not
- * the takeoff — construction pricing lives in `costing-rules.ts` and must never
- * be duplicated here. Exported so a caller on a different model or a negotiated
- * rate can override the estimate instead of reading a wrong number.
+ * Gemini list prices, USD per million tokens (Developer API list, verified
+ * 2026-10-18 — model_optimisation.md §3; confirm against Vertex pricing
+ * before quoting externally). These price the LLM CALL, not the takeoff —
+ * construction pricing lives in `costing-rules.ts` and must never be
+ * duplicated here.
+ *
+ * PR30: jobs are MIXED-model (each role runs a different model), so there is
+ * no single honest rate card. Facts now carry per-model usage buckets
+ * (cost.byModel) and each bucket is priced at ITS model's row. A model id
+ * missing from this table falls back to the FALLBACK_MODEL_ID row AND is
+ * flagged in the telemetry caption (unknownCostModels) — never silently
+ * mispriced.
  */
-export const USD_PER_MILLION_INPUT_TOKENS = 0.3;
-export const USD_PER_MILLION_OUTPUT_TOKENS = 2.5;
-
 export type TokenRates = { inputPerMillion: number; outputPerMillion: number };
 
-export const DEFAULT_TOKEN_RATES: TokenRates = {
-  inputPerMillion: USD_PER_MILLION_INPUT_TOKENS,
-  outputPerMillion: USD_PER_MILLION_OUTPUT_TOKENS,
+export const MODEL_TOKEN_RATES: Record<string, TokenRates> = {
+  'gemini-2.5-flash': { inputPerMillion: 0.3, outputPerMillion: 2.5 },
+  'gemini-2.5-flash-lite': { inputPerMillion: 0.1, outputPerMillion: 0.4 },
+  'gemini-3.1-flash-lite': { inputPerMillion: 0.25, outputPerMillion: 1.5 },
+  'gemini-3.5-flash-lite': { inputPerMillion: 0.3, outputPerMillion: 2.5 },
+  'gemini-3.8-flash': { inputPerMillion: 0.75, outputPerMillion: 3.75 },
+  'gemini-2.5-pro': { inputPerMillion: 1.25, outputPerMillion: 10 },
 };
+
+/** Unknown model ids are priced at this model's row — and flagged, not hidden. */
+export const FALLBACK_MODEL_ID = 'gemini-2.5-flash';
+
+/** The fallback rate card: prices legacy facts that carry no per-model buckets. */
+export const DEFAULT_TOKEN_RATES: TokenRates = MODEL_TOKEN_RATES[FALLBACK_MODEL_ID];
+
+/** Rate card for one model id; unknown ids get the fallback row. */
+export function ratesForModel(model: string): TokenRates {
+  return MODEL_TOKEN_RATES[model] ?? DEFAULT_TOKEN_RATES;
+}
+
+/** Model ids in a run's per-model buckets that have no price-table row. */
+export function unknownCostModels(cost: FactsCostTelemetry | null | undefined): string[] {
+  if (!cost?.byModel) return [];
+  return Object.keys(cost.byModel).filter((m) => !(m in MODEL_TOKEN_RATES));
+}
+
+function priceTokens(prompt: number, output: number, thoughts: number, rates: TokenRates): number {
+  // Thoughts are billed at the OUTPUT rate (they are generated tokens).
+  return (prompt / 1_000_000) * rates.inputPerMillion
+    + ((output + thoughts) / 1_000_000) * rates.outputPerMillion;
+}
 
 /**
  * Estimated USD spend for a run. Returns null when there is no telemetry at all
  * — a blank cell is honest, "$0.00" would imply the run was free.
+ *
+ * With per-model buckets (PR30 facts) each bucket is priced at its own model's
+ * row and the `rates` override does not apply — a single override cannot
+ * describe a mixed-model job. Legacy facts without buckets price their
+ * aggregate at `rates` (default: the fallback row).
  */
 export function estimateUsdCost(
   cost: FactsCostTelemetry | null | undefined,
@@ -44,14 +81,47 @@ export function estimateUsdCost(
   if (!cost) return null;
   const input = cost.promptTokens ?? 0;
   const output = cost.outputTokens ?? 0;
-  if (input <= 0 && output <= 0) return null;
-  return (input / 1_000_000) * rates.inputPerMillion + (output / 1_000_000) * rates.outputPerMillion;
+  const thoughts = cost.thoughtsTokens ?? 0;
+  if (input <= 0 && output <= 0 && thoughts <= 0) return null;
+  const buckets = cost.byModel ? Object.values(cost.byModel) : [];
+  if (buckets.length > 0) {
+    return buckets.reduce(
+      (sum, b) => sum + priceTokens(b.promptTokens ?? 0, b.outputTokens ?? 0, b.thoughtsTokens ?? 0, ratesForModel(b.model)),
+      0
+    );
+  }
+  return priceTokens(input, output, thoughts, rates);
 }
 
 /** Fixed 4 decimals: a single run often lands under a cent. */
 export function formatUsd(value: number | null): string {
   if (value == null || !isFinite(value)) return '—';
   return `$${value.toFixed(4)}`;
+}
+
+/**
+ * The pricing caption under the USD figure. Mixed-model jobs name every model
+ * actually used with its own rates; a model missing from the price table is
+ * flagged with ⚠ and its fallback stated — a wrong-but-quiet caption is how
+ * the old single-rate telemetry underpriced jobs. Legacy facts (no buckets)
+ * keep the single-rate caption.
+ */
+export function costCaption(
+  cost: FactsCostTelemetry | null | undefined,
+  rates: TokenRates = DEFAULT_TOKEN_RATES
+): string {
+  const buckets = cost?.byModel ? Object.values(cost.byModel) : [];
+  if (buckets.length === 0) {
+    return `Estimate at $${rates.inputPerMillion}/M in · $${rates.outputPerMillion}/M out`;
+  }
+  const unknown = new Set(unknownCostModels(cost));
+  const parts = buckets.map((b) => {
+    const r = ratesForModel(b.model);
+    return unknown.has(b.model)
+      ? `⚠ ${b.model} not in price table — priced as ${FALLBACK_MODEL_ID} ($${r.inputPerMillion}/M in · $${r.outputPerMillion}/M out)`
+      : `${b.model} $${r.inputPerMillion}/M in · $${r.outputPerMillion}/M out`;
+  });
+  return `Estimate: ${parts.join(' · ')}`;
 }
 
 export function telemetryFigures(
@@ -70,7 +140,7 @@ export function telemetryFigures(
       label: 'Total tokens',
       value: cost ? formatNumber(cost.totalTokens ?? 0, 0) : '—',
       sub: cost
-        ? `${formatNumber(cost.promptTokens ?? 0, 0)} in · ${formatNumber(cost.outputTokens ?? 0, 0)} out`
+        ? `${formatNumber(cost.promptTokens ?? 0, 0)} in · ${formatNumber(cost.outputTokens ?? 0, 0)} out${(cost.thoughtsTokens ?? 0) > 0 ? ` · ${formatNumber(cost.thoughtsTokens ?? 0, 0)} thinking` : ''}`
         : 'No token telemetry recorded',
     },
     {
@@ -89,7 +159,7 @@ export function telemetryFigures(
       key: 'usd',
       label: 'Est. API cost',
       value: formatUsd(estimateUsdCost(cost, rates)),
-      sub: `Estimate at $${rates.inputPerMillion}/M in · $${rates.outputPerMillion}/M out`,
+      sub: costCaption(cost, rates),
     },
   ];
 }

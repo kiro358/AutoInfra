@@ -10,7 +10,7 @@
 //   locator       LOCATOR_MODEL        default gemini-2.5-flash-lite, thinking OFF
 //   recheck       RECHECK_MODEL        default gemini-2.5-flash-lite, thinking OFF
 //   verify        VERIFY_MODEL         default gemini-2.5-flash-lite, thinking OFF
-//   transcription TRANSCRIPTION_MODEL  default gemini-2.5-flash, thinking = THINKING_BUDGET
+//   transcription TRANSCRIPTION_MODEL  default gemini-3.5-flash-lite, thinking = THINKING_BUDGET
 //   single        TRANSCRIPTION_MODEL  (same role family as transcription)
 //   watermain     WM_MODEL             default gemini-2.5-flash (unchanged), thinking = THINKING_BUDGET
 //
@@ -22,6 +22,15 @@
 // call succeeded. Next candidate to smoke-test on Vertex:
 // gemini-3.5-flash-lite. TRANSCRIPTION_MODEL can still select 3.1-flash-lite
 // (or any model) wherever it is available.
+//
+// PR32 — transcription default now TRIES gemini-3.5-flash-lite, per Kiro's
+// direction (2026-10-19) after 3.1-flash-lite's Vertex 404 above. It is a
+// generation newer than gemini-2.5-flash at the same $0.30/$2.50 headline
+// price (independent document benchmark 92.0%), so the prize is reading
+// quality, not cost. It may hit the same Vertex wall as 3.1 — the
+// post-deploy smoke job decides. If it also 404s on Vertex, the default
+// returns to gemini-2.5-flash. As a 3.x id it steers thinking via
+// thinkingLevel (thinkingConfigFor): prod THINKING_BUDGET=1024 → LOW.
 //
 // PRECEDENCE (per role): role env var  >  EXTRACTION_MODEL  >  built-in role
 // default. EXTRACTION_MODEL deliberately beats the role DEFAULTS: existing
@@ -49,8 +58,8 @@ export const ROLE_DEFAULT_MODEL: Record<ModelRole, string> = {
   locator: 'gemini-2.5-flash-lite',
   recheck: 'gemini-2.5-flash-lite',
   verify: 'gemini-2.5-flash-lite',
-  transcription: 'gemini-2.5-flash',
-  single: 'gemini-2.5-flash',
+  transcription: 'gemini-3.5-flash-lite',
+  single: 'gemini-3.5-flash-lite',
   watermain: 'gemini-2.5-flash',
 };
 

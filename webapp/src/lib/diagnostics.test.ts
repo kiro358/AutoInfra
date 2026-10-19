@@ -134,6 +134,36 @@ describe('diagnostics on a hybrid run fixture', () => {
     expect(record.locator.finalPages).toEqual([1, 2, 3]);
   });
 
+  it('carries model-fallback trips into the record only when one fired (PR34)', () => {
+    const base = {
+      mode: 'hybrid',
+      durationMs: 1,
+      locator: { ran: true, rawPicks: [1], unionAdded: [], finalPages: [1], tileAllFallback: false },
+      pages: [],
+      tiles: { planned: null, rendered: null, uploaded: null, transcribed: null, missingAfterRetry: null, degenerateDiscarded: null, blocks: null },
+      sources: [],
+      finalFacts: {
+        projectName: 'T', jobNumber: '', date: '', structures: [], catchbasins: [],
+        sewers: [], watermain: [], watermainSpecials: [], watermainValves: [],
+        confidence: 0, warnings: [],
+      },
+    };
+    const clean = buildExtractionDiagnostics(base);
+    expect(clean.modelFallback).toBeUndefined();
+    expect('modelFallback' in clean).toBe(false);
+
+    const tripped = buildExtractionDiagnostics({
+      ...base,
+      modelFallback: [{ role: 'transcription', from: 'gemini-3.8-flash', to: 'gemini-3.5-flash-lite' }],
+    });
+    expect(tripped.modelFallback).toEqual([
+      { role: 'transcription', from: 'gemini-3.8-flash', to: 'gemini-3.5-flash-lite' },
+    ]);
+
+    const empty = buildExtractionDiagnostics({ ...base, modelFallback: [] });
+    expect(empty.modelFallback).toBeUndefined();
+  });
+
   it('records image-only locator additions with their admission reason (PR26)', () => {
     const applied = applyImageOnlyRecheck([1], [4], new Set([4]));
     expect(applied.added).toEqual([{ page: 4, reason: 'image-only-locator' }]);

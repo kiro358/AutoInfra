@@ -34,7 +34,8 @@ describe('assembleTextTakeoff', () => {
     ])], 'T');
     expect(facts.sewers).toHaveLength(2);
     const dims = facts.sewers.map((s) => `${s.length}/${s.pipeDiameter}`).sort();
-    expect(dims).toEqual(['45/250', '83.7/375']);
+    // PR27: the 83.7m callout is recorded whole-metre-up as 84.
+    expect(dims).toEqual(['45/250', '84/375']);
     expect(facts.sewers.find((s) => s.pipeDiameter === 250)!.slope).toBe(0.5);
   });
 
@@ -177,7 +178,8 @@ describe('assembleTextTakeoff — symbol-font callouts (Uxbridge dialect)', () =
       { text: '\u0018\u0011\u001aP\u0003\u0010\u0003\u0015\u0013\u0013PP\u0091\u000367250\u0003#\u0003\u0015\u0011\u0018\u0008', x: 1082, y: 241 }, // "5.7m - 200mmØ STORM @ 2.5%"
     ])], 'T');
     expect(facts.sewers).toHaveLength(1);
-    expect(facts.sewers[0]).toMatchObject({ length: 5.7, pipeDiameter: 200, slope: 2.5 });
+    // "5.7m" callout, recorded whole-metre-up as 6 (PR27).
+    expect(facts.sewers[0]).toMatchObject({ length: 6, pipeDiameter: 200, slope: 2.5 });
     expect(facts.sewers[0].runLabel).toContain('STM');
   });
 
@@ -187,7 +189,8 @@ describe('assembleTextTakeoff — symbol-font callouts (Uxbridge dialect)', () =
       { text: '@ 2.0% (INSULATE)', x: 659, y: 1260 },
     ])], 'T');
     expect(facts.sewers).toHaveLength(1);
-    expect(facts.sewers[0]).toMatchObject({ length: 1.3, pipeDiameter: 150, slope: 2 });
+    // "1.3m" callout, recorded whole-metre-up as 2 (PR27).
+    expect(facts.sewers[0]).toMatchObject({ length: 2, pipeDiameter: 150, slope: 2 });
   });
 
   it('does not mint entities from decoded legend lines for existing pipes', () => {

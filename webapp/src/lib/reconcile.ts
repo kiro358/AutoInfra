@@ -4,11 +4,148 @@
  * Pure — the offline re-assembly loop (assemble-from-transcripts.ts) depends on
  * being able to re-run this for free against cached inputs.
  */
-import { TakeoffFacts, StructureFact, SewerFact, WatermainFact } from './types';
+import { TakeoffFacts, StructureFact, SewerFact, WatermainFact, WithheldItem } from './types';
 import { normalizeLabel, runSignature, stripSystemPrefix } from './compare-facts';
 import { mergeCatchbasinGroups } from './extraction';
 
 const nonNullCount = (o: object) => Object.values(o).filter((v) => v !== null && v !== '').length;
+
+// ---- PR27: fact-layer field completion (depths & the whole-metre rule) ----
+//
+// The field-accuracy census (pr27_census) attributed every missing/wrong
+// scored field on matched entities across the 26 golden projects. Three
+// clusters were recoverable at THIS layer — the values were read, but the
+// fields were never populated or never expressed the way the takeoff
+// records them:
+//
+// 1. structure.depth was null on every assembled fact (258/258 scored
+//    losses) although 204 of those structures carried BOTH elevations the
+//    depth is computed from. The estimator's own template defines the
+//    field: its Depth column formula is (Top El. − Low Inv). Deriving it
+//    here — fill-null only, flagged 'derived' in withheld — recovered
+//    121/258 against truth within scorer tolerance in the census
+//    simulation. The remainder are component misreads (83) and elevations
+//    never transcribed at all (54) — transcription's problem, not this
+//    layer's, and nothing here invents them.
+// 2. Catchbasin-family structures (CBMH/DCBMH/DICBMH) price to the bottom
+//    of the sump, which sits 0.30m below the lowest invert (OPSD
+//    catchbasin sump). Measured on the corpus: for CB-family structures
+//    the estimator's recorded depth minus (rim − low invert) has median
+//    exactly +0.30 (n=89), vs median 0.00 for plain manholes (n=103).
+//    Under scorer tolerance the plain formula passes 23/89 CB cases; the
+//    sump formula passes 46/89.
+// 3. Sewer lengths: the estimator records pipe in whole metres, always
+//    rounding UP (623/623 truth lengths are integral; on 231 matched
+//    pairs with a decimal stated length, truth == ceil(stated) in 204).
+//    The assemblers carried the stated decimal verbatim, so 52 scored
+//    lengths failed the 5% tolerance purely on the unit convention.
+//    Normalizing here — after stitching, so merge identity still compares
+//    stated values — expresses every measured run the way the takeoff
+//    records it, and the dimension-style run label is rewritten to match
+//    its length field.
+
+/** Sump depth below the lowest invert for catchbasin-family structures. */
+export const CATCHBASIN_SUMP_M = 0.3;
+
+const CB_FAMILY_LEAD = /^(?:SAN|SANITARY|STM|STORM)?\s*(?:DDICBMH|DICBMH|DCBMH|CBMH)(?![A-Z])/;
+const CB_FAMILY_TOKEN = /\s(?:DDICBMH|DICBMH|DCBMH|CBMH)(?![A-Z])/;
+
+/** True for catchbasin-family structure descriptions ("CBMH 5", "SAN CBMH 3",
+ *  "DCBMH 14"). Plain CBs never reach the structure list (they are grouped
+ *  catchbasins), so this only ever fires on manhole-class rows. */
+export function isCatchbasinFamilyStructure(description: string): boolean {
+  const u = description.toUpperCase();
+  return CB_FAMILY_LEAD.test(u) || CB_FAMILY_TOKEN.test(u);
+}
+
+/**
+ * The structure depth the takeoff records, computed from the elevations
+ * the fact itself carries: top elevation − low invert, plus the standard
+ * catchbasin sump for CB-family structures. Null when the fact does not
+ * carry both elevations or they are physically impossible (rim at/below
+ * the invert — physics-checks reports those readings; a derivation must
+ * not launder them into a plausible depth). Shared with physics-checks'
+ * stated-depth cross-check so the two never disagree about the rule.
+ */
+export function derivedStructureDepth(s: StructureFact): number | null {
+  if (s.topElevation == null || s.lowInvert == null) return null;
+  const base = s.topElevation - s.lowInvert;
+  if (!(base > 0)) return null;
+  return +(base + (isCatchbasinFamilyStructure(s.description) ? CATCHBASIN_SUMP_M : 0)).toFixed(2);
+}
+
+/** Whole-metre normalization for measured sewer runs (see header, item 3).
+ *  Line-item rows are fees, not measured pipe — untouched, as are null,
+ *  zero and already-integral lengths.
+ *
+ *  One refusal: a dimension-style label embeds the length its own callout
+ *  stated ("1.8m-300mm"). When the fact's length DISAGREES with that
+ *  embedded value, the length is a merge artifact — mergeSewerFact's max()
+ *  pooled two different reads of (allegedly) one pipe — and which read the
+ *  estimator would have recorded is unknowable from here. Ceiling an
+ *  artifact manufactures a number no callout stated (Future Park: label
+ *  1.8m, merged length 2.1, estimator recorded 2 — ceil(2.1)=3 broke a
+ *  matched pair). Label and length agreeing is the signature of a clean
+ *  single stated read, which is the population the convention was
+ *  measured on. */
+function normalizeSewerLength(s: SewerFact): SewerFact {
+  if (s.isLineItem || s.length == null || s.length <= 0 || Number.isInteger(s.length)) return s;
+  // Vector-path lengths are scale MEASUREMENTS off drawn geometry, not
+  // stated dimensions — the census that established the whole-metre rule
+  // covered stated callouts and schedule rows (text/transcript/schedule
+  // sources) only, and the calibration discipline treats a measured
+  // length as data at its measured precision. Not extrapolated to them.
+  if (s.source?.method === 'vector') return s;
+  const embedded = /^(\d+(?:\.\d+)?)m(?=[- ])/.exec(s.runLabel);
+  if (embedded && Math.abs(parseFloat(embedded[1]) - s.length) > 0.001) return s;
+  const length = Math.ceil(s.length);
+  const runLabel = embedded ? s.runLabel.replace(/^\d+(?:\.\d+)?m(?=[- ])/, `${length}m`) : s.runLabel;
+  return { ...s, length, runLabel };
+}
+
+/**
+ * Fill structure.depth where the fact's own elevations determine it
+ * (header, items 1–2). A depth a path actually stated is never
+ * overwritten, and a component is never borrowed from a neighbouring
+ * structure — a fact missing either elevation keeps its null and stays
+ * an honest question. Every filled depth is recorded in withheld as
+ * 'derived' so the workbook's AUDIT sheet shows it as computed, never
+ * as read. Idempotent: reconcile runs several times per pipeline, and a
+ * fact already carrying a depth (stated or derived) is left alone.
+ */
+function deriveStructureDepths(
+  structures: StructureFact[],
+  withheld: WithheldItem[],
+): StructureFact[] {
+  const recorded = new Set(
+    withheld.filter((w) => w.kind === 'derived' && w.field === 'depth').map((w) => w.entity),
+  );
+  return structures.map((s) => {
+    if (s.depth != null) return s;
+    const depth = derivedStructureDepth(s);
+    if (depth == null) return s;
+    if (!recorded.has(s.description)) {
+      const cb = isCatchbasinFamilyStructure(s.description);
+      withheld.push({
+        entity: s.description,
+        field: 'depth',
+        kind: 'derived',
+        question:
+          `Structure depth not stated on the drawing; computed as top elevation (${s.topElevation}) ` +
+          `− low invert (${s.lowInvert})${cb ? ` + ${CATCHBASIN_SUMP_M}m catchbasin sump (OPSD)` : ''} ` +
+          `from the read elevations. Confirm the depth.`,
+        defaultApplied: {
+          value: depth,
+          source: cb
+            ? 'derived: topElevation − lowInvert + catchbasin sump'
+            : 'derived: topElevation − lowInvert',
+        },
+      });
+      recorded.add(s.description);
+    }
+    return { ...s, depth };
+  });
+}
 
 // Construction features the estimator builds differently: a drop connection, a
 // doghouse built over an existing pipe, an internal weir/orifice control, or a
@@ -686,7 +823,10 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
   const structures = suffixCollapse.structures;
 
   // 2. sewers: multi-tile sewer run stitching & endpoint-aware consolidation
-  const keptSewers = stitchSewerRuns(facts.sewers);
+  // PR27: measured runs are recorded in whole metres (see the field-
+  // completion note at the top of this file) — after stitching, so merge
+  // identity compared the stated values.
+  const keptSewers = stitchSewerRuns(facts.sewers).map(normalizeSewerLength);
 
   // 3. watermain: exact dedupe, then AGGREGATE BY DIAMETER.
   //
@@ -777,14 +917,22 @@ export function reconcileTakeoff(facts: TakeoffFacts): TakeoffFacts {
     );
   }
 
+  // PR27: fill structure depths from the facts' own elevations (see the
+  // field-completion note at the top of this file). Runs on the final
+  // structure list — after grouping has pooled every duplicate's readings,
+  // so a rim read by one path and an invert read by another meet here.
+  const withheld = [...(facts.withheld ?? [])];
+  const derivedStructures = deriveStructureDepths(headwall.structures, withheld);
+
   return {
     ...facts,
-    structures: headwall.structures,
+    structures: derivedStructures,
     sewers: keptSewers,
     // 3. catchbasins: merge duplicate label groups by type (see mergeCatchbasinGroups)
     catchbasins: cb.catchbasins,
     watermain,
     warnings,
+    ...(withheld.length > (facts.withheld?.length ?? 0) ? { withheld } : {}),
   };
 }
 

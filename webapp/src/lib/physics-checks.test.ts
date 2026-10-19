@@ -254,3 +254,22 @@ describe('appendPhysicsWarnings — appender contract (mirrors appendCoverageWar
     expect(physicsWarnings(f)).toEqual(physicsWarnings(f));
   });
 });
+
+describe('physicsWarnings — PR27: stated-depth cross-check uses the fact-layer depth rule', () => {
+  it('does not flag a CB-family stated depth that includes the catchbasin sump', () => {
+    // rim − low invert = 3.0; with the 0.3m sump the recorded depth is 3.3.
+    // Against the plain difference that is exactly at the old band edge;
+    // against the shared derivedStructureDepth rule it agrees exactly.
+    const w = physicsWarnings(facts({
+      structures: [struct('CBMH 1', { topElevation: 100, lowInvert: 97, depth: 3.3 })],
+    }));
+    expect(w.filter((x) => x.includes('stated depth'))).toEqual([]);
+  });
+
+  it('still flags a CB-family stated depth that disagrees with the sump-inclusive expectation', () => {
+    const w = physicsWarnings(facts({
+      structures: [struct('CBMH 1', { topElevation: 100, lowInvert: 97, depth: 4.1 })],
+    }));
+    expect(w.some((x) => x.includes('stated depth'))).toBe(true);
+  });
+});

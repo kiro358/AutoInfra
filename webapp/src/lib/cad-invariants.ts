@@ -332,6 +332,11 @@ export function evaluateNetworkInvariants(
         typeClass: edge.typeClass ?? null,
         slope: edge.slopePercent ?? null,
         depth: 2.5,
+        // Provenance: lengths here are stated callouts or scale
+        // measurements off drawn geometry, already convention-processed
+        // by applyEstimatorConventions — reconcile's whole-metre rule
+        // for stated text/schedule lengths must not re-round them.
+        source: { method: 'vector' },
       });
     }
   }

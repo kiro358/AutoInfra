@@ -24,9 +24,9 @@ describe('resolveRoleModel — no env (built-in Option B defaults)', () => {
     expect(resolveRoleModel('verify', {})).toBe('gemini-2.5-flash-lite');
   });
 
-  it('assigns gemini-3.5-flash-lite to transcription and single-pass (PR32 trial; PR31: 3.1-flash-lite 404s on Vertex)', () => {
-    expect(resolveRoleModel('transcription', {})).toBe('gemini-3.5-flash-lite');
-    expect(resolveRoleModel('single', {})).toBe('gemini-3.5-flash-lite');
+  it('assigns gemini-2.5-flash to transcription and single-pass (PR33 settled: 3.1- and 3.5-flash-lite both 404 on Vertex)', () => {
+    expect(resolveRoleModel('transcription', {})).toBe('gemini-2.5-flash');
+    expect(resolveRoleModel('single', {})).toBe('gemini-2.5-flash');
   });
 
   it('keeps the watermain second pass on gemini-2.5-flash', () => {
@@ -116,7 +116,7 @@ describe('thinkingConfigFor — Gemini 3.x maps budgets to levels, never both fi
     }
   });
 
-  it('pins gemini-3.5-flash-lite (the PR32 transcription default) at the boundary budgets', () => {
+  it('pins gemini-3.5-flash-lite (a 3.x id, selectable via TRANSCRIPTION_MODEL) at the boundary budgets', () => {
     const M35 = 'gemini-3.5-flash-lite';
     expect(thinkingConfigFor(M35, 0)).toEqual({ thinkingLevel: ThinkingLevel.MINIMAL });
     expect(thinkingConfigFor(M35, 1024)).toEqual({ thinkingLevel: ThinkingLevel.LOW });
@@ -125,17 +125,17 @@ describe('thinkingConfigFor — Gemini 3.x maps budgets to levels, never both fi
 });
 
 describe('roleThinkingConfig — per-role thinking under the three env conditions', () => {
-  it('(a) no env: locator/recheck/verify think 0 on flash-lite; transcription maps THINKING_BUDGET to a level (PR32: 3.5-flash-lite); watermain keeps its budget', () => {
+  it('(a) no env: locator/recheck/verify think 0 on flash-lite; transcription/single keep the numeric budget (PR33: back on 2.5-flash); watermain keeps its budget', () => {
     const models = resolveRoleModels({});
     // Prod pins THINKING_BUDGET=1024; code default is 8192. Both are pinned here.
     expect(roleThinkingConfig('locator', models.locator, 1024)).toEqual({ thinkingBudget: 0 });
     expect(roleThinkingConfig('recheck', models.recheck, 1024)).toEqual({ thinkingBudget: 0 });
     expect(roleThinkingConfig('verify', models.verify, 1024)).toEqual({ thinkingBudget: 0 });
-    // PR32: transcription/single default to gemini-3.5-flash-lite (3.x) → the
-    // budget maps to a thinkingLevel, never a numeric thinkingBudget.
-    expect(roleThinkingConfig('transcription', models.transcription, 1024)).toEqual({ thinkingLevel: ThinkingLevel.LOW });
-    expect(roleThinkingConfig('transcription', models.transcription, 8192)).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
-    expect(roleThinkingConfig('single', models.single, 1024)).toEqual({ thinkingLevel: ThinkingLevel.LOW });
+    // PR33: transcription/single default to gemini-2.5-flash (2.5-era) → the
+    // numeric budget passes through untouched.
+    expect(roleThinkingConfig('transcription', models.transcription, 1024)).toEqual({ thinkingBudget: 1024 });
+    expect(roleThinkingConfig('transcription', models.transcription, 8192)).toEqual({ thinkingBudget: 8192 });
+    expect(roleThinkingConfig('single', models.single, 1024)).toEqual({ thinkingBudget: 1024 });
     expect(roleThinkingConfig('watermain', models.watermain, 1024)).toEqual({ thinkingBudget: 1024 });
   });
 

@@ -10,27 +10,22 @@
 //   locator       LOCATOR_MODEL        default gemini-2.5-flash-lite, thinking OFF
 //   recheck       RECHECK_MODEL        default gemini-2.5-flash-lite, thinking OFF
 //   verify        VERIFY_MODEL         default gemini-2.5-flash-lite, thinking OFF
-//   transcription TRANSCRIPTION_MODEL  default gemini-3.5-flash-lite, thinking = THINKING_BUDGET
+//   transcription TRANSCRIPTION_MODEL  default gemini-2.5-flash, thinking = THINKING_BUDGET
 //   single        TRANSCRIPTION_MODEL  (same role family as transcription)
 //   watermain     WM_MODEL             default gemini-2.5-flash (unchanged), thinking = THINKING_BUDGET
 //
-// PR31 — transcription default REVERTED from gemini-3.1-flash-lite to
-// gemini-2.5-flash: 3.1-flash-lite is GA on the Developer API but is NOT
-// served on Vertex AI in us-central1 for this project — the first prod smoke
-// job on the PR30 build (2026-10-19) got 404 NOT_FOUND on all 66
-// transcription calls and lost 36/36 tiles, while the 2.5-flash-lite locator
-// call succeeded. Next candidate to smoke-test on Vertex:
-// gemini-3.5-flash-lite. TRANSCRIPTION_MODEL can still select 3.1-flash-lite
-// (or any model) wherever it is available.
-//
-// PR32 — transcription default now TRIES gemini-3.5-flash-lite, per Kiro's
-// direction (2026-10-19) after 3.1-flash-lite's Vertex 404 above. It is a
-// generation newer than gemini-2.5-flash at the same $0.30/$2.50 headline
-// price (independent document benchmark 92.0%), so the prize is reading
-// quality, not cost. It may hit the same Vertex wall as 3.1 — the
-// post-deploy smoke job decides. If it also 404s on Vertex, the default
-// returns to gemini-2.5-flash. As a 3.x id it steers thinking via
-// thinkingLevel (thinkingConfigFor): prod THINKING_BUDGET=1024 → LOW.
+// SETTLED (PR33, 2026-10-19) — transcription stays on gemini-2.5-flash.
+// Both 3.x Lite candidates were tried as the transcription default and
+// live-proved unavailable: gemini-3.1-flash-lite (PR30) and
+// gemini-3.5-flash-lite (PR32) each returned 404 NOT_FOUND on Vertex AI in
+// us-central1 for this project — GA on the Developer API is not Vertex
+// availability. Each smoke job failed all 66 transcription calls and lost
+// 36/36 tiles, while the 2.5-flash-lite locator call succeeded. Vertex
+// serves the 2.5 family to this project/region; no 3.x Lite model is
+// served here yet. The default returns to gemini-2.5-flash until a 3.x
+// Lite model is actually served on Vertex here — TRANSCRIPTION_MODEL can
+// select one the day that changes (the 3.x thinking-level mapping in
+// thinkingConfigFor stays in place for that day).
 //
 // PRECEDENCE (per role): role env var  >  EXTRACTION_MODEL  >  built-in role
 // default. EXTRACTION_MODEL deliberately beats the role DEFAULTS: existing
@@ -58,8 +53,8 @@ export const ROLE_DEFAULT_MODEL: Record<ModelRole, string> = {
   locator: 'gemini-2.5-flash-lite',
   recheck: 'gemini-2.5-flash-lite',
   verify: 'gemini-2.5-flash-lite',
-  transcription: 'gemini-3.5-flash-lite',
-  single: 'gemini-3.5-flash-lite',
+  transcription: 'gemini-2.5-flash',
+  single: 'gemini-2.5-flash',
   watermain: 'gemini-2.5-flash',
 };
 

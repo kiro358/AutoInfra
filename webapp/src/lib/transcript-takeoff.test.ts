@@ -467,3 +467,81 @@ describe('assembleTranscriptTakeoff — PR25 grammar extensions', () => {
     expect(descriptions).toEqual(['MHTEE112', 'STC 4000']);
   });
 });
+
+describe('assembleTranscriptTakeoff — detached elevation dialects (PR39)', () => {
+  it('reads a value-first block (rim "277.09 T/G", bare inverts) as field-bearing', () => {
+    // The 3.x-era Uxbridge shape that cost MH 1A: label bare, geometry
+    // value-first. Before PR39 every geometry line orphaned and the
+    // structure assembled field-empty.
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['MH1A', '277.09 T/G', '275.64', '275.61'],
+      ]},
+    ], 'UXBRIDGE');
+    expect(facts.structures).toHaveLength(1);
+    expect(facts.structures[0]).toMatchObject({
+      description: 'MH1A', topElevation: 277.09, lowInvert: 275.61, highInvert: 275.64,
+    });
+    expect(facts.warnings.some((w) => w.startsWith('Unrecognized line in structure block'))).toBe(false);
+  });
+
+  it('keeps a value-first suffixed structure out of the phase-suffix collapse', () => {
+    // MH1 read keyword-first (field-bearing) + MH1A read value-first: the
+    // collapse may only fold a suffixed form that is FIELD-EMPTY, so a
+    // value-first MH1A with real readings must survive beside MH1. Before
+    // PR39 this collapsed ("MH1A → MH1") and the structure was lost.
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['MH1', 'T/G = 276.36', 'INV = 274.63'],
+        ['MH1A', '277.09 T/G', '275.64', '275.61'],
+      ]},
+    ], 'UXBRIDGE');
+    const descriptions = facts.structures.map((s) => s.description).sort();
+    expect(descriptions).toEqual(['MH1', 'MH1A']);
+    expect(facts.warnings.some((w) => w.startsWith('Collapsed'))).toBe(false);
+  });
+
+  it('still collapses a genuinely field-empty phase-suffix echo', () => {
+    // The Milton shape the collapse exists for: a bare suffixed re-read with
+    // no geometry lines at all stays field-empty and still folds.
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['MH61', 'T/G = 276.75', 'INV = 275.72'],
+        ['MH61E'],
+      ]},
+    ], 'MILTON');
+    expect(facts.structures.map((s) => s.description)).toEqual(['MH61']);
+    expect(facts.warnings.some((w) => w.startsWith('Collapsed'))).toBe(true);
+  });
+
+  it('adopts a value-first rim alongside keyword inverts (depth becomes derivable)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['MH2', '(1200mmØ)', '276.36 T/G', 'N INV. 275.64', 'S INV. 275.61'],
+      ]},
+    ], 'UXBRIDGE');
+    expect(facts.structures[0]).toMatchObject({
+      description: 'MH2', topElevation: 276.36, lowInvert: 275.61, highInvert: 275.64, diameter: 1200,
+    });
+  });
+
+  it('reads a parenthesised bare value as the rim', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['MH9', '(277.13)', '275.90'],
+      ]},
+    ], 'UXBRIDGE');
+    expect(facts.structures[0]).toMatchObject({ topElevation: 277.13, lowInvert: 275.90 });
+  });
+
+  it('does not adopt OPSD drawing numbers or small dimensions as elevations', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['MH5', 'LID 276.75', '701.010', '21.00', 'INV. 275.72'],
+      ]},
+    ], 'PANATTONI');
+    expect(facts.structures[0]).toMatchObject({ topElevation: 276.75, lowInvert: 275.72, highInvert: null });
+    expect(facts.warnings.some((w) => w.includes('"701.010"'))).toBe(true);
+    expect(facts.warnings.some((w) => w.includes('"21.00"'))).toBe(true);
+  });
+});

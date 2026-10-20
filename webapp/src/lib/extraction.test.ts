@@ -688,11 +688,11 @@ describe('two-pass watermain extraction', () => {
       expect(facts.watermainValves).toEqual([{ valveSize: '250mm Gate Valve', quantity: 1 }]);
       // PR30: usage is bucketed under the watermain role's resolved model and
       // thoughts tokens are accumulated (billed at the output rate downstream).
-      // PR34: the watermain role's resolved model is now gemini-3.8-flash.
+      // PR36: the watermain role's resolved model is now gemini-3.5-flash-lite.
       expect(cost.thoughtsTokens).toBe(25);
       expect(cost.byModel).toEqual({
-        'gemini-3.8-flash': {
-          model: 'gemini-3.8-flash',
+        'gemini-3.5-flash-lite': {
+          model: 'gemini-3.5-flash-lite',
           promptTokens: 100,
           outputTokens: 50,
           thoughtsTokens: 25,
@@ -709,7 +709,7 @@ describe('two-pass watermain extraction', () => {
 
 describe('PR34 model fallback — runSecondPassWatermain end-to-end', () => {
   const err404 = () => Object.assign(
-    new Error('Publisher model `projects/x/locations/us/publishers/google/models/gemini-3.8-flash` was not found or your project does not have access to it'),
+    new Error('Publisher model `projects/x/locations/us/publishers/google/models/gemini-3.5-flash-lite` was not found or your project does not have access to it'),
     { status: 404 },
   );
   const wmStream = () => (async function* () {
@@ -735,11 +735,11 @@ describe('PR34 model fallback — runSecondPassWatermain end-to-end', () => {
     await withCacheOff(async () => {
       const facts = parseFacts({ watermain: [] }, 'Test Project');
       const cost = freshCost();
-      const state = createModelFallbackState('gemini-3.5-flash-lite');
+      const state = createModelFallbackState('gemini-3.1-flash-lite');
       const seenModels: string[] = [];
       const generateFn = vi.fn(async (args: any) => {
         seenModels.push(args.model);
-        if (args.model === 'gemini-3.8-flash') throw err404();
+        if (args.model === 'gemini-3.5-flash-lite') throw err404();
         return wmStream();
       });
       const preparePdfPart = vi.fn().mockResolvedValue({ inlineData: { mimeType: 'application/pdf', data: 'abc' } });
@@ -752,11 +752,11 @@ describe('PR34 model fallback — runSecondPassWatermain end-to-end', () => {
       const res = await runSecondPassWatermain(facts, opts(facts, cost, 'test-hash-wm-fallback'));
       expect(res).toBe(true);
       // Exactly one retry: configured model first, fallback second.
-      expect(seenModels).toEqual(['gemini-3.8-flash', 'gemini-3.5-flash-lite']);
-      expect(state.trips).toEqual([{ role: 'watermain', from: 'gemini-3.8-flash', to: 'gemini-3.5-flash-lite' }]);
-      // Telemetry follows the EFFECTIVE model: nothing is bucketed under 3.8.
-      expect(Object.keys(cost.byModel ?? {})).toEqual(['gemini-3.5-flash-lite']);
-      expect(cost.byModel!['gemini-3.5-flash-lite'].llmCalls).toBe(1);
+      expect(seenModels).toEqual(['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite']);
+      expect(state.trips).toEqual([{ role: 'watermain', from: 'gemini-3.5-flash-lite', to: 'gemini-3.1-flash-lite' }]);
+      // Telemetry follows the EFFECTIVE model: nothing is bucketed under the configured model.
+      expect(Object.keys(cost.byModel ?? {})).toEqual(['gemini-3.1-flash-lite']);
+      expect(cost.byModel!['gemini-3.1-flash-lite'].llmCalls).toBe(1);
       expect(facts.watermain).toHaveLength(1);
 
       // Sticks for the job: a later run sharing the state calls the
@@ -765,7 +765,7 @@ describe('PR34 model fallback — runSecondPassWatermain end-to-end', () => {
       seenModels.length = 0;
       const res2 = await runSecondPassWatermain(facts2, opts(facts2, freshCost(), 'test-hash-wm-fallback-2'));
       expect(res2).toBe(true);
-      expect(seenModels).toEqual(['gemini-3.5-flash-lite']);
+      expect(seenModels).toEqual(['gemini-3.1-flash-lite']);
       expect(state.trips).toHaveLength(1);
     });
   });
@@ -773,7 +773,7 @@ describe('PR34 model fallback — runSecondPassWatermain end-to-end', () => {
   it('does NOT trip on a non-availability error: no fallback call, no trip, batch contributes nothing', async () => {
     await withCacheOff(async () => {
       const facts = parseFacts({ watermain: [] }, 'Test Project');
-      const state = createModelFallbackState('gemini-3.5-flash-lite');
+      const state = createModelFallbackState('gemini-3.1-flash-lite');
       const generateFn = vi.fn(async () => {
         throw Object.assign(new Error('INVALID_ARGUMENT: bad request'), { status: 400 });
       });
@@ -797,7 +797,7 @@ describe('PR34 model fallback — runSecondPassWatermain end-to-end', () => {
   it('when the fallback also 404s the trip is still recorded, but the batch fails cleanly after exactly one retry', async () => {
     await withCacheOff(async () => {
       const facts = parseFacts({ watermain: [] }, 'Test Project');
-      const state = createModelFallbackState('gemini-3.5-flash-lite');
+      const state = createModelFallbackState('gemini-3.1-flash-lite');
       const generateFn = vi.fn(async () => { throw err404(); });
       const res = await runSecondPassWatermain(facts, {
         projectName: 'Test Project',
@@ -811,7 +811,7 @@ describe('PR34 model fallback — runSecondPassWatermain end-to-end', () => {
       });
       expect(res).toBe(false);
       expect(generateFn).toHaveBeenCalledTimes(2);
-      expect(state.trips).toEqual([{ role: 'watermain', from: 'gemini-3.8-flash', to: 'gemini-3.5-flash-lite' }]);
+      expect(state.trips).toEqual([{ role: 'watermain', from: 'gemini-3.5-flash-lite', to: 'gemini-3.1-flash-lite' }]);
       expect(facts.watermain).toHaveLength(0);
     });
   });
@@ -821,19 +821,19 @@ describe('PR30 role-based model assignment — module wiring (clean env)', () =>
   // resolution LOGIC under env variations is pinned in model-config.test.ts;
   // this pins that extraction.ts actually resolved the defaults and
   // per-role thinking configs at module load (no env set in the test runner).
-  it('resolves the role defaults per role (PR34: every role on gemini-3.8-flash)', () => {
+  it('resolves the role defaults per role (PR36: every role on gemini-3.5-flash-lite)', () => {
     expect(ROLE_MODELS).toEqual({
-      locator: 'gemini-3.8-flash',
-      recheck: 'gemini-3.8-flash',
-      verify: 'gemini-3.8-flash',
-      transcription: 'gemini-3.8-flash',
-      single: 'gemini-3.8-flash',
-      watermain: 'gemini-3.8-flash',
+      locator: 'gemini-3.5-flash-lite',
+      recheck: 'gemini-3.5-flash-lite',
+      verify: 'gemini-3.5-flash-lite',
+      transcription: 'gemini-3.5-flash-lite',
+      single: 'gemini-3.5-flash-lite',
+      watermain: 'gemini-3.5-flash-lite',
     });
   });
 
   it('pins thinking levels for the 3.x defaults: MINIMAL for the verdict roles, MEDIUM at the code-default budget (PR34)', () => {
-    // 3.8-flash is a 3.x model → thinkingLevel, never a numeric budget.
+    // 3.5-flash-lite is a 3.x model → thinkingLevel, never a numeric budget.
     // Locator/recheck/verify pin thinking OFF → MINIMAL on 3.x;
     // transcription/single/watermain at the code-default budget 8192 → MEDIUM.
     expect(ROLE_THINKING.locator).toEqual({ thinkingLevel: ThinkingLevel.MINIMAL });
@@ -844,7 +844,7 @@ describe('PR30 role-based model assignment — module wiring (clean env)', () =>
     expect(ROLE_THINKING.watermain).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
   });
 
-  it('resolves every role location to us and the fallback model to gemini-3.5-flash-lite (PR34)', () => {
+  it('resolves every role location to us and the fallback model to gemini-3.1-flash-lite (PR34 locations, PR36 fallback)', () => {
     expect(ROLE_LOCATIONS).toEqual({
       locator: 'us',
       recheck: 'us',
@@ -853,7 +853,7 @@ describe('PR30 role-based model assignment — module wiring (clean env)', () =>
       single: 'us',
       watermain: 'us',
     });
-    expect(FALLBACK_MODEL).toBe('gemini-3.5-flash-lite');
+    expect(FALLBACK_MODEL).toBe('gemini-3.1-flash-lite');
   });
 });
 

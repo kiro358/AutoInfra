@@ -8,12 +8,12 @@
 // output tokens and is where reading quality lives. Option B (see
 // model_optimisation.md §4) assigns a model per ROLE:
 //
-//   locator       LOCATOR_MODEL        default gemini-3.8-flash, thinking OFF
-//   recheck       RECHECK_MODEL        default gemini-3.8-flash, thinking OFF
-//   verify        VERIFY_MODEL         default gemini-3.8-flash, thinking OFF
-//   transcription TRANSCRIPTION_MODEL  default gemini-3.8-flash, thinking = THINKING_BUDGET
+//   locator       LOCATOR_MODEL        default gemini-3.5-flash-lite, thinking OFF
+//   recheck       RECHECK_MODEL        default gemini-3.5-flash-lite, thinking OFF
+//   verify        VERIFY_MODEL         default gemini-3.5-flash-lite, thinking OFF
+//   transcription TRANSCRIPTION_MODEL  default gemini-3.5-flash-lite, thinking = THINKING_BUDGET
 //   single        TRANSCRIPTION_MODEL  (same role family as transcription)
-//   watermain     WM_MODEL             default gemini-3.8-flash, thinking = THINKING_BUDGET
+//   watermain     WM_MODEL             default gemini-3.5-flash-lite, thinking = THINKING_BUDGET
 //
 // PRECEDENCE (per role): role env var  >  EXTRACTION_MODEL  >  built-in role
 // default. EXTRACTION_MODEL deliberately beats the role DEFAULTS: existing
@@ -46,17 +46,31 @@
 //
 // WHICH MODEL (PR34): Kiro directed "move to the latest" (2026-10-19),
 // superseding the availability memo's gemini-3.5-flash-lite primary
-// recommendation. Every role's default is therefore gemini-3.8-flash —
-// the latest flagship Flash, GA, verified served at location `us`,
-// $0.75/$3.75 per M in/out (price doubles 2027-01-01). gemini-4-argon is
-// newer overall but UNVERIFIED on Vertex and 3–5× the price, so it was
-// not chosen; the per-role plumbing lets it be armed later with env vars
-// alone (e.g. TRANSCRIPTION_MODEL=gemini-4-argon).
+// recommendation, so PR34 defaulted every role to gemini-3.8-flash —
+// the latest flagship Flash, GA, $0.75/$3.75 per M in/out (price doubles
+// 2027-01-01). gemini-4-argon is newer overall but UNVERIFIED on Vertex
+// and 3–5× the price, so it was not chosen; the per-role plumbing lets
+// it be armed later with env vars alone (e.g.
+// TRANSCRIPTION_MODEL=gemini-4-argon).
+//
+// SETTLED (PR36, 2026-10-19): 3.8-flash live-proved AVAILABLE at `us`
+// but was vetoed on quality — two independent live Uxbridge runs scored
+// detF1 74.6 / fieldAcc 62.8 IDENTICALLY vs the 80.7/61.4 (PR52 build)
+// and 79.6/61.4 (PR54 build) baselines on 2.5-flash builds, a confirmed
+// breach of the −2.0 per-project veto, not run variance. The loss was
+// sewer-run recall (35%): the flagship's tile transcripts are terse and
+// drop runs. Field accuracy on the content it DID extract rose to 62.8,
+// so 3.8-flash remains one TRANSCRIPTION_MODEL env var away if a future
+// arm revisits it. Primaries therefore settle on gemini-3.5-flash-lite
+// for EVERY role (same 3.x generation, best Lite document benchmark,
+// $0.30/$2.50 per M in/out), and the fallback default steps down to
+// gemini-3.1-flash-lite ($0.25/$1.50). Telemetry price rows for both
+// Lite models already exist (PR30).
 //
 // MODEL FALLBACK (PR34): if a role family's configured model proves
 // unavailable mid-job (Vertex 404), the job degrades the MODEL, not the
 // takeoff: the call is retried once on TRANSCRIPTION_FALLBACK_MODEL
-// (default gemini-3.5-flash-lite) at the same location, that model serves
+// (default gemini-3.1-flash-lite — PR36) at the same location, that model serves
 // the family for the rest of the job, and the trip is recorded on the
 // facts (warning + diagnostics). This is the fix for the PR30/PR32 failure
 // mode, where a 404ing default silently lost every tile in the job.
@@ -78,12 +92,12 @@ const ROLE_ENV_VAR: Record<ModelRole, string> = {
 };
 
 export const ROLE_DEFAULT_MODEL: Record<ModelRole, string> = {
-  locator: 'gemini-3.8-flash',
-  recheck: 'gemini-3.8-flash',
-  verify: 'gemini-3.8-flash',
-  transcription: 'gemini-3.8-flash',
-  single: 'gemini-3.8-flash',
-  watermain: 'gemini-3.8-flash',
+  locator: 'gemini-3.5-flash-lite',
+  recheck: 'gemini-3.5-flash-lite',
+  verify: 'gemini-3.5-flash-lite',
+  transcription: 'gemini-3.5-flash-lite',
+  single: 'gemini-3.5-flash-lite',
+  watermain: 'gemini-3.5-flash-lite',
 };
 
 /** Resolve the model id for one call-site role. `env` is injectable for tests. */
@@ -168,7 +182,7 @@ export function resolveRoleLocations(env: Record<string, string | undefined> = p
 // ---------------------------------------------------------------------------
 
 /** The fallback target when TRANSCRIPTION_FALLBACK_MODEL is unset. */
-export const DEFAULT_FALLBACK_MODEL = 'gemini-3.5-flash-lite';
+export const DEFAULT_FALLBACK_MODEL = 'gemini-3.1-flash-lite';
 
 /** Resolve the job-level fallback model id. `env` is injectable for tests. */
 export function resolveFallbackModel(env: Record<string, string | undefined> = process.env): string {

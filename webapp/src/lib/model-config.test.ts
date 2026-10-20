@@ -28,11 +28,12 @@ import {
 const ROLES = ['locator', 'recheck', 'verify', 'transcription', 'single', 'watermain'] as const;
 
 describe('resolveRoleModel — no env (built-in defaults)', () => {
-  // PR34: Kiro directed "move to the latest" — every role defaults to the
-  // flagship gemini-3.8-flash (the 2.5 family retires on Vertex 2026-10-20
-  // and the 3.x models are only served from global/us/eu locations).
-  it('assigns gemini-3.8-flash to EVERY role', () => {
-    for (const role of ROLES) expect(resolveRoleModel(role, {})).toBe('gemini-3.8-flash');
+  // PR36: every role settles on gemini-3.5-flash-lite. PR34 defaulted to
+  // the flagship gemini-3.8-flash ("move to the latest"), but two identical
+  // live Uxbridge runs vetoed it on quality (detF1 74.6 vs 80.7 baseline,
+  // sewer-run recall 35% from terse transcripts) — see model-config.ts.
+  it('assigns gemini-3.5-flash-lite to EVERY role', () => {
+    for (const role of ROLES) expect(resolveRoleModel(role, {})).toBe('gemini-3.5-flash-lite');
   });
 
   it('resolveRoleModels covers every role with its default', () => {
@@ -66,7 +67,7 @@ describe('resolveRoleModel — a role var set (beats EXTRACTION_MODEL for that r
   });
 
   it('an empty role var is ignored, not treated as a model id', () => {
-    expect(resolveRoleModel('locator', { LOCATOR_MODEL: '' })).toBe('gemini-3.8-flash');
+    expect(resolveRoleModel('locator', { LOCATOR_MODEL: '' })).toBe('gemini-3.5-flash-lite');
     expect(resolveRoleModel('locator', { LOCATOR_MODEL: '', EXTRACTION_MODEL: 'gemini-2.5-pro' })).toBe('gemini-2.5-pro');
   });
 });
@@ -125,7 +126,7 @@ describe('thinkingConfigFor — Gemini 3.x maps budgets to levels, never both fi
     expect(thinkingConfigFor(M35, 8192)).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
   });
 
-  it('pins gemini-3.8-flash (the PR34 default for every role) at the boundary budgets', () => {
+  it('pins gemini-3.8-flash (a 3.x id, the PR34 default — env-selectable since PR36) at the boundary budgets', () => {
     const M38 = 'gemini-3.8-flash';
     expect(thinkingConfigFor(M38, 0)).toEqual({ thinkingLevel: ThinkingLevel.MINIMAL });
     expect(thinkingConfigFor(M38, 1024)).toEqual({ thinkingLevel: ThinkingLevel.LOW });
@@ -135,13 +136,13 @@ describe('thinkingConfigFor — Gemini 3.x maps budgets to levels, never both fi
 });
 
 describe('roleThinkingConfig — per-role thinking under the three env conditions', () => {
-  it('(a) no env: every role is on gemini-3.8-flash (3.x) — no-thinking roles map 0 to MINIMAL, the rest map the budget to a level', () => {
+  it('(a) no env: every role is on gemini-3.5-flash-lite (3.x) — no-thinking roles map 0 to MINIMAL, the rest map the budget to a level', () => {
     const models = resolveRoleModels({});
     // Prod pins THINKING_BUDGET=1024; code default is 8192. Both are pinned here.
     expect(roleThinkingConfig('locator', models.locator, 1024)).toEqual({ thinkingLevel: ThinkingLevel.MINIMAL });
     expect(roleThinkingConfig('recheck', models.recheck, 1024)).toEqual({ thinkingLevel: ThinkingLevel.MINIMAL });
     expect(roleThinkingConfig('verify', models.verify, 1024)).toEqual({ thinkingLevel: ThinkingLevel.MINIMAL });
-    // PR34: transcription/single/watermain default to gemini-3.8-flash →
+    // PR36: transcription/single/watermain default to gemini-3.5-flash-lite →
     // 1024 (prod) maps to LOW, the code-default 8192 maps to MEDIUM.
     expect(roleThinkingConfig('transcription', models.transcription, 1024)).toEqual({ thinkingLevel: ThinkingLevel.LOW });
     expect(roleThinkingConfig('transcription', models.transcription, 8192)).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
@@ -201,14 +202,14 @@ describe('resolveRoleLocation — PR34 per-role locations, PR35 precedence fix',
   });
 });
 
-describe('resolveFallbackModel — PR34 fallback target', () => {
-  it('defaults to gemini-3.5-flash-lite', () => {
-    expect(resolveFallbackModel({})).toBe('gemini-3.5-flash-lite');
+describe('resolveFallbackModel — PR34 fallback target, PR36 default', () => {
+  it('defaults to gemini-3.1-flash-lite', () => {
+    expect(resolveFallbackModel({})).toBe('gemini-3.1-flash-lite');
   });
 
   it('TRANSCRIPTION_FALLBACK_MODEL overrides; an empty value is ignored', () => {
-    expect(resolveFallbackModel({ TRANSCRIPTION_FALLBACK_MODEL: 'gemini-3.1-flash-lite' })).toBe('gemini-3.1-flash-lite');
-    expect(resolveFallbackModel({ TRANSCRIPTION_FALLBACK_MODEL: '' })).toBe('gemini-3.5-flash-lite');
+    expect(resolveFallbackModel({ TRANSCRIPTION_FALLBACK_MODEL: 'gemini-3.5-flash-lite' })).toBe('gemini-3.5-flash-lite');
+    expect(resolveFallbackModel({ TRANSCRIPTION_FALLBACK_MODEL: '' })).toBe('gemini-3.1-flash-lite');
   });
 });
 

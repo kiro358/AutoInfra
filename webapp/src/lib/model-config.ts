@@ -74,6 +74,22 @@
 // the family for the rest of the job, and the trip is recorded on the
 // facts (warning + diagnostics). This is the fix for the PR30/PR32 failure
 // mode, where a 404ing default silently lost every tile in the job.
+//
+// TRANSCRIPTION THINKING FLOOR (PR37, 2026-10-19): three independent 3.x
+// prod runs on Uxbridge (gemini-3.8-flash ×2, gemini-3.5-flash-lite ×1)
+// ALL landed at sewer-run recall 35% (8/23) and detF1 74.6–77.9, vs
+// 79.6–80.7 on the 2.5-flash builds — while field accuracy IMPROVED to
+// 62.8. The shared 3.x factor across those runs: transcription thinking
+// maps prod's THINKING_BUDGET=1024 to ThinkingLevel LOW (the PR30
+// mapping in thinkingConfigFor below), where 2.5-flash consumed a
+// numeric budget. Suspected cause: LOW under-thinks the tiles and
+// transcribes tersely, skipping run callouts. roleThinkingConfig
+// therefore floors the transcription and single roles at MEDIUM on
+// level-based (3.x) models — MINIMAL/LOW rise to MEDIUM, MEDIUM/HIGH
+// pass through. 2.x numeric-budget behaviour is completely unchanged,
+// and locator/recheck/verify/watermain are untouched (locator stays
+// MINIMAL at budget 0). The floor is a hypothesis under test: it is
+// panel-judged like every model change, and reverts if it buys nothing.
 
 import { ThinkingLevel } from '@google/genai';
 
@@ -306,11 +322,33 @@ export function thinkingConfigFor(model: string, budget: number): RoleThinkingCo
   return { thinkingLevel: ThinkingLevel.HIGH };
 }
 
-/** Thinking config for one role: NO_THINKING_ROLES pin budget 0, the rest use THINKING_BUDGET. */
+/**
+ * Roles floored at MEDIUM thinking on level-based (3.x) models (PR37 — see
+ * the header note). Only the tile-reading roles: transcription and its
+ * single-pass sibling. The floor applies wherever a role's config is
+ * derived, including the fallback path — a tripped 3.x fallback model gets
+ * the same floor, because extraction.ts re-derives through this function.
+ */
+const TRANSCRIPTION_THINKING_FLOOR_ROLES: ReadonlySet<ModelRole> = new Set(['transcription', 'single']);
+
+/**
+ * Thinking config for one role: NO_THINKING_ROLES pin budget 0, the rest use
+ * THINKING_BUDGET. PR37: on level-based models the transcription/single
+ * roles are floored at MEDIUM (MINIMAL/LOW → MEDIUM); numeric-budget
+ * models and all other roles pass through untouched.
+ */
 export function roleThinkingConfig(
   role: ModelRole,
   model: string,
   thinkingBudget: number,
 ): RoleThinkingConfig {
-  return thinkingConfigFor(model, NO_THINKING_ROLES.has(role) ? 0 : thinkingBudget);
+  const cfg = thinkingConfigFor(model, NO_THINKING_ROLES.has(role) ? 0 : thinkingBudget);
+  if (
+    TRANSCRIPTION_THINKING_FLOOR_ROLES.has(role) &&
+    'thinkingLevel' in cfg &&
+    (cfg.thinkingLevel === ThinkingLevel.MINIMAL || cfg.thinkingLevel === ThinkingLevel.LOW)
+  ) {
+    return { thinkingLevel: ThinkingLevel.MEDIUM };
+  }
+  return cfg;
 }

@@ -142,11 +142,13 @@ describe('roleThinkingConfig — per-role thinking under the three env condition
     expect(roleThinkingConfig('locator', models.locator, 1024)).toEqual({ thinkingLevel: ThinkingLevel.MINIMAL });
     expect(roleThinkingConfig('recheck', models.recheck, 1024)).toEqual({ thinkingLevel: ThinkingLevel.MINIMAL });
     expect(roleThinkingConfig('verify', models.verify, 1024)).toEqual({ thinkingLevel: ThinkingLevel.MINIMAL });
-    // PR36: transcription/single/watermain default to gemini-3.5-flash-lite →
-    // 1024 (prod) maps to LOW, the code-default 8192 maps to MEDIUM.
-    expect(roleThinkingConfig('transcription', models.transcription, 1024)).toEqual({ thinkingLevel: ThinkingLevel.LOW });
+    // PR36: transcription/single/watermain default to gemini-3.5-flash-lite.
+    // PR37: transcription/single are floored at MEDIUM on 3.x, so 1024 (prod)
+    // AND 8192 (code default) both land on MEDIUM; watermain is not floored
+    // and still maps 1024 to LOW.
+    expect(roleThinkingConfig('transcription', models.transcription, 1024)).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
     expect(roleThinkingConfig('transcription', models.transcription, 8192)).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
-    expect(roleThinkingConfig('single', models.single, 1024)).toEqual({ thinkingLevel: ThinkingLevel.LOW });
+    expect(roleThinkingConfig('single', models.single, 1024)).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
     expect(roleThinkingConfig('watermain', models.watermain, 1024)).toEqual({ thinkingLevel: ThinkingLevel.LOW });
   });
 
@@ -159,6 +161,53 @@ describe('roleThinkingConfig — per-role thinking under the three env condition
   it('(c) role var points a no-thinking role at a 3.x model: 0 maps to MINIMAL, not a numeric budget', () => {
     const models = resolveRoleModels({ LOCATOR_MODEL: 'gemini-3.1-flash-lite' });
     expect(roleThinkingConfig('locator', models.locator, 1024)).toEqual({ thinkingLevel: ThinkingLevel.MINIMAL });
+  });
+});
+
+// PR37 — transcription thinking floor on 3.x models (see the header note in
+// model-config.ts): three 3.x prod runs pinned sewer-run recall at 35% with
+// transcription thinking mapped to LOW from prod's THINKING_BUDGET=1024.
+// roleThinkingConfig floors transcription + single at MEDIUM on level-based
+// models; everything else is untouched.
+describe('roleThinkingConfig — PR37 transcription thinking floor', () => {
+  const M = 'gemini-3.5-flash-lite';
+
+  it('floors transcription and single at MEDIUM for budgets that map to MINIMAL or LOW', () => {
+    for (const role of ['transcription', 'single'] as const) {
+      expect(roleThinkingConfig(role, M, 0)).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
+      expect(roleThinkingConfig(role, M, 1)).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
+      expect(roleThinkingConfig(role, M, 1024)).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
+    }
+  });
+
+  it('leaves MEDIUM and HIGH mappings untouched', () => {
+    for (const role of ['transcription', 'single'] as const) {
+      expect(roleThinkingConfig(role, M, 8192)).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
+      expect(roleThinkingConfig(role, M, 8193)).toEqual({ thinkingLevel: ThinkingLevel.HIGH });
+      expect(roleThinkingConfig(role, M, 24576)).toEqual({ thinkingLevel: ThinkingLevel.HIGH });
+    }
+  });
+
+  it('does not floor the other roles: locator stays MINIMAL, watermain still maps 1024 to LOW', () => {
+    expect(roleThinkingConfig('locator', M, 0)).toEqual({ thinkingLevel: ThinkingLevel.MINIMAL });
+    expect(roleThinkingConfig('locator', M, 1024)).toEqual({ thinkingLevel: ThinkingLevel.MINIMAL });
+    expect(roleThinkingConfig('recheck', M, 1024)).toEqual({ thinkingLevel: ThinkingLevel.MINIMAL });
+    expect(roleThinkingConfig('verify', M, 1024)).toEqual({ thinkingLevel: ThinkingLevel.MINIMAL });
+    expect(roleThinkingConfig('watermain', M, 1024)).toEqual({ thinkingLevel: ThinkingLevel.LOW });
+  });
+
+  it('does not touch 2.x numeric budgets for the floored roles', () => {
+    expect(roleThinkingConfig('transcription', 'gemini-2.5-flash', 1024)).toEqual({ thinkingBudget: 1024 });
+    expect(roleThinkingConfig('transcription', 'gemini-2.5-flash', 0)).toEqual({ thinkingBudget: 0 });
+    expect(roleThinkingConfig('single', 'gemini-2.5-flash', 1024)).toEqual({ thinkingBudget: 1024 });
+  });
+
+  it('floors the fallback model too: a tripped 3.1-flash-lite fallback derives MEDIUM for transcription/single', () => {
+    // extraction.ts re-derives the thinking config through roleThinkingConfig
+    // with the EFFECTIVE (fallback) model when a family trips — the floor
+    // must follow it, or the degraded path would under-think the same way.
+    expect(roleThinkingConfig('transcription', 'gemini-3.1-flash-lite', 1024)).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
+    expect(roleThinkingConfig('single', 'gemini-3.1-flash-lite', 1024)).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM });
   });
 });
 

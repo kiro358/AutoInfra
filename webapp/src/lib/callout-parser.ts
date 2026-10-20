@@ -364,7 +364,10 @@ export function isRunContinuation(line: string): boolean {
 // (Note: the widened (?:^|[\s(]) delimiter applies to every kind, not just JF.)
 // OCS (outlet control structure), HW (headwall) and FES (flared end section) are the
 // abbreviated spellings; their written-out forms go through NAMED_STRUCTURES below.
-const STRUCT_RE = /(?:^|[\s(])(EX\.?\s*|(?:NEW|PROP(?:OSED)?|PR)\.?\s+)?(?:(?:SAN(?:ITARY)?|STM|STORM)\s+)?(DDICB|DCBMH|DICB|MHTEE|CB\/MH|DBL\/CB|CBMH|DCB|STMH|SANMH|OCS|FES|CB|MH|HS|HW|OS|JF|EF)(\s?-?\s?|\s?#\s?)(\d+(?:-\d+)*[A-Z]?)\s*(?:\((\d{3,4})\s*(?:MM)?\s*[ØO]?\))?/i;
+// PR42: the system prefix also admits the hyphenated separator ("STM-MH 4") —
+// the same label with the hyphen the kind–id separator already allows. Without
+// it the whole callout block was invisible to the grammar.
+const STRUCT_RE = /(?:^|[\s(])(EX\.?\s*|(?:NEW|PROP(?:OSED)?|PR)\.?\s+)?(?:(?:SAN(?:ITARY)?|STM|STORM)(?:\s*-\s*|\s+))?(DDICB|DCBMH|DICB|MHTEE|CB\/MH|DBL\/CB|CBMH|DCB|STMH|SANMH|OCS|FES|CB|MH|HS|HW|OS|JF|EF)(\s?-?\s?|\s?#\s?)(\d+(?:-\d+)*[A-Z]?)\s*(?:\((\d{3,4})\s*(?:MM)?\s*[ØO]?\))?/i;
 // Global copy for matchAll iteration. matchAll clones the regex internally, so no shared
 // lastIndex state leaks between calls (do NOT add 'g' to STRUCT_RE itself and call exec in a loop).
 const STRUCT_RE_G = new RegExp(STRUCT_RE.source, 'gi');

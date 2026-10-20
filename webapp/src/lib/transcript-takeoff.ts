@@ -54,6 +54,30 @@ interface Sink {
   mentionedStructures: Map<string, string>;
   mentionedCatchbasins: Map<CatchbasinGroupFact['type'], Map<string, string>>;
   mentionedExisting: Set<string>;
+  /**
+   * PR42: invert lines read inside catchbasin-GROUP blocks. A group block's
+   * geometry is discarded by design (groups carry counts, not elevations),
+   * but the values are real reads from the drawing — kept here so the
+   * fail-closed orphan adoption at the end of assembly can attribute one to
+   * a structure whose own reads leave its invert null.
+   */
+  orphanInverts: { page: number; tile: number; line: string; value: number }[];
+  /**
+   * PR42: the assembler's page segmentation of the transcript stream (tile
+   * numbers reset per page, so a non-increasing tile starts a new page) and
+   * the page each sink structure read arrived on. Tile numbers repeat
+   * across pages, so tile-scoped reasoning (the orphan adoption) must key
+   * on (page, tile) — processLines records the page through currentPage,
+   * and the assembly loop stamps each new read with it.
+   */
+  currentPage: number;
+  readPages: Map<StructureFact, number>;
+  /**
+   * PR42: line sets handed to processLines that produced no structure read
+   * at all (first line + tile kept), for the mis-transcribed-label rescue at
+   * the end of assembly.
+   */
+  droppedStructureBlocks: { tile: number; lines: string[] }[];
 }
 
 /**
@@ -430,6 +454,12 @@ function joinBlockLines(block: string[]): string[] {
 const VALUE_FIRST_TG_RE = /^\(?\s*(\d{2,3}(?:\.\d{1,3})?)\s*\)?\s*(?:T\/G|T\.G\.?|TG)\s*$/i;
 const BARE_ELEVATION_RE = /^\(?\s*(\d{2,3}\.\d{1,3})\s*\)?$/;
 const OPSD_DRAWING_NUMBER_RE = /^\d{3}\.0\d{2}$/;
+// PR42: a compass point followed by a bare value and nothing else ("NE
+// 258.30") is a directional invert whose INV keyword was dropped in
+// transcription. Every directional form in the keyword grammar is an invert
+// form — rims are never stated as a bare direction + value (they carry T/G,
+// TOP or RIM) — so the classification is safe inside a structure block.
+const BARE_DIRECTIONAL_ELEVATION_RE = /^\s*(NE|NW|SE|SW|N|S|E|W)\s+(\d{2,3}\.\d{1,3})\s*$/;
 
 function parseDetachedElevation(
   line: string,
@@ -439,6 +469,13 @@ function parseDetachedElevation(
   const t = line.trim();
   const tg = VALUE_FIRST_TG_RE.exec(t);
   if (tg) return { type: 'TG', direction: null, value: parseFloat(tg[1]) };
+  const dir = BARE_DIRECTIONAL_ELEVATION_RE.exec(t);
+  if (dir) {
+    if (OPSD_DRAWING_NUMBER_RE.test(dir[2])) return null;
+    const dirValue = parseFloat(dir[2]);
+    if (dirValue < 50) return null;
+    return { type: 'INV', direction: null, value: dirValue };
+  }
   const bare = BARE_ELEVATION_RE.exec(t);
   if (!bare) return null;
   if (OPSD_DRAWING_NUMBER_RE.test(bare[1])) return null;
@@ -470,6 +507,7 @@ function processLines(lines: string[], out: Sink, warnings: string[], tile: numb
     let topElevation: number | null = null;
     let diameterMm = parsed.diameterMm;
     const inverts: number[] = [];
+    const cbType = cbKindType(parsed.kind);
     for (const line of lines) {
       if (line === structureLine) continue;
       // The size is often wrapped onto its own line: "PROP STM MH 100 / (2400 mmØ) / ...".
@@ -495,10 +533,15 @@ function processLines(lines: string[], out: Sink, warnings: string[], tile: numb
           break;
         }
         topElevation = e.value;
-      } else inverts.push(e.value);
+      } else {
+        inverts.push(e.value);
+        // PR42: a catchbasin-GROUP block's inverts are about to be discarded
+        // (the group records only its label). Keep them as tile-scoped
+        // orphans — see the adoption pass at the end of assembly.
+        if (cbType) out.orphanInverts.push({ page: out.currentPage, tile, line, value: e.value });
+      }
     }
 
-    const cbType = cbKindType(parsed.kind);
     if (cbType) {
       // PR23 scope guard: a hyphenated occurrence of an enumeration label is
       // a schedule read, not a plan read — it is not counted (the exclusion
@@ -635,6 +678,296 @@ function usableBlocks(tile: TileTranscript): string[][] {
   });
 }
 
+/**
+ * Reconcile's merge-group key (see mergeStructureGroup in reconcile.ts):
+ * the normalized label, SAN-namespaced when the description opens with a
+ * sanitary marker. The PR42 passes group reads exactly the way the merge
+ * will, so a preference applied here lands on the group it reasons about.
+ */
+function mergeGroupKey(description: string): string {
+  let key = normalizeLabel(description);
+  if (/^san( |itary )/.test(description.toLowerCase())) key = `SAN|${key}`;
+  return key;
+}
+
+/**
+ * PR42 L1b — operative-rim preference within a structure's own reads.
+ *
+ * A structure read once per sheet it appears on can carry CONFLICTING rims:
+ * a shared/family sheet states one TOP for a whole structure family (the
+ * frozen corpus's Panattoni sheets state TOP=171.25 / 171.48 for every
+ * catchbasin manhole on them), while the structure's operative sheets state
+ * its own. Reconcile's merge is first-wins per field, so the family value —
+ * read first — silently became the structure's rim, and the derived depth
+ * inherited the error (Panattoni CBMH 101: rim 171.25, depth 5.28 against a
+ * typed 2.89 whose rim is 168.86). The preference fires only when the
+ * operative value is UNAMBIGUOUS in the reads themselves:
+ *
+ *  - the group carries an invert (a derivation is at stake — a rim-only
+ *    group's rim is left exactly as read);
+ *  - the displaced first rim is a FAMILY value — at least three distinct
+ *    structure groups in the assembly state it. A structure-specific
+ *    first rim is the structure's own read, however wrong it looks, and
+ *    is never displaced;
+ *  - the LAST rim value differs from the first by at least 0.8 m (the
+ *    corpus's validated family/operative splits are 0.82–2.39 m; every
+ *    correct group whose reads merely disagree in transcription noise
+ *    disagrees by at most 0.70 m);
+ *  - the last value is corroborated — at least two rim-bearing reads state
+ *    it. A single late read is indistinguishable from a transcription
+ *    stray (the corpus carries correct groups whose lone late read is the
+ *    stray), so it never moves a rim.
+ *
+ * When the preference fires, the first rim-bearing read's rim is rewritten
+ * to the corroborated last value before the merge. Nothing else moves:
+ * inverts, diameter and type keep first-wins (in the validated cases the
+ * truth pairs the operative rim with the FIRST read's invert), and no value
+ * is imported from another structure — the winning rim is one of the
+ * structure's own reads.
+ */
+function applyLastRimPreference(out: Sink): void {
+  const groups = new Map<string, StructureFact[]>();
+  for (const s of out.structures) {
+    const key = mergeGroupKey(s.description);
+    const reads = groups.get(key);
+    if (reads) reads.push(s);
+    else groups.set(key, [s]);
+  }
+  // Family values: rim values stated by at least three distinct structure
+  // groups anywhere in this assembly — the signature of a shared sheet
+  // stating one TOP for a whole family. Only a family value is ever
+  // displaced; a structure-specific first rim, however wrong it looks,
+  // is the structure's own read and stays.
+  const valueGroups = new Map<number, Set<string>>();
+  for (const [key, reads] of groups) {
+    for (const r of reads) {
+      if (r.topElevation === null) continue;
+      const set = valueGroups.get(r.topElevation) ?? new Set<string>();
+      set.add(key);
+      valueGroups.set(r.topElevation, set);
+    }
+  }
+  for (const reads of groups.values()) {
+    const rimReads = reads.filter((r) => r.topElevation !== null);
+    if (rimReads.length < 2) continue;
+    const first = rimReads[0].topElevation!;
+    const last = rimReads[rimReads.length - 1].topElevation!;
+    if (first === last) continue;
+    if ((valueGroups.get(first)?.size ?? 0) < 3) continue;
+    if (Math.abs(last - first) < 0.8) continue;
+    if (rimReads.filter((r) => r.topElevation === last).length < 2) continue;
+    if (!reads.some((r) => r.lowInvert !== null)) continue;
+    rimReads[0].topElevation = last;
+  }
+}
+
+function compactLabelText(s: string): string {
+  return s.toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+/** Levenshtein distance ≤ 1, with the standard row-minimum early exit. */
+function withinOneEdit(a: string, b: string): boolean {
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let rowMin = i;
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (cur[j] < rowMin) rowMin = cur[j];
+    }
+    if (rowMin > 1) return false;
+    prev = cur;
+  }
+  return prev[b.length] <= 1;
+}
+
+/**
+ * PR42 L1a (rescue) — geometry blocks whose label line is a one-character
+ * mis-transcription of a label the assembler read cleanly elsewhere
+ * ("CRMH2" for CBMH 2, "MHTA" for MH 1A, "DBMH144" for DCBMH 144) are dropped
+ * whole by the block grammar: the label does not parse, so the block's
+ * elevations orphan. The rescue attributes such a block to the cleanly-read
+ * structure when the attribution is unambiguous:
+ *
+ *  - the block produced no structure read and its first line does not parse
+ *    as any label (existing / catchbasin-group / scope-demoted blocks were
+ *    deliberately handled and are never rescued);
+ *  - the first line's compact form is within one edit of EXACTLY ONE
+ *    cleanly-read label that carries a substantive read (a rim or a
+ *    diameter) — when several labels sit within one edit, only a candidate
+ *    whose clean reads carry the block's own stated rim survives;
+ *  - the block carries at least one parseable elevation and no run or
+ *    watermain callout.
+ *
+ * The recovered read is appended AFTER all clean reads, so reconcile's
+ * first-wins merge lets it only fill fields the clean reads leave blank —
+ * it can never override a direct read. A warning names the recovery and the
+ * mis-transcribed label, and the read's evidence is the garbled line itself,
+ * so the attribution stays distinguishable from a direct read downstream.
+ */
+function rescueGarbledLabelBlocks(out: Sink): string[] {
+  const warnings: string[] = [];
+  interface KnownLabel {
+    description: string; compact: string; rims: Set<number>;
+    hasRim: boolean; hasInvert: boolean;
+  }
+  const known = new Map<string, KnownLabel>();
+  for (const s of out.structures) {
+    if (s.topElevation === null && s.diameter === null) continue;
+    if (!/\d/.test(compactLabelText(s.description))) continue;
+    const key = mergeGroupKey(s.description);
+    let k = known.get(key);
+    if (!k) {
+      k = {
+        description: s.description, compact: compactLabelText(s.description), rims: new Set(),
+        hasRim: false, hasInvert: false,
+      };
+      known.set(key, k);
+    }
+    if (s.topElevation !== null) { k.rims.add(s.topElevation); k.hasRim = true; }
+    if (s.lowInvert !== null) k.hasInvert = true;
+  }
+  if (known.size === 0) return warnings;
+
+  for (const block of out.droppedStructureBlocks) {
+    const first = block.lines[0]?.trim();
+    if (!first) continue;
+    if (parseStructureLabel(first)) continue;
+    // The garbled label head only: a stated size may ride on the same line
+    // ("DBMH144 (1500Ø)") and is not part of the label. The garble itself
+    // may have eaten the label's digit ("MH 1A" read as "MHTA"), so no
+    // digit is demanded here — the one-edit test against digit-carrying
+    // clean labels does the discriminating.
+    const compact = compactLabelText(first.split('(')[0].trim() || first);
+    if (compact.length < 3) continue;
+    let top: number | null = null;
+    const inverts: number[] = [];
+    let usable = true;
+    for (const line of block.lines.slice(1)) {
+      if (parseRunCallout(line) || parseWatermainCallout(line)) { usable = false; break; }
+      const e: ParsedElevation | null = parseElevation(line) ?? parseDetachedElevation(line, top !== null, inverts.length > 0);
+      if (!e) continue;
+      if (e.type === 'TG') { if (top === null) top = e.value; }
+      else inverts.push(e.value);
+    }
+    if (!usable) continue;
+    if (top === null && inverts.length === 0) continue;
+    let candidates = [...known.values()].filter((k) => k.compact !== compact && withinOneEdit(compact, k.compact));
+    if (candidates.length > 1) {
+      if (top === null) continue;
+      candidates = candidates.filter((k) => k.rims.has(top));
+    }
+    if (candidates.length !== 1) continue;
+    const target = candidates[0];
+    // Fill-only, in fact as well as in merge order: if the group already
+    // carries both components, the garbled block has nothing to give —
+    // appending it would only mint a provenance warning for a no-op.
+    const fillsGap = (inverts.length > 0 && !target.hasInvert) || (top !== null && !target.hasRim);
+    if (!fillsGap) continue;
+    if (inverts.length > 0) target.hasInvert = true;
+    if (top !== null) target.hasRim = true;
+    out.structures.push({
+      description: target.description,
+      topElevation: top,
+      lowInvert: inverts.length ? Math.min(...inverts) : null,
+      highInvert: inverts.length >= 2 ? Math.max(...inverts) : null,
+      pipeOutDiameter: null,
+      structureType: null,
+      depth: null,
+      diameter: null,
+      source: { method: 'transcript', tile: block.tile, evidence: first },
+    });
+    warnings.push(
+      `Recovered geometry for ${target.description} from a mis-transcribed label block ("${first}", tile ${block.tile}): ` +
+        `the block's label is one character off the structure's own label, its elevations parse cleanly, and no other ` +
+        `cleanly-read label matches — the read is appended after the structure's own reads, so it only fills fields they leave blank.`
+    );
+  }
+  return warnings;
+}
+
+/**
+ * PR42 L1a (adoption) — an invert stated inside a catchbasin-GROUP callout
+ * is discarded with the rest of the group's geometry (groups carry counts,
+ * not elevations), even when it is the only invert read anywhere for a
+ * structure sharing that tile (the frozen corpus: "INV=284.61" inside a
+ * DICB callout on the same page and tile as the label-only read of the CBMH
+ * whose invert it is). The adoption is fail-closed — it fires only when
+ * EVERY one of these holds:
+ *
+ *  - the (page, tile) — tile numbers repeat across pages, so the page
+ *    segment is part of the key — carries exactly ONE distinct orphan
+ *    value, and that value is not already attributed to a structure read
+ *    on the same (page, tile);
+ *  - exactly ONE structure (by merge group) still has no invert anywhere,
+ *    has a read on that (page, tile), and has an assembled rim ABOVE the
+ *    orphan value. The rim test is physical, not cosmetic: an invert at or
+ *    above the rim cannot belong to the structure, which eliminates
+ *    candidates the tile alone cannot (and a rimless group cannot be
+ *    completed into a depth at all, so it is never a candidate).
+ *
+ * The adopted value is appended as a fill-only read whose evidence is the
+ * orphan line itself, and a warning names the adoption — cross-block
+ * attribution is never indistinguishable from a direct read.
+ */
+function adoptOrphanInverts(out: Sink): string[] {
+  const warnings: string[] = [];
+  const byPageTile = new Map<string, { page: number; tile: number; line: string; value: number }[]>();
+  for (const o of out.orphanInverts) {
+    const key = `${o.page}|${o.tile}`;
+    const arr = byPageTile.get(key);
+    if (arr) arr.push(o);
+    else byPageTile.set(key, [o]);
+  }
+  // Assembled rim per merge group (the first rim-bearing read states it).
+  const groupRim = new Map<string, number | null>();
+  for (const s of out.structures) {
+    const key = mergeGroupKey(s.description);
+    if (!groupRim.has(key)) groupRim.set(key, s.topElevation);
+    else if (groupRim.get(key) === null && s.topElevation !== null) groupRim.set(key, s.topElevation);
+  }
+  const groupsWithInvert = new Set(
+    out.structures.filter((s) => s.lowInvert !== null).map((s) => mergeGroupKey(s.description))
+  );
+  for (const orphans of byPageTile.values()) {
+    const { page, tile } = orphans[0];
+    const values = [...new Set(orphans.map((o) => o.value))];
+    if (values.length !== 1) continue;
+    const value = values[0];
+    const onPageTile = out.structures.filter(
+      (s) => s.source?.tile === tile && out.readPages.get(s) === page
+    );
+    if (onPageTile.some((s) => s.lowInvert === value || s.highInvert === value)) continue;
+    const candidateKeys = [...new Set(
+      onPageTile.filter((s) => s.lowInvert === null).map((s) => mergeGroupKey(s.description))
+    )].filter((k) => {
+      if (groupsWithInvert.has(k)) return false;
+      const rim = groupRim.get(k);
+      return rim !== null && rim !== undefined && rim > value;
+    });
+    if (candidateKeys.length !== 1) continue;
+    const description = onPageTile.find((s) => mergeGroupKey(s.description) === candidateKeys[0])!.description;
+    out.structures.push({
+      description,
+      topElevation: null,
+      lowInvert: value,
+      highInvert: null,
+      pipeOutDiameter: null,
+      structureType: null,
+      depth: null,
+      diameter: null,
+      source: { method: 'transcript', tile, evidence: orphans[0].line },
+    });
+    warnings.push(
+      `Adopted invert ${value} into ${description} from a catchbasin callout on tile ${tile} ("${orphans[0].line}"): ` +
+        `group callouts record counts only, so the value was otherwise discarded; ${description} is the only structure ` +
+        `read on that page and tile still missing an invert, its rim sits above the value, and no other orphan value competes for it.`
+    );
+  }
+  return warnings;
+}
+
 export function assembleTranscriptTakeoff(transcripts: TileTranscript[], projectName: string): TakeoffFacts {
   const out: Sink = {
     structures: [],
@@ -648,10 +981,19 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
     mentionedStructures: new Map(),
     mentionedCatchbasins: new Map(),
     mentionedExisting: new Set(),
+    orphanInverts: [],
+    droppedStructureBlocks: [],
+    currentPage: 0,
+    readPages: new Map(),
   };
   const warnings: string[] = [];
 
+  let prevTileNum = -Infinity;
   for (const tile of transcripts) {
+    // Page segmentation: transcripts arrive page by page and tile numbers
+    // reset per page, so a non-increasing tile number starts a new page.
+    if (tile.tile <= prevTileNum) out.currentPage++;
+    prevTileNum = tile.tile;
     for (const block of usableBlocks(tile)) {
       const joined = joinBlockLines(block);
 
@@ -708,13 +1050,29 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
           }
           const cells = rawCells
             .filter((c) => !HASH_STRUCTURE_HEADER_RE.test(c));
+          const beforeCells = out.structures.length;
           const matched = processLines(cells, out, warnings, tile.tile);
+          for (let i = beforeCells; i < out.structures.length; i++) {
+            out.readPages.set(out.structures[i], out.currentPage);
+          }
+          if (out.structures.length === beforeCells) {
+            out.droppedStructureBlocks.push({ tile: tile.tile, lines: cells });
+          }
           if (!matched) warnings.push(`Unparseable schedule row: "${line}"`);
         } else {
           remaining.push(line);
         }
       }
-      if (remaining.length > 0) processLines(remaining, out, warnings, tile.tile);
+      if (remaining.length > 0) {
+        const beforeRemaining = out.structures.length;
+        processLines(remaining, out, warnings, tile.tile);
+        for (let i = beforeRemaining; i < out.structures.length; i++) {
+          out.readPages.set(out.structures[i], out.currentPage);
+        }
+        if (out.structures.length === beforeRemaining) {
+          out.droppedStructureBlocks.push({ tile: tile.tile, lines: remaining });
+        }
+      }
     }
   }
 
@@ -738,6 +1096,39 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
         `${rawList(unique)}. If this contract covers them, add them manually.`
     );
   }
+
+  // PR42: reads admitted ONLY by the hyphenated system-prefix form
+  // ("STM-MH 4" — see callout-parser) are corroborating evidence, not
+  // primary reads: they move after every read the established grammar
+  // admitted, so at reconcile's first-wins merge they fill the fields the
+  // established reads leave blank and never override them. A hyphenated
+  // read that is a structure's only read still emits the structure.
+  const hyphenSystemRead = (s: StructureFact): boolean =>
+    /^(?:EX\.?\s*|(?:NEW|PROP(?:OSED)?|PR)\.?\s+)?(?:SANITARY|SAN|STORM|STM)\s*-/.test(
+      (s.source?.evidence ?? '').trim().toUpperCase()
+    );
+  // Corroboration only: a hyphenated read counts toward a structure the
+  // established grammar also read (its merge group has a plain-form read).
+  // A structure visible ONLY in the hyphenated form is not emitted — on
+  // the frozen corpus those are out-of-scope reads (sibling-phase
+  // structures the estimator did not take off), the same failure mode the
+  // PR23 enumeration guards exclude; the coverage warning at the end of
+  // assembly surfaces the labels it leaves behind.
+  const plainGroups = new Set(
+    out.structures.filter((s) => !hyphenSystemRead(s)).map((s) => mergeGroupKey(s.description))
+  );
+  out.structures = [
+    ...out.structures.filter((s) => !hyphenSystemRead(s)),
+    ...out.structures.filter((s) => hyphenSystemRead(s) && plainGroups.has(mergeGroupKey(s.description))),
+  ];
+
+  // PR42 L1: elevation recovery passes over the sink. Order matters — the
+  // rim preference runs on the clean reads only; the garble rescue and the
+  // orphan adoption then append fill-only reads after them, so a recovered
+  // value can never override a direct read at the merge.
+  applyLastRimPreference(out);
+  warnings.push(...rescueGarbledLabelBlocks(out));
+  warnings.push(...adoptOrphanInverts(out));
 
   const catchbasins: CatchbasinGroupFact[] = Array.from(out.catchbasinLabels.entries()).map(([type, labels]) => ({
     type, quantity: labels.size, wallThickness: null, depth: null,

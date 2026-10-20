@@ -545,3 +545,208 @@ describe('assembleTranscriptTakeoff — detached elevation dialects (PR39)', () 
     expect(facts.warnings.some((w) => w.includes('"21.00"'))).toBe(true);
   });
 });
+
+describe('PR42 elevation recovery', () => {
+  const byLabel = (facts: ReturnType<typeof assembleTranscriptTakeoff>, want: string) =>
+    facts.structures.find((x) => x.description.replace(/\s/g, '') === want);
+
+  it('reads a bare directional line in a structure block as its invert (L1a own-block)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['DCBMH 2', 'NE 258.30'],
+        ['DCBMH 2', 'T/G 260.00'],
+      ]},
+    ], 'GEORGIAN');
+    const s = byLabel(facts, 'DCBMH2')!;
+    expect(s.topElevation).toBe(260);
+    expect(s.lowInvert).toBe(258.3);
+    expect(s.depth).toBe(2); // 260 − 258.30 + 0.30 CB sump
+  });
+
+  it('refuses bare directional lines that are OPSD numbers or small values (L1a guard)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['MH5', 'LID 276.75', 'NE 701.010', 'SW 21.00', 'INV. 275.72'],
+      ]},
+    ], 'T');
+    expect(facts.structures[0]).toMatchObject({ topElevation: 276.75, lowInvert: 275.72, highInvert: null });
+  });
+
+  it('fills a geometry-free read from a hyphenated system-prefix block; hyphenated-only structures are not emitted (L1a dialect)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['MH4'],
+        ['STM-MH 4', 'T/G 284.49', 'E INV 282.54', 'N INV 282.54'],
+        ['STM-MH 122', 'T/G 285.62'],
+      ]},
+    ], 'ORILLIA');
+    expect(byLabel(facts, 'MH4')).toMatchObject({ topElevation: 284.49, lowInvert: 282.54, depth: 1.95 });
+    expect(byLabel(facts, 'MH122')).toBeUndefined();
+  });
+
+  it('never lets a hyphenated read override an established read (L1a dialect guard)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['STM-MH 3', 'T/G 284.64', 'S INV 282.21'],
+        ['STM MH3', 'T/G 285.12', 'S INV 283.38'],
+      ]},
+    ], 'ORILLIA');
+    expect(byLabel(facts, 'MH3')).toMatchObject({ topElevation: 285.12, lowInvert: 283.38 });
+  });
+
+  it('recovers geometry from a one-character garbled label block, fill-only (L1a rescue)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['CBMH2', 'T/G 129.10'],
+        ['CRMH2', 'T/G 129.10', 'N.INV 125.91', 'W.INV 125.88'],
+      ]},
+    ], 'KING FOREST');
+    expect(byLabel(facts, 'CBMH2')).toMatchObject({ topElevation: 129.1, lowInvert: 125.88, highInvert: 125.91 });
+    expect(facts.warnings.some((w) => w.includes('mis-transcribed label block') && w.includes('CRMH2'))).toBe(true);
+  });
+
+  it('uses the block rim to separate two one-edit candidates (L1a rescue corroboration)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['DCBMH 144', 'TOP 171.25'],
+        ['CBMH 144', 'TOP 169.00'],
+        ['DBMH144 (1500Ø)', 'TOP=171.25', 'N INV=168.93', 'S INV=168.78'],
+      ]},
+    ], 'PANATTONI');
+    expect(byLabel(facts, 'DCBMH144')).toMatchObject({ lowInvert: 168.78, highInvert: 168.93 });
+    expect(byLabel(facts, 'CBMH144')).toMatchObject({ lowInvert: null });
+  });
+
+  it('adopts nothing when rim corroboration cannot separate two one-edit candidates (L1a rescue guard)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['DCBMH 144', 'TOP 171.25'],
+        ['CBMH 144', 'TOP 169.00'],
+        ['DBMH144 (1500Ø)', 'TOP=170.00', 'N INV=168.93', 'S INV=168.78'],
+      ]},
+    ], 'PANATTONI');
+    expect(byLabel(facts, 'DCBMH144')).toMatchObject({ lowInvert: null });
+    expect(byLabel(facts, 'CBMH144')).toMatchObject({ lowInvert: null });
+    expect(facts.warnings.some((w) => w.includes('mis-transcribed label block'))).toBe(false);
+  });
+
+  it('does not rescue into a group that already carries both components (L1a rescue guard)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['CBMH2', 'T/G 129.10', 'N.INV 125.91'],
+        ['CRMH2', 'T/G 129.10', 'N.INV 125.91', 'W.INV 125.88'],
+      ]},
+    ], 'KING FOREST');
+    expect(byLabel(facts, 'CBMH2')).toMatchObject({ lowInvert: 125.91, highInvert: null });
+    expect(facts.warnings.some((w) => w.includes('mis-transcribed label block'))).toBe(false);
+  });
+
+  it('adopts a lone orphan invert from a catchbasin-group block into the only invertless rimmed structure on the tile (L1a adoption)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['CBMH8', 'T/G 287.50'],
+        ['DICB301', 'INV=284.61'],
+      ]},
+    ], 'WOODBINE');
+    expect(byLabel(facts, 'CBMH8')).toMatchObject({ lowInvert: 284.61 });
+    expect(facts.warnings.some((w) => w.includes('Adopted invert 284.61'))).toBe(true);
+  });
+
+  it('adopts nothing when two invertless structures share the tile (L1a adoption guard)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['CBMH8', 'T/G 287.50'],
+        ['CBMH7', 'T/G 287.61'],
+        ['DICB301', 'INV=284.61'],
+      ]},
+    ], 'WOODBINE');
+    expect(byLabel(facts, 'CBMH8')).toMatchObject({ lowInvert: null });
+    expect(byLabel(facts, 'CBMH7')).toMatchObject({ lowInvert: null });
+  });
+
+  it('adopts nothing when the orphan value sits at or above the candidate rim (L1a adoption guard)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['MH47', 'T/G 243.87'],
+        ['DICB301', 'INV=244.15'],
+      ]},
+    ], 'ECOLE');
+    expect(byLabel(facts, 'MH47')).toMatchObject({ lowInvert: null });
+  });
+
+  it('adopts nothing when two orphan values compete on the tile (L1a adoption guard)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['CBMH8', 'T/G 287.50'],
+        ['DICB301', 'INV=284.61'],
+        ['DCB302', 'INV=284.99'],
+      ]},
+    ], 'WOODBINE');
+    expect(byLabel(facts, 'CBMH8')).toMatchObject({ lowInvert: null });
+  });
+
+  it('prefers the corroborated operative rim over a shared family rim; inverts stay first-wins (L1b)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['CBMH1', 'TOP=171.25', 'N INV=166.00'],
+        ['CBMH2', 'TOP=171.25', 'N INV=166.00'],
+        ['CBMH3', 'TOP=171.25', 'N INV=166.00'],
+      ]},
+      { tile: 2, blocks: [
+        ['CBMH1', 'TOP=168.86'],
+        ['CBMH1', 'TOP=168.86'],
+      ]},
+    ], 'PANATTONI');
+    expect(byLabel(facts, 'CBMH1')).toMatchObject({ topElevation: 168.86, lowInvert: 166 });
+    expect(byLabel(facts, 'CBMH2')).toMatchObject({ topElevation: 171.25 });
+  });
+
+  it('keeps the first rim when the operative value is stated only once (L1b guard)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['CBMH1', 'TOP=171.25', 'N INV=166.00'],
+        ['CBMH2', 'TOP=171.25', 'N INV=166.00'],
+        ['CBMH3', 'TOP=171.25', 'N INV=166.00'],
+      ]},
+      { tile: 2, blocks: [['CBMH1', 'TOP=168.86']] },
+    ], 'PANATTONI');
+    expect(byLabel(facts, 'CBMH1')).toMatchObject({ topElevation: 171.25 });
+  });
+
+  it('keeps the first rim when the split is under 0.8 m of transcription noise (L1b guard)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['CBMH1', 'TOP=171.25', 'N INV=166.00'],
+        ['CBMH2', 'TOP=171.25', 'N INV=166.00'],
+        ['CBMH3', 'TOP=171.25', 'N INV=166.00'],
+      ]},
+      { tile: 2, blocks: [
+        ['CBMH1', 'TOP=170.90'],
+        ['CBMH1', 'TOP=170.90'],
+      ]},
+    ], 'PANATTONI');
+    expect(byLabel(facts, 'CBMH1')).toMatchObject({ topElevation: 171.25 });
+  });
+
+  it('keeps a structure-specific first rim even against a corroborated late rim (L1b guard)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [['MH1', 'T/G 200.00', 'INV 197.00']] },
+      { tile: 2, blocks: [
+        ['MH1', 'T/G 198.00'],
+        ['MH1', 'T/G 198.00'],
+      ]},
+    ], 'T');
+    expect(byLabel(facts, 'MH1')).toMatchObject({ topElevation: 200 });
+  });
+
+  it('keeps the PR52 derivation — CB depths carry the 0.30 sump, MH depths do not (L2 dropped: no convention switch)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [
+        ['CBMH1', 'T/G 100.00', 'INV 97.00'],
+        ['MH1', 'T/G 100.00', 'INV 97.00'],
+      ]},
+    ], 'T');
+    expect(byLabel(facts, 'CBMH1')).toMatchObject({ depth: 3.3 });
+    expect(byLabel(facts, 'MH1')).toMatchObject({ depth: 3 });
+  });
+});

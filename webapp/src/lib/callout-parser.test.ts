@@ -108,6 +108,9 @@ describe('parseStructureLabel', () => {
   });
   it('parses spaced ids', () => {
     expect(parseStructureLabel('STMH 1')).toEqual({ label: 'STMH 1', kind: 'MH', diameterMm: null, existing: false, system: 'STM' });
+    // PR42: the hyphenated system-prefix form is the same label.
+    expect(parseStructureLabel('STM-MH 4')).toEqual({ label: 'MH 4', kind: 'MH', diameterMm: null, existing: false, system: 'STM' });
+    expect(parseStructureLabel('SAN-MH 1A')).toEqual({ label: 'MH 1A', kind: 'MH', diameterMm: null, existing: false, system: 'SAN' });
     expect(parseStructureLabel('EX SAN MH 02')).toEqual({ label: 'MH 02', kind: 'MH', diameterMm: null, existing: true, system: 'SAN' });
     expect(parseStructureLabel('MH 101')).toEqual({ label: 'MH 101', kind: 'MH', diameterMm: null, existing: false });
     expect(parseStructureLabel('DCBMH 2')!.kind).toBe('DCBMH');

@@ -88,7 +88,7 @@ export const ROLE_LOCATIONS = resolveRoleLocations();
 // Job-level fallback model (PR34): when a role family's configured model
 // 404s on Vertex, that family finishes the job on this model (same
 // location) instead of losing every call. TRANSCRIPTION_FALLBACK_MODEL
-// overrides; the default is gemini-3.5-flash-lite.
+// overrides; the default is gemini-3.1-flash-lite (PR36).
 export const FALLBACK_MODEL = resolveFallbackModel();
 
 // Per-PDF prep is deterministic (located pages + rendered/uploaded tiles), so memoize it by

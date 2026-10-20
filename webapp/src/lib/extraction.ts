@@ -7,8 +7,9 @@ import { GoogleGenAI } from '@google/genai';
 import { Storage } from '@google-cloud/storage';
 import { TakeoffFacts, CatchbasinGroupFact, TileTranscript, WatermainFact, WatermainSpecialFact, WatermainValveFact, EntityCounts, ExtractionDiagnostics, PageDiagnostics, TileDiagnostics, ModelUsageBucket } from './types';
 import {
-  resolveRoleModels, resolveRoleLocations, resolveFallbackModel, roleThinkingConfig,
+  resolveRoleModels, resolveRoleLocations, resolveFallbackModel, roleThinkingConfig, thinkingConfigFor,
   createModelFallbackState, effectiveModelFor, tripModelFallback, modelFallbackWarning,
+  probeModelAvailability, isModelProbeDisabled,
   type ModelRole, type RoleThinkingConfig, type ModelFallbackState,
 } from './model-config';
 import { buildExtractionDiagnostics, deriveRenderedPerPage, entityCountsByKind, tileDiagnosticsWarnings } from './diagnostics';
@@ -241,6 +242,34 @@ export function getGenAI(location: string = LOCATION): GoogleGenAI {
   }
   genAIClients.set(location, client);
   return client;
+}
+
+/**
+ * The PR40 probe's one real call: a minimal generateContent (a two-letter
+ * prompt, a 1-token output ceiling, thinking pinned to its floor via
+ * thinkingConfigFor(model, 0)) through the same per-location client the
+ * role would use. Resolves when the model answers; rejects with the raw
+ * API error, which probeModelAvailability classifies with the same
+ * isModelUnavailableError the mid-job fallback uses. Deliberately NOT
+ * wrapped in callWithRetry and NOT counted in the job's CostAcc: a probe
+ * must answer fast and cheap, and it is configuration plumbing, not
+ * extraction work.
+ */
+export async function probeGenerateContent(model: string, location: string): Promise<void> {
+  const ai = getGenAI(location);
+  await ai.models.generateContent({
+    model,
+    contents: [{ role: 'user', parts: [{ text: 'OK' }] }],
+    config: {
+      maxOutputTokens: 1,
+      thinkingConfig: thinkingConfigFor(model, 0),
+      // Bound the probe: the client's own timeout is 5 minutes (sized for
+      // tile transcription), far too long to spend learning a model is
+      // down. A probe that cannot answer in 15s is an 'error' verdict,
+      // never an availability trip.
+      abortSignal: AbortSignal.timeout(15_000),
+    },
+  });
 }
 
 import fs from 'fs';
@@ -1043,6 +1072,44 @@ async function extractFromPDFInner(
   // then runs on FALLBACK_MODEL and attachDiagnostics records the trip on
   // the facts (warning + diagnostics) at every return path.
   const modelFallback = createModelFallbackState(FALLBACK_MODEL);
+  // Job-start availability probe (PR40): one minimal call per distinct
+  // configured (model, location) pair, BEFORE the first real model call.
+  // An unavailable primary trips the PR34 fallback right here (recorded
+  // with source: 'probe', surfaced by attachDiagnostics like any trip), so
+  // the job runs on the fallback from its first tile instead of burning
+  // real calls to learn the model is down. Non-availability probe failures
+  // are logged and ignored; the probe can never fail the job. Disable with
+  // DISABLE_MODEL_PROBE. probeFactsWarnings carries the loud warning for
+  // the one case attachDiagnostics cannot derive from the state: the
+  // fallback model ALSO probed unavailable.
+  const probeFactsWarnings: string[] = [];
+  // The mode resolution the branch below uses, hoisted: vector mode is a
+  // $0-LLM-cost path by contract (its only model use, the invariant
+  // verifier, already degrades gracefully and has no fallback family), so
+  // the probe — like every other model call — does not run there.
+  const extractionMode = options.mode || process.env.EXTRACTION_MODE || 'hybrid';
+  if (!isModelProbeDisabled() && extractionMode !== 'vector') {
+    try {
+      const probe = await probeModelAvailability({
+        state: modelFallback,
+        models: ROLE_MODELS,
+        locations: ROLE_LOCATIONS,
+        probeCall: probeGenerateContent,
+      });
+      probeFactsWarnings.push(...probe.warnings);
+      for (const p of probe.unavailablePrimaries) {
+        console.warn(`      [extraction.ts] Model probe: ${p.model} is unavailable at ${p.location} (roles: ${p.roles.join(', ')}).`);
+      }
+      for (const e of probe.errors) {
+        console.warn(`      [extraction.ts] Model probe: ${e.model} at ${e.location} errored (${e.message}) — not an availability verdict; proceeding on the configured models.`);
+      }
+      if (modelFallback.trips.length > 0) {
+        console.warn(`      [extraction.ts] Model probe tripped the fallback before the first call: ${modelFallback.trips.map((t) => `${t.role} ${t.from} → ${t.to}`).join('; ')}.`);
+      }
+    } catch (e: any) {
+      console.warn(`      [extraction.ts] Model availability probe failed unexpectedly (${e?.message ?? e}); proceeding on the configured models.`);
+    }
+  }
   const useVertex = process.env.USE_VERTEX_AI === 'true' || !process.env.GEMINI_API_KEY;
   const uploadedFiles: any[] = [];
   // Drawings are ingested as high-DPI image tiles (rasterize.ts) and the page
@@ -1342,6 +1409,14 @@ async function extractFromPDFInner(
           if (!existing.has(w)) facts.warnings = [...(facts.warnings ?? []), w];
         }
       }
+      // PR40: the probe's loud warning (fallback ALSO unavailable) is not
+      // derivable from the fallback state — append it on every return path.
+      if (probeFactsWarnings.length > 0) {
+        const existing = new Set(facts.warnings ?? []);
+        for (const w of probeFactsWarnings) {
+          if (!existing.has(w)) facts.warnings = [...(facts.warnings ?? []), w];
+        }
+      }
       facts.diagnostics = buildExtractionDiagnostics({
         mode,
         durationMs: Date.now() - runStartedAt,
@@ -1595,7 +1670,9 @@ async function extractFromPDFInner(
       // EXTRACTION_MODE: defaults to 'hybrid' (text-layer for TrueType pages, vision
       // transcribe + deterministic grammar for raster/SHX pages). Setting
       // EXTRACTION_MODE=single-pass restores the legacy monolithic vision path.
-      const mode = options.mode || process.env.EXTRACTION_MODE || 'hybrid';
+      // (Resolved once at the top of the run — see extractionMode — where
+      // the PR40 probe also reads it.)
+      const mode = extractionMode;
 
       // EXTRACTION_MODE=vector: full CAD vector geometry and topology graph extraction ($0 LLM cost).
       if (mode === 'vector') {

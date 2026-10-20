@@ -13,6 +13,7 @@ import {
   deriveRenderedPerPage,
   entityCountsByKind,
   tileDiagnosticsWarnings,
+  type ExtractionDiagnosticsInput,
 } from './diagnostics';
 import { isTextyPage, PageText } from './pdf-text';
 import { TileTranscript } from './types';
@@ -162,6 +163,31 @@ describe('diagnostics on a hybrid run fixture', () => {
 
     const empty = buildExtractionDiagnostics({ ...base, modelFallback: [] });
     expect(empty.modelFallback).toBeUndefined();
+  });
+
+  it('carries a PR40 probe trip source through to the diagnostics record', () => {
+    const base: ExtractionDiagnosticsInput = {
+      mode: 'hybrid',
+      durationMs: 1,
+      locator: { ran: false, rawPicks: [], unionAdded: [], finalPages: [], tileAllFallback: false },
+      pages: [],
+      tiles: {
+        planned: null, rendered: null, uploaded: null, transcribed: null,
+        missingAfterRetry: null, degenerateDiscarded: null, recoveredAfterRetry: null,
+        recoveredAsSingle: null, degenerateRecovered: null, blocks: null,
+      },
+      sources: [],
+      finalFacts: {
+        projectName: 'T', jobNumber: '', date: '', structures: [], catchbasins: [],
+        sewers: [], watermain: [], watermainSpecials: [], watermainValves: [],
+        confidence: 0, warnings: [],
+      },
+      modelFallback: [{ role: 'transcription', from: 'gemini-3.5-flash-lite', to: 'gemini-3.1-flash-lite', source: 'probe' }],
+    };
+    const rec = buildExtractionDiagnostics(base);
+    expect(rec.modelFallback).toEqual([
+      { role: 'transcription', from: 'gemini-3.5-flash-lite', to: 'gemini-3.1-flash-lite', source: 'probe' },
+    ]);
   });
 
   it('records image-only locator additions with their admission reason (PR26)', () => {

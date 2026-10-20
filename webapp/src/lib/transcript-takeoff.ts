@@ -13,7 +13,7 @@ import {
   parseRunCallout, parseStructureLabel, parseElevation, parseWatermainCallout,
   parseScheduleRunRow, parseComponentStructures,
   structureDescription, chamberWarning, HASH_STRUCTURE_HEADER_RE,
-  isDanglingRunHead, isRunContinuation, ParsedStructure, ParsedRun,
+  isDanglingRunHead, isRunContinuation, ParsedStructure, ParsedRun, ParsedElevation,
 } from './callout-parser';
 import { reconcileTakeoff } from './reconcile';
 import { withConfidence } from './confidence';
@@ -406,6 +406,49 @@ function joinBlockLines(block: string[]): string[] {
   return lines;
 }
 
+// PR39: detached elevation dialects inside a structure block. The 3.x
+// transcription models write a callout's geometry VALUE-FIRST — the rim as
+// "277.09 T/G" / "276.75T/G", the inverts as bare numbers ("275.64") — where
+// the 2.5-era transcripts wrote keyword-first lines ("LID 277.09",
+// "N INV. 275.64") that parseElevation reads. parseElevation is whole-line
+// keyword-first by design (it is shared with the text layer, where a bare
+// number is never an elevation), so those lines orphaned here, the structure
+// assembled field-empty, and reconcile's phase-suffix collapse folded it
+// into its base (live, Uxbridge: "MH1A → MH1", the structure lost). Inside a
+// structure block the contract is already "every non-label line is this
+// structure's geometry", so the value-first forms are read HERE, at the
+// block seam only — the shared grammar is untouched.
+//
+// Guards, all fail-closed (an unadopted line warns exactly as before):
+//  - OPSD standard-drawing numbers ("701.010", "401.010") are catalogue
+//    references, never elevations — the frozen corpus orphans them bare.
+//  - Values under 50 are dimensions/chainages ("21.00"), not site grades.
+//  - A bare number classifies as the rim only when the block has no rim
+//    yet and (it is parenthesised — the "(277.13)" rim convention — or no
+//    invert has been read either: every frozen callout reads rim-first);
+//    otherwise it is an invert.
+const VALUE_FIRST_TG_RE = /^\(?\s*(\d{2,3}(?:\.\d{1,3})?)\s*\)?\s*(?:T\/G|T\.G\.?|TG)\s*$/i;
+const BARE_ELEVATION_RE = /^\(?\s*(\d{2,3}\.\d{1,3})\s*\)?$/;
+const OPSD_DRAWING_NUMBER_RE = /^\d{3}\.0\d{2}$/;
+
+function parseDetachedElevation(
+  line: string,
+  hasRim: boolean,
+  hasInvert: boolean
+): ParsedElevation | null {
+  const t = line.trim();
+  const tg = VALUE_FIRST_TG_RE.exec(t);
+  if (tg) return { type: 'TG', direction: null, value: parseFloat(tg[1]) };
+  const bare = BARE_ELEVATION_RE.exec(t);
+  if (!bare) return null;
+  if (OPSD_DRAWING_NUMBER_RE.test(bare[1])) return null;
+  const value = parseFloat(bare[1]);
+  if (value < 50) return null;
+  const parenthesised = t.startsWith('(');
+  if (!hasRim && (parenthesised || !hasInvert)) return { type: 'TG', direction: null, value };
+  return { type: 'INV', direction: null, value };
+}
+
 // Steps 2-3: classify a set of lines that belong together (a joined block, or
 // the cells of a split schedule-table row — see step 4). If any line parses
 // as a structure label, the whole set is a structure block: the remaining
@@ -435,7 +478,10 @@ function processLines(lines: string[], out: Sink, warnings: string[], tile: numb
         diameterMm ??= parseInt(size[1], 10);
         continue;
       }
-      const e = parseElevation(line);
+      // PR39: a line parseElevation cannot read may still be this block's
+      // geometry in the value-first dialect — adopt it before warning.
+      const e: ParsedElevation | null = parseElevation(line)
+        ?? parseDetachedElevation(line, topElevation !== null, inverts.length > 0);
       if (!e) {
         warnings.push(`Unrecognized line in structure block: "${line}"`);
         continue;

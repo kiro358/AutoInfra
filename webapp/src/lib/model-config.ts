@@ -75,6 +75,19 @@
 // facts (warning + diagnostics). This is the fix for the PR30/PR32 failure
 // mode, where a 404ing default silently lost every tile in the job.
 //
+// JOB-START AVAILABILITY PROBE (PR40, 2026-10-19): the PR34 fallback only
+// trips when a real call 404s, so a job with an unavailable primary burned
+// its first real calls (and on 2026-10-19 three successive prod jobs were
+// degraded or gutted before the pattern was understood — the 404s surfaced
+// only as warnings on jobs that still "completed"). extractFromPDF now
+// probes each distinct configured (model, location) pair ONCE at job start
+// with a minimal generateContent call; a model-unavailable verdict trips
+// the same PR34 family fallback BEFORE the first real call, recorded with
+// source: 'probe' so a probe trip is distinguishable from a mid-job trip
+// in diagnostics. Any other probe outcome (429, 5xx, transport, auth) is
+// ignored — the probe never fails or blocks a job. Kill switch:
+// DISABLE_MODEL_PROBE. See probeModelAvailability below.
+//
 // TRANSCRIPTION THINKING FLOOR — TRIALLED AND FALSIFIED (PR37, GitHub #60;
 // removed PR38): roleThinkingConfig briefly floored transcription/single
 // at MEDIUM thinking on 3.x models, on the hypothesis that prod's
@@ -229,6 +242,12 @@ export interface ModelFallbackTrip {
   from: string;
   /** The fallback model serving the family for the rest of the job. */
   to: string;
+  /**
+   * PR40: 'probe' when the job-start availability probe tripped the family
+   * before any real call. Absent for the original PR34 mid-job trips, so
+   * existing records and equality checks are unchanged.
+   */
+  source?: 'probe';
 }
 
 export interface ModelFallbackState {
@@ -262,6 +281,7 @@ export function tripModelFallback(
   role: ModelRole,
   configured: string,
   err: unknown,
+  source?: 'probe',
 ): string | null {
   const fam = modelFallbackFamily(role);
   if (!fam) return null;
@@ -269,7 +289,7 @@ export function tripModelFallback(
   if (state.effectiveByFamily[fam]) return null;
   if (state.fallbackModel === configured) return null;
   state.effectiveByFamily[fam] = state.fallbackModel;
-  state.trips.push({ role: fam, from: configured, to: state.fallbackModel });
+  state.trips.push({ role: fam, from: configured, to: state.fallbackModel, ...(source ? { source } : {}) });
   if (!state.firstError) state.firstError = String((err as { message?: unknown })?.message ?? err);
   return state.fallbackModel;
 }
@@ -277,7 +297,174 @@ export function tripModelFallback(
 /** The facts warning recorded when a family trips — one per trip. */
 export function modelFallbackWarning(trip: ModelFallbackTrip): string {
   const label = trip.role === 'transcription' ? 'Transcription' : 'Watermain';
+  if (trip.source === 'probe') {
+    return `${label} model ${trip.from} unavailable (404) — caught by the job-start availability probe, so this job runs those calls on ${trip.to} from the first call.`;
+  }
   return `${label} model ${trip.from} unavailable (404) — fell back to ${trip.to} for the rest of this job.`;
+}
+
+// ---------------------------------------------------------------------------
+// Job-start model availability probe (PR40). extractFromPDF runs this ONCE
+// per job, before the first real model call, so a configured model that is
+// unavailable on Vertex (the PR30/PR32/PR34 failure mode: 404 NOT_FOUND
+// because the model is not served from the role's location) trips the PR34
+// fallback up front instead of burning real calls — and instead of the job
+// silently completing on the text path with the 404s buried in warnings.
+//
+// Design rules:
+//  - ONE minimal call per DISTINCT (model, location) pair across all roles
+//    (in prod today: a single pair — every role shares one model at `us`),
+//    plus at most one fallback call per location where a family came to
+//    depend on the fallback. The injected `probeCall` performs the actual
+//    minimal generateContent; this function owns only the verdict logic.
+//  - The availability verdict reuses isModelUnavailableError — the exact
+//    classifier the mid-job fallback trips on. No second classifier.
+//  - Any other failure (429, 5xx, transport, auth) is NOT an availability
+//    verdict: it is recorded in `errors` for the caller's log and otherwise
+//    ignored. The probe never throws and never trips on ambiguity.
+//  - Roles without a fallback family (locator/recheck/verify) have nothing
+//    to trip; their unavailability is reported in `unavailablePrimaries`
+//    for the caller's log (those paths already degrade gracefully).
+//  - When a family comes to depend on the fallback at a location, the
+//    fallback model is probed there too (reusing the primary verdict when
+//    the fallback IS one of the probed pairs — never a duplicate call).
+//    If it is also unavailable, a loud facts warning is produced: the job
+//    still runs — surfacing the dead configuration is the point.
+// ---------------------------------------------------------------------------
+
+/** One minimal model call: resolves when the model answers, rejects with the API error otherwise. */
+export type ModelProbeCall = (model: string, location: string) => Promise<void>;
+
+export interface ModelProbeTarget {
+  model: string;
+  location: string;
+  /** Every role configured on this pair (canonical role order). */
+  roles: ModelRole[];
+}
+
+const MODEL_ROLES: readonly ModelRole[] = ['locator', 'recheck', 'verify', 'transcription', 'single', 'watermain'];
+
+/** The distinct (model, location) pairs the configured roles resolve to. */
+export function modelProbeTargets(
+  models: Record<ModelRole, string>,
+  locations: Record<ModelRole, string>,
+): ModelProbeTarget[] {
+  const byPair = new Map<string, ModelProbeTarget>();
+  for (const role of MODEL_ROLES) {
+    const model = models[role];
+    const location = locations[role];
+    const key = `${model} ${location}`;
+    const existing = byPair.get(key);
+    if (existing) existing.roles.push(role);
+    else byPair.set(key, { model, location, roles: [role] });
+  }
+  return [...byPair.values()];
+}
+
+/**
+ * Kill switch: DISABLE_MODEL_PROBE set to anything other than an explicit
+ * false-y value ('', 'false', '0', 'no', case-insensitive) disables the
+ * probe. Default (unset) is ON. Mirrors the codebase's env conventions
+ * (ENABLE_PAGE_LOCATOR=false, REUSE_PREP=false) so DISABLE_MODEL_PROBE=false
+ * can never read as "disable".
+ */
+export function isModelProbeDisabled(env: Record<string, string | undefined> = process.env): boolean {
+  const v = env.DISABLE_MODEL_PROBE;
+  if (v === undefined) return false;
+  const t = v.trim().toLowerCase();
+  return t !== '' && t !== 'false' && t !== '0' && t !== 'no';
+}
+
+/** The loud facts warning when the fallback model is ALSO unavailable where a family needs it. */
+export function modelProbeFallbackUnavailableWarning(model: string, location: string): string {
+  return (
+    `Model availability probe: the fallback model ${model} is ALSO unavailable on Vertex AI ` +
+    `at location "${location}" (404) — the configured model and its fallback are both down there, ` +
+    `so this job's model calls are expected to fail. Check the model configuration.`
+  );
+}
+
+export interface ModelProbeResult {
+  /** Total probe calls issued (primary pairs + fallback pairs). Hard bound: distinct primary pairs + one fallback call per tripped location. */
+  calls: number;
+  /** Primary pairs that returned a model-unavailable verdict. */
+  unavailablePrimaries: { model: string; location: string; roles: ModelRole[] }[];
+  /** Probe calls that failed with a NON-availability error — ignored by design, returned for the caller's log. */
+  errors: { model: string; location: string; message: string }[];
+  /** Locations where the fallback model also probed unavailable after a family came to depend on it. */
+  fallbackUnavailable: { model: string; location: string }[];
+  /** Loud facts warnings (fallback also unavailable). Trips themselves are recorded on the fallback state, not here. */
+  warnings: string[];
+}
+
+type ProbeVerdict = 'ok' | 'unavailable' | 'error';
+
+/**
+ * Probe every distinct configured (model, location) pair once and trip the
+ * fallback state (source: 'probe') for each fallback family whose primary
+ * probed unavailable. Never throws: every probeCall failure is classified
+ * and absorbed. Sequential by design — at most a handful of calls, and the
+ * verdict cache guarantees no pair is ever called twice.
+ */
+export async function probeModelAvailability(args: {
+  state: ModelFallbackState;
+  models: Record<ModelRole, string>;
+  locations: Record<ModelRole, string>;
+  probeCall: ModelProbeCall;
+}): Promise<ModelProbeResult> {
+  const { state, probeCall } = args;
+  const result: ModelProbeResult = { calls: 0, unavailablePrimaries: [], errors: [], fallbackUnavailable: [], warnings: [] };
+  const verdicts = new Map<string, ProbeVerdict>();
+  const availabilityErrors = new Map<string, unknown>();
+  const pairKey = (model: string, location: string) => `${model} ${location}`;
+
+  const probeOnce = async (model: string, location: string): Promise<ProbeVerdict> => {
+    const cached = verdicts.get(pairKey(model, location));
+    if (cached) return cached;
+    result.calls++;
+    let verdict: ProbeVerdict;
+    try {
+      await probeCall(model, location);
+      verdict = 'ok';
+    } catch (err) {
+      if (isModelUnavailableError(err)) {
+        verdict = 'unavailable';
+        availabilityErrors.set(pairKey(model, location), err);
+      } else {
+        verdict = 'error';
+        result.errors.push({ model, location, message: String((err as { message?: unknown })?.message ?? err) });
+      }
+    }
+    verdicts.set(pairKey(model, location), verdict);
+    return verdict;
+  };
+
+  // Locations where a fallback family came to depend on the fallback —
+  // the fallback gets probed at exactly those locations.
+  const fallbackLocations: string[] = [];
+  for (const target of modelProbeTargets(args.models, args.locations)) {
+    const verdict = await probeOnce(target.model, target.location);
+    if (verdict !== 'unavailable') continue;
+    result.unavailablePrimaries.push({ model: target.model, location: target.location, roles: target.roles });
+    for (const role of target.roles) {
+      if (!modelFallbackFamily(role)) continue;
+      // The trip re-classifies the probe's real error with the same
+      // isModelUnavailableError — it lands exactly like a mid-job trip,
+      // only earlier and marked source: 'probe'.
+      tripModelFallback(state, role, target.model, availabilityErrors.get(pairKey(target.model, target.location)), 'probe');
+      if (!fallbackLocations.includes(target.location)) fallbackLocations.push(target.location);
+    }
+  }
+
+  for (const location of fallbackLocations) {
+    const verdict = await probeOnce(state.fallbackModel, location);
+    if (verdict === 'unavailable') {
+      result.fallbackUnavailable.push({ model: state.fallbackModel, location });
+      result.warnings.push(modelProbeFallbackUnavailableWarning(state.fallbackModel, location));
+    }
+  }
+
+  return result;
 }
 
 /**

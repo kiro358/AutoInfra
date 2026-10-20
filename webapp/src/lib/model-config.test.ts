@@ -8,6 +8,10 @@ import {
   isModelUnavailableError,
   modelFallbackFamily,
   modelFallbackWarning,
+  isModelProbeDisabled,
+  modelProbeFallbackUnavailableWarning,
+  modelProbeTargets,
+  probeModelAvailability,
   resolveFallbackModel,
   resolveRoleLocation,
   resolveRoleLocations,
@@ -17,6 +21,7 @@ import {
   thinkingConfigFor,
   tripModelFallback,
   usesThinkingLevels,
+  type ModelRole,
 } from './model-config';
 
 // PR30 — role-based model assignment (Option B). Each call site in
@@ -300,5 +305,176 @@ describe('model fallback state machine — PR34', () => {
       .toBe(`Transcription model ${CONFIGURED} unavailable (404) — fell back to ${FALLBACK} for the rest of this job.`);
     expect(modelFallbackWarning({ role: 'watermain', from: CONFIGURED, to: FALLBACK }))
       .toBe(`Watermain model ${CONFIGURED} unavailable (404) — fell back to ${FALLBACK} for the rest of this job.`);
+  });
+});
+
+describe('job-start availability probe — PR40', () => {
+  const PRIMARY = 'gemini-3.5-flash-lite';
+  const FALLBACK = 'gemini-3.1-flash-lite';
+  const err404 = () => Object.assign(new Error('model was not found'), { status: 404 });
+  const allModels = (m: string): Record<ModelRole, string> =>
+    ({ locator: m, recheck: m, verify: m, transcription: m, single: m, watermain: m });
+  const allLocations = (l: string): Record<ModelRole, string> =>
+    ({ locator: l, recheck: l, verify: l, transcription: l, single: l, watermain: l });
+
+  /** A probeCall mock that records every (model, location) it is asked to call. */
+  function recorder(impl: (model: string, location: string) => Promise<void>) {
+    const calls: [string, string][] = [];
+    const fn = async (model: string, location: string) => {
+      calls.push([model, location]);
+      await impl(model, location);
+    };
+    return { calls, fn };
+  }
+
+  it('modelProbeTargets: the shared prod config collapses to ONE pair carrying all six roles', () => {
+    expect(modelProbeTargets(allModels(PRIMARY), allLocations('us'))).toEqual([
+      { model: PRIMARY, location: 'us', roles: ['locator', 'recheck', 'verify', 'transcription', 'single', 'watermain'] },
+    ]);
+  });
+
+  it('modelProbeTargets: distinct models/locations stay distinct pairs, roles grouped', () => {
+    const models = { ...allModels('model-a'), watermain: 'model-b' };
+    const locations = { ...allLocations('us'), watermain: 'eu' };
+    expect(modelProbeTargets(models, locations)).toEqual([
+      { model: 'model-a', location: 'us', roles: ['locator', 'recheck', 'verify', 'transcription', 'single'] },
+      { model: 'model-b', location: 'eu', roles: ['watermain'] },
+    ]);
+  });
+
+  it('primary OK: exactly one probe call for the shared pair, no trip, no fallback probe, no warnings', async () => {
+    const s = createModelFallbackState(FALLBACK);
+    const { calls, fn } = recorder(async () => {});
+    const res = await probeModelAvailability({ state: s, models: allModels(PRIMARY), locations: allLocations('us'), probeCall: fn });
+    expect(calls).toEqual([[PRIMARY, 'us']]);
+    expect(res.calls).toBe(1);
+    expect(s.trips).toEqual([]);
+    expect(effectiveModelFor(s, 'transcription', PRIMARY)).toBe(PRIMARY);
+    expect(effectiveModelFor(s, 'watermain', PRIMARY)).toBe(PRIMARY);
+    expect(res.unavailablePrimaries).toEqual([]);
+    expect(res.errors).toEqual([]);
+    expect(res.warnings).toEqual([]);
+  });
+
+  it('primary 404: both families trip with source "probe" before any real call, then ONE fallback probe', async () => {
+    const s = createModelFallbackState(FALLBACK);
+    const { calls, fn } = recorder(async (model) => {
+      if (model === PRIMARY) throw err404();
+    });
+    const res = await probeModelAvailability({ state: s, models: allModels(PRIMARY), locations: allLocations('us'), probeCall: fn });
+    // Primary pair first, fallback pair second — nothing else.
+    expect(calls).toEqual([[PRIMARY, 'us'], [FALLBACK, 'us']]);
+    expect(res.calls).toBe(2);
+    expect(s.trips).toEqual([
+      { role: 'transcription', from: PRIMARY, to: FALLBACK, source: 'probe' },
+      { role: 'watermain', from: PRIMARY, to: FALLBACK, source: 'probe' },
+    ]);
+    // Tripped BEFORE transcription: every family role already resolves to
+    // the fallback, so the job's first real call uses it directly.
+    expect(effectiveModelFor(s, 'transcription', PRIMARY)).toBe(FALLBACK);
+    expect(effectiveModelFor(s, 'single', PRIMARY)).toBe(FALLBACK);
+    expect(effectiveModelFor(s, 'watermain', PRIMARY)).toBe(FALLBACK);
+    expect(s.firstError).toContain('was not found');
+    expect(res.unavailablePrimaries).toEqual([
+      { model: PRIMARY, location: 'us', roles: ['locator', 'recheck', 'verify', 'transcription', 'single', 'watermain'] },
+    ]);
+    expect(res.fallbackUnavailable).toEqual([]);
+    expect(res.warnings).toEqual([]);
+    // The recorded trip renders the probe-specific warning.
+    expect(modelFallbackWarning(s.trips[0])).toBe(
+      `Transcription model ${PRIMARY} unavailable (404) — caught by the job-start availability probe, so this job runs those calls on ${FALLBACK} from the first call.`,
+    );
+  });
+
+  it('429 / 500 / transport probe failures never trip, never probe the fallback, and are reported as ignored errors', async () => {
+    const shapes: [string, () => unknown][] = [
+      ['429', () => Object.assign(new Error('429 RESOURCE_EXHAUSTED'), { status: 429 })],
+      ['500', () => Object.assign(new Error('500 Internal error'), { status: 500 })],
+      ['transport', () => new Error('fetch failed')],
+    ];
+    for (const [, make] of shapes) {
+      const s = createModelFallbackState(FALLBACK);
+      const { calls, fn } = recorder(async () => { throw make(); });
+      const res = await probeModelAvailability({ state: s, models: allModels(PRIMARY), locations: allLocations('us'), probeCall: fn });
+      expect(calls).toEqual([[PRIMARY, 'us']]);
+      expect(s.trips).toEqual([]);
+      expect(effectiveModelFor(s, 'transcription', PRIMARY)).toBe(PRIMARY);
+      expect(res.unavailablePrimaries).toEqual([]);
+      expect(res.errors).toHaveLength(1);
+      expect(res.errors[0].model).toBe(PRIMARY);
+      expect(res.warnings).toEqual([]);
+    }
+  });
+
+  it('fallback also 404: trips still recorded, fallback probed once, loud warning produced', async () => {
+    const s = createModelFallbackState(FALLBACK);
+    const { calls, fn } = recorder(async () => { throw err404(); });
+    const res = await probeModelAvailability({ state: s, models: allModels(PRIMARY), locations: allLocations('us'), probeCall: fn });
+    expect(calls).toEqual([[PRIMARY, 'us'], [FALLBACK, 'us']]);
+    expect(res.calls).toBe(2);
+    expect(s.trips).toHaveLength(2);
+    expect(res.fallbackUnavailable).toEqual([{ model: FALLBACK, location: 'us' }]);
+    expect(res.warnings).toEqual([modelProbeFallbackUnavailableWarning(FALLBACK, 'us')]);
+    expect(res.warnings[0]).toContain('ALSO unavailable');
+  });
+
+  it('fallback configured AS the primary: the primary verdict is reused (no second call) and the warning still fires', async () => {
+    const s = createModelFallbackState(PRIMARY); // nowhere to fall — tripModelFallback refuses
+    const { calls, fn } = recorder(async () => { throw err404(); });
+    const res = await probeModelAvailability({ state: s, models: allModels(PRIMARY), locations: allLocations('us'), probeCall: fn });
+    expect(calls).toEqual([[PRIMARY, 'us']]);
+    expect(s.trips).toEqual([]);
+    expect(res.fallbackUnavailable).toEqual([{ model: PRIMARY, location: 'us' }]);
+    expect(res.warnings).toEqual([modelProbeFallbackUnavailableWarning(PRIMARY, 'us')]);
+  });
+
+  it('distinct pairs: only the unavailable pair trips its family; the fallback is probed only at the tripped location', async () => {
+    const s = createModelFallbackState(FALLBACK);
+    const models = { ...allModels('model-a'), watermain: 'model-b' };
+    const locations = { ...allLocations('us'), watermain: 'eu' };
+    const { calls, fn } = recorder(async (model) => {
+      if (model === 'model-a') throw err404();
+    });
+    const res = await probeModelAvailability({ state: s, models, locations, probeCall: fn });
+    expect(calls).toEqual([['model-a', 'us'], ['model-b', 'eu'], [FALLBACK, 'us']]);
+    expect(s.trips).toEqual([{ role: 'transcription', from: 'model-a', to: FALLBACK, source: 'probe' }]);
+    expect(effectiveModelFor(s, 'transcription', 'model-a')).toBe(FALLBACK);
+    expect(effectiveModelFor(s, 'watermain', 'model-b')).toBe('model-b');
+    expect(res.warnings).toEqual([]);
+  });
+
+  it('a pair serving only non-fallback roles (locator) 404ing trips nothing and probes no fallback', async () => {
+    const s = createModelFallbackState(FALLBACK);
+    const models = { ...allModels(PRIMARY), locator: 'locator-only-model' };
+    const { calls, fn } = recorder(async (model) => {
+      if (model === 'locator-only-model') throw err404();
+    });
+    const res = await probeModelAvailability({ state: s, models, locations: allLocations('us'), probeCall: fn });
+    expect(calls).toEqual([['locator-only-model', 'us'], [PRIMARY, 'us']]);
+    expect(s.trips).toEqual([]);
+    expect(res.unavailablePrimaries).toEqual([{ model: 'locator-only-model', location: 'us', roles: ['locator'] }]);
+    expect(res.warnings).toEqual([]);
+  });
+
+  it('kill switch: DISABLE_MODEL_PROBE disables on any non-falsey value; falsey values keep the probe on', () => {
+    expect(isModelProbeDisabled({})).toBe(false);
+    expect(isModelProbeDisabled({ DISABLE_MODEL_PROBE: '1' })).toBe(true);
+    expect(isModelProbeDisabled({ DISABLE_MODEL_PROBE: 'true' })).toBe(true);
+    expect(isModelProbeDisabled({ DISABLE_MODEL_PROBE: 'TRUE' })).toBe(true);
+    expect(isModelProbeDisabled({ DISABLE_MODEL_PROBE: 'yes' })).toBe(true);
+    expect(isModelProbeDisabled({ DISABLE_MODEL_PROBE: 'false' })).toBe(false);
+    expect(isModelProbeDisabled({ DISABLE_MODEL_PROBE: '0' })).toBe(false);
+    expect(isModelProbeDisabled({ DISABLE_MODEL_PROBE: 'no' })).toBe(false);
+    expect(isModelProbeDisabled({ DISABLE_MODEL_PROBE: '' })).toBe(false);
+  });
+
+  it('trip source plumbing: mid-job trips carry no source key; probe trips carry source "probe"', () => {
+    const mid = createModelFallbackState(FALLBACK);
+    tripModelFallback(mid, 'transcription', PRIMARY, err404());
+    expect(mid.trips).toEqual([{ role: 'transcription', from: PRIMARY, to: FALLBACK }]);
+    expect('source' in mid.trips[0]).toBe(false);
+    const viaProbe = createModelFallbackState(FALLBACK);
+    tripModelFallback(viaProbe, 'transcription', PRIMARY, err404(), 'probe');
+    expect(viaProbe.trips).toEqual([{ role: 'transcription', from: PRIMARY, to: FALLBACK, source: 'probe' }]);
   });
 });

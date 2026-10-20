@@ -71,8 +71,9 @@ export interface ExtractionDiagnosticsInput {
   tiles: TileDiagnostics;
   sources: ExtractionDiagnostics['assembly']['sources'];
   finalFacts: TakeoffFacts;
-  /** PR34: fallback trips recorded during the run (see model-config.ts). */
-  modelFallback?: { role: string; from: string; to: string }[];
+  /** PR34: fallback trips recorded during the run (see model-config.ts).
+   *  PR40: trips may carry source: 'probe' (job-start probe trip). */
+  modelFallback?: { role: string; from: string; to: string; source?: string }[];
 }
 
 /** Assemble the record. Final assembly counts are read from the finished

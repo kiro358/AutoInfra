@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
-import { extractPageText, isTextyPage, PageText, decodeSymbolFontText } from './pdf-text';
+import { extractPageText, isTextyPage, PageText, decodeSymbolFontText, countElevationItems, countCalloutKeywordHits } from './pdf-text';
 
 async function makeFixturePdf(lines: { text: string; x: number; y: number }[]): Promise<Buffer> {
   const doc = await PDFDocument.create();
@@ -146,5 +146,34 @@ describe('isTextyPage — annotation-form gate', () => {
     ];
     expect(kwHits(page)).toBeGreaterThanOrEqual(10);
     expect(isTextyPage(pt(page))).toBe(true);
+  });
+});
+
+describe('countElevationItems / countCalloutKeywordHits (PR46 dual-read signals)', () => {
+  const pt = (texts: string[]): PageText => ({
+    page: 1, width: 2592, height: 1728,
+    items: texts.map((text, i) => ({ text, x: 100, y: 900 - i * 20, width: 120, height: 12 })),
+  });
+
+  it('counts only elevation items that carry a value', () => {
+    const page = pt(['T/G=224.95', 'N INV=223.35', 'RIM: 90.50', 'INV 221.50', 'STMH 1', '45.0m - 250mmØ PVC STM @ 0.50%']);
+    expect(countElevationItems(page)).toBe(4);
+  });
+
+  it('prose mentions of elevations without values do not count', () => {
+    const page = pt(['INV AND T/G ELEVATIONS PER DETAIL', 'RIM ELEVATIONS SHOWN ON PROFILE']);
+    expect(countElevationItems(page)).toBe(0);
+  });
+
+  it('a partial-layer plan page (labels + callouts, no elevations) counts zero', () => {
+    const page = pt(['STMH 1', 'STMH 2', '29.6m - 250mmØ PVC STM @ 1.00%', '41.6m - 300mmØ PVC STM @ 0.40%']);
+    expect(countElevationItems(page)).toBe(0);
+  });
+
+  it('keyword hits match the isTextyPage density count', () => {
+    const page = pt(['45.0m - 250mmØ PVC STM @ 0.50%']);
+    // STM + PVC + 250mm + @ 0 = 4 hits on the joined text.
+    expect(countCalloutKeywordHits(page)).toBe(4);
+    expect(countCalloutKeywordHits(pt(['GENERAL NOTES']))).toBe(0);
   });
 });

@@ -23,6 +23,9 @@ import {
   contiguousRuns,
   assembleHybridTakeoff,
   countEntities,
+  isDualReadTriggerDisabled,
+  DUAL_READ_MIN_PATH_OPS,
+  DUAL_READ_MIN_KEYWORD_HITS,
   unionLocatedPages,
   selectImageOnlyCandidates,
   applyImageOnlyRecheck,
@@ -37,7 +40,7 @@ import {
 import { ThinkingLevel } from '@google/genai';
 import { createModelFallbackState } from './model-config';
 import { assembleTextTakeoff } from './text-takeoff';
-import { isTextyPage, hasAnnotationForm, PageText } from './pdf-text';
+import { isTextyPage, hasAnnotationForm, countElevationItems, countCalloutKeywordHits, PageText } from './pdf-text';
 import { TileTranscript } from './types';
 
 describe('parseFacts structure/catchbasin categorization', () => {
@@ -1121,6 +1124,164 @@ describe('assembleHybridTakeoff — zero-RUN-yield fallback routing (PR24)', () 
     expect(out.fallbackPageNums).toEqual([2]);
     expect(out.runFallbackPageNums).toEqual([5]);
     expect(out.rasterPageNums).toEqual([2, 5]);
+  });
+});
+
+describe('assembleHybridTakeoff — dual-read trigger (PR46)', () => {
+  const ptPage = (page: number, items: { text: string; x: number; y: number }[]): PageText => ({
+    page, width: 2592, height: 1728,
+    items: items.map((i) => ({ ...i, width: 120, height: 12 })),
+  });
+
+  // The Ultimate Drive / Uxbridge shape: a plan page whose text layer
+  // carries structure labels and run callouts at full keyword density but
+  // NOT ONE elevation item — the elevations (and the drawn schedule) never
+  // entered the layer. 14 callouts x 4 keyword hits (STM, PVC, mm, @) = 56.
+  const calloutLines = Array.from({ length: 14 }, (_, i) => ({
+    text: `${(20 + i * 3).toFixed(1)}m - 250mmØ PVC STM @ 0.50%`, x: 400, y: 880 - i * 30,
+  }));
+  const partialLayerPage = ptPage(4, [
+    { text: 'STMH 1', x: 100, y: 900 },
+    { text: 'STMH 2', x: 300, y: 900 },
+    ...calloutLines,
+  ]);
+
+  // The same page WITH its elevations in the layer: the layer is complete,
+  // vision would only add noise — the trigger must not fire.
+  const completeLayerPage = ptPage(5, [
+    { text: 'STMH 1', x: 100, y: 900 },
+    { text: 'T/G=224.95', x: 105, y: 885 },
+    { text: 'N INV=223.35', x: 105, y: 870 },
+    { text: 'STMH 2', x: 300, y: 900 },
+    { text: 'T/G=225.10', x: 305, y: 885 },
+    { text: 'N INV=223.60', x: 305, y: 870 },
+    ...calloutLines.map((c) => ({ ...c, x: 500 })),
+  ]);
+
+  // Yielding runs but at low keyword density — a sparse page, not a
+  // partial rendering of an annotation-dense plan.
+  const sparsePage = ptPage(6, [
+    { text: 'STMH 1', x: 100, y: 900 },
+    { text: '45.0m - 250mmØ PVC STM @ 0.50%', x: 400, y: 900 },
+    { text: '60.0m - 300mmØ PVC STM @ 0.35%', x: 400, y: 800 },
+    { text: '30.0m - 200mmØ PVC SAN @ 1.00%', x: 400, y: 700 },
+  ]);
+
+  const visionTiles: TileTranscript[] = [
+    { tile: 1, blocks: [['MH 7', 'RIM: 90.50', 'INV: 88.10'], ['22.0m - 200mmØ PVC @ 1.00%']] },
+  ];
+  const denseDrawn = async (pages: number[]) =>
+    new Map(pages.map((p) => [p, { pathOps: 30_000, imageOps: 2 }]));
+  const sparseDrawn = async (pages: number[]) =>
+    new Map(pages.map((p) => [p, { pathOps: 4_000, imageOps: 0 }]));
+
+  it('fixtures have the signal properties the tests rely on', () => {
+    expect(isTextyPage(partialLayerPage)).toBe(true);
+    expect(isTextyPage(completeLayerPage)).toBe(true);
+    expect(isTextyPage(sparsePage)).toBe(true);
+    expect(countElevationItems(partialLayerPage)).toBe(0);
+    expect(countElevationItems(completeLayerPage)).toBeGreaterThan(0);
+    expect(countCalloutKeywordHits(partialLayerPage)).toBeGreaterThanOrEqual(DUAL_READ_MIN_KEYWORD_HITS);
+    expect(countCalloutKeywordHits(sparsePage)).toBeLessThan(DUAL_READ_MIN_KEYWORD_HITS);
+    const solo = assembleTextTakeoff([partialLayerPage], 'T');
+    expect(solo.sewers.length).toBeGreaterThanOrEqual(1);
+    expect(countEntities(solo)).toBeGreaterThanOrEqual(1);
+  });
+
+  it('fires on a partial-layer page over a dense drawing and merges vision additively', async () => {
+    const transcribe = vi.fn(async (_pages: number[]) => visionTiles);
+    const measureDrawn = vi.fn(denseDrawn);
+    const out = await assembleHybridTakeoff([partialLayerPage], [4], 'T', transcribe, { measureDrawn });
+
+    expect(measureDrawn).toHaveBeenCalledWith([4]);
+    expect(transcribe).toHaveBeenCalledTimes(1);
+    expect(transcribe).toHaveBeenCalledWith([4]);
+    expect(out.dualReadPageNums).toEqual([4]);
+    expect(out.rasterPageNums).toEqual([4]);
+    expect(out.fallbackPageNums).toEqual([]);
+    expect(out.runFallbackPageNums).toEqual([]);
+    expect(out.dualReadSignals[4]).toEqual({
+      elevationItems: 0,
+      keywordHits: countCalloutKeywordHits(partialLayerPage),
+      pathOps: 30_000,
+    });
+    // Text facts survive AND the vision-only structure lands.
+    const labels = out.facts.structures.map((s) => s.description);
+    expect(labels).toContain('MH 7');
+    expect(out.facts.sewers.some((s) => s.pipeDiameter === 200 && s.length === 22.0)).toBe(true);
+    expect(out.facts.sewers.length).toBeGreaterThanOrEqual(14);
+  });
+
+  it('does NOT fire without an injected drawn-content measurer (fail-closed)', async () => {
+    const transcribe = vi.fn(async (_pages: number[]) => visionTiles);
+    const out = await assembleHybridTakeoff([partialLayerPage], [4], 'T', transcribe);
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(out.dualReadPageNums).toEqual([]);
+    expect(out.rasterPageNums).toEqual([]);
+  });
+
+  it('does NOT fire over a sparse drawing (drawn-content gate)', async () => {
+    const transcribe = vi.fn(async (_pages: number[]) => visionTiles);
+    const out = await assembleHybridTakeoff([partialLayerPage], [4], 'T', transcribe, { measureDrawn: sparseDrawn });
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(out.dualReadPageNums).toEqual([]);
+    expect(out.dualReadSignals).toEqual({});
+  });
+
+  it('does NOT fire when the layer carries elevations (complete layer), and never consults the measurer', async () => {
+    const transcribe = vi.fn(async (_pages: number[]) => visionTiles);
+    const measureDrawn = vi.fn(denseDrawn);
+    const out = await assembleHybridTakeoff([completeLayerPage], [5], 'T', transcribe, { measureDrawn });
+    expect(measureDrawn).not.toHaveBeenCalled();
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(out.dualReadPageNums).toEqual([]);
+  });
+
+  it('does NOT fire at low keyword density (prose/sparse page), and never consults the measurer', async () => {
+    const transcribe = vi.fn(async (_pages: number[]) => visionTiles);
+    const measureDrawn = vi.fn(denseDrawn);
+    const out = await assembleHybridTakeoff([sparsePage], [6], 'T', transcribe, { measureDrawn });
+    expect(measureDrawn).not.toHaveBeenCalled();
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(out.dualReadPageNums).toEqual([]);
+  });
+
+  it('kill switch: DISABLE_DUAL_READ_TRIGGER suppresses firing', async () => {
+    expect(isDualReadTriggerDisabled({})).toBe(false);
+    expect(isDualReadTriggerDisabled({ DISABLE_DUAL_READ_TRIGGER: '1' })).toBe(true);
+    expect(isDualReadTriggerDisabled({ DISABLE_DUAL_READ_TRIGGER: 'true' })).toBe(true);
+    expect(isDualReadTriggerDisabled({ DISABLE_DUAL_READ_TRIGGER: 'false' })).toBe(false);
+    expect(isDualReadTriggerDisabled({ DISABLE_DUAL_READ_TRIGGER: '0' })).toBe(false);
+    const prev = process.env.DISABLE_DUAL_READ_TRIGGER;
+    process.env.DISABLE_DUAL_READ_TRIGGER = '1';
+    try {
+      const transcribe = vi.fn(async (_pages: number[]) => visionTiles);
+      const out = await assembleHybridTakeoff([partialLayerPage], [4], 'T', transcribe, { measureDrawn: denseDrawn });
+      expect(transcribe).not.toHaveBeenCalled();
+      expect(out.dualReadPageNums).toEqual([]);
+    } finally {
+      if (prev === undefined) delete process.env.DISABLE_DUAL_READ_TRIGGER;
+      else process.env.DISABLE_DUAL_READ_TRIGGER = prev;
+    }
+  });
+
+  it('stays disjoint from the fallbacks: a zero-yield page in the same call routes as a fallback, not a dual read', async () => {
+    const zeroYield = ptPage(2, [
+      { text: 'PIPE SIZES SHOWN ARE NOMINAL', x: 100, y: 900 },
+      { text: '250mm 300mm 375mm 450mm 525mm 600mm 750mm 900mm 1050mm 1200mm', x: 100, y: 850 },
+    ]);
+    const transcribe = vi.fn(async (_pages: number[]) => visionTiles);
+    const out = await assembleHybridTakeoff([partialLayerPage, zeroYield], [4, 2], 'T', transcribe, { measureDrawn: denseDrawn });
+    expect(transcribe).toHaveBeenCalledTimes(1);
+    expect(transcribe).toHaveBeenCalledWith([2, 4]);
+    expect(out.fallbackPageNums).toEqual([2]);
+    expect(out.dualReadPageNums).toEqual([4]);
+    expect(out.rasterPageNums).toEqual([2, 4]);
+  });
+
+  it('threshold constants are the census-calibrated values', () => {
+    expect(DUAL_READ_MIN_PATH_OPS).toBe(10_000);
+    expect(DUAL_READ_MIN_KEYWORD_HITS).toBe(50);
   });
 });
 

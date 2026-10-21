@@ -135,6 +135,32 @@ export function hasAnnotationForm(pt: PageText): boolean {
   return ANNOTATION_FORM.test(pt.items.map((i) => i.text).join(' '));
 }
 
+const ELEVATION_ITEM = /\b(?:INV|T\/G|RIM)\s*[:=]?\s*\d/;
+
+/**
+ * How many of the page's text items carry an elevation value (INV / T/G /
+ * RIM with a number). Elevations are the densest annotation class on a
+ * servicing plan — a page whose layer carries callout forms but ZERO
+ * elevation items is a page whose annotation set is only partially in the
+ * layer (the rest is strokes or a drawn table). PR46's dual-read trigger
+ * (extraction.ts) keys on exactly that absence.
+ */
+export function countElevationItems(pt: PageText): number {
+  let n = 0;
+  for (const i of pt.items) if (ELEVATION_ITEM.test(i.text)) n++;
+  return n;
+}
+
+/**
+ * Callout-keyword hits over the page's joined text — the same count
+ * isTextyPage's density gate uses, exposed for routing diagnostics
+ * (PR46's dual-read trigger requires a minimum annotation density before
+ * it will spend vision on a texty page).
+ */
+export function countCalloutKeywordHits(pt: PageText): number {
+  return pt.items.map((i) => i.text).join(' ').match(CALLOUT_KW)?.length ?? 0;
+}
+
 export function isTextyPage(pt: PageText): boolean {
   const joined = pt.items.map((i) => i.text).join(' ');
   const hits = joined.match(CALLOUT_KW)?.length ?? 0;

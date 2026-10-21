@@ -28,7 +28,7 @@ import { mergeTakeoffs, dropSpecNoteStructures, clampImplausibleCatchbasinGroups
 import { appendCoverageWarnings } from './coverage-checks';
 import { appendPhysicsWarnings } from './physics-checks';
 import { withConfidence } from './confidence';
-import { extractPageText, isTextyPage, hasAnnotationForm, PageText } from './pdf-text';
+import { extractPageText, isTextyPage, hasAnnotationForm, countElevationItems, countCalloutKeywordHits, PageText } from './pdf-text';
 import { verifyStructureProvenance } from './provenance';
 import { assembleTextTakeoff } from './text-takeoff';
 import { extractVectorTakeoff, type VectorVerifier } from './vector-takeoff';
@@ -675,13 +675,20 @@ export interface HybridAssembly {
   /** Located pages routed to the text layer. */
   textyPageNums: number[];
   /** Pages actually vision-transcribed (non-texty + zero-yield and
-   *  zero-run-yield fallbacks). */
+   *  zero-run-yield fallbacks + dual-read trigger pages). */
   rasterPageNums: number[];
   /** Texty pages re-routed to vision because their text layer yielded zero entities. */
   fallbackPageNums: number[];
   /** Texty pages that yielded entities but ZERO pipe runs and were ALSO
    *  vision-transcribed, text facts kept (the zero-run-yield fallback). */
   runFallbackPageNums: number[];
+  /** Texty pages that yielded entities WITH pipe runs but whose text layer
+   *  provably carries only part of the annotation set (zero elevation
+   *  items at full callout density over a dense vector drawing) and were
+   *  ALSO vision-transcribed, text facts kept (the PR46 dual-read trigger). */
+  dualReadPageNums: number[];
+  /** The routing-time signal values behind each dual-read firing. */
+  dualReadSignals: Record<number, DualReadSignals>;
   /** Entity counts of the text-path assembly, before the merge (diagnostics). */
   textCounts: EntityCounts;
   /** Entity counts of the transcript-path assembly, before the merge;
@@ -693,6 +700,46 @@ export interface HybridAssembly {
   /** Per-page PIPE-RUN yield (sewers + watermain) for texty pages — the
    *  counts the zero-run-yield fallback check itself computed. */
   textyPageRunYields: Record<number, number>;
+}
+
+/** Routing-time signals recorded for a page the dual-read trigger fired on. */
+export interface DualReadSignals {
+  /** Text items carrying an elevation value — the trigger requires 0. */
+  elevationItems: number;
+  /** Callout-keyword hits over the page's text — the trigger requires ≥ 50. */
+  keywordHits: number;
+  /** Vector path operators on the page — the trigger requires ≥ 10,000. */
+  pathOps: number;
+}
+
+/**
+ * Dual-read trigger kill switch. Default (unset) is ON. Mirrors the
+ * codebase's env conventions (see isModelProbeDisabled) so
+ * DISABLE_DUAL_READ_TRIGGER=false can never read as "disable".
+ */
+export function isDualReadTriggerDisabled(env: Record<string, string | undefined> = process.env): boolean {
+  const v = env.DISABLE_DUAL_READ_TRIGGER;
+  if (v === undefined) return false;
+  const t = v.trim().toLowerCase();
+  return t !== '' && t !== 'false' && t !== '0' && t !== 'no';
+}
+
+/** Minimum vector path operators for the dual-read trigger: a full CAD
+ *  sheet's drawn density (PR26's drawn-content gate proves "a drawing" at
+ *  ≥1,000; a page that might hide a drawn schedule under a partial text
+ *  layer carries an order of magnitude more). Census calibration below. */
+export const DUAL_READ_MIN_PATH_OPS = 10_000;
+/** Minimum callout-keyword hits for the dual-read trigger: the page's text
+ *  layer must demonstrably carry the plan's annotation set (partially) —
+ *  a prose/details-dominated page is not a partial rendering of a plan. */
+export const DUAL_READ_MIN_KEYWORD_HITS = 50;
+
+export interface AssembleHybridOptions {
+  /** Drawn-content measurer for the dual-read trigger (production passes
+   *  measureDrawnContent over the PDF buffer). Called ONLY with the pages
+   *  that pass the trigger's text-side gates. Absent → the trigger cannot
+   *  fire: no drawn evidence, no dual read (fail-closed). */
+  measureDrawn?: (pages: number[]) => Promise<Map<number, DrawnContentStat>>;
 }
 
 /**
@@ -729,12 +776,48 @@ export interface HybridAssembly {
  * it). Census calibration: the trigger fires on 10 pages across 7 projects
  * — all drawing-dense plan sheets — for at most 176 extra tiles corpus-
  * wide (≤4 pages / ≤80 tiles in any one project). See pr24_evidence.md.
+ *
+ * Dual-read trigger (PR46): the two fallbacks cover pages whose text layer
+ * yields nothing (or no runs). The residual shape is a texty page that
+ * yields entities WITH runs while part of its annotation set never entered
+ * the text layer at all — drawn as strokes or as a vector schedule table.
+ * Ultimate Drive's pipe schedule is absent from its plan page's text layer
+ * (the layer carries the plan labels, the schedule rows are drawn), and
+ * Uxbridge's second structure group likewise exists only in the rendered
+ * page; both sheets read as healthy texty pages and were never transcribed
+ * (pr45_evidence.md). Blanket dual-read of every texty page was priced and
+ * rejected there (4 per-project vetoes) — vision noise hurts pages whose
+ * layer is complete. The trigger therefore fires only where the layer
+ * PROVABLY carries a partial annotation set, all signals at routing time:
+ *   - the page yields ≥ 1 entity and ≥ 1 pipe run solo (a bearing plan
+ *     page — the fragment discipline of the fallbacks still applies), AND
+ *   - ZERO text items carry an elevation value (INV/T/G/RIM + number):
+ *     elevations are the densest annotation class on a servicing plan, so
+ *     their total absence — while other callout forms are present — is
+ *     the partial-rendering signature; every veto page in the census
+ *     carries ≥ 6, AND
+ *   - callout-keyword density ≥ 50 hits: the layer demonstrably carries
+ *     the plan's annotation set; a prose/details-dominated page (the
+ *     census's excluded case scores 18) is not a partial plan rendering,
+ *     AND
+ *   - ≥ 10,000 vector path operators (measureDrawnContent, injected):
+ *     a dense CAD underlay that can hide drawn content; the census's
+ *     sparse-drawn pages score ≤ 4,408.
+ * Census calibration (pr46_evidence.md): over the 15 text-only texty pages
+ * of the 26 golden projects the conjunction fires on exactly 3 (Ultimate
+ * Drive's schedule page + its duplicate sheet, Uxbridge's plan page) —
+ * every page the blanket flip hurt is excluded by the elevation gate
+ * alone. Fired pages are transcribed exactly like the fallbacks (text
+ * facts kept, text wins the merge). Disable with
+ * DISABLE_DUAL_READ_TRIGGER; without an injected measurer the trigger
+ * cannot fire.
  */
 export async function assembleHybridTakeoff(
   pageTexts: PageText[],
   locatedPages: number[],
   projectName: string,
   transcribe: (pages: number[]) => Promise<TileTranscript[]>,
+  options?: AssembleHybridOptions,
 ): Promise<HybridAssembly> {
   const textyPages = pageTexts.filter(isTextyPage);
   const textyPageNums = textyPages.map((p) => p.page);
@@ -764,6 +847,35 @@ export async function assembleHybridTakeoff(
       rasterSet.add(page.page);
     }
   }
+
+  // Dual-read trigger (PR46): texty pages the fallbacks leave text-only
+  // (yield ≥ 1 WITH pipe runs) whose layer provably carries only part of
+  // the annotation set are transcribed too. Text-side gates first (free);
+  // the drawn-content measurer is consulted only for their survivors.
+  const dualReadPageNums: number[] = [];
+  const dualReadSignals: Record<number, DualReadSignals> = {};
+  if (!isDualReadTriggerDisabled() && options?.measureDrawn) {
+    const survivors: { page: PageText; elevationItems: number; keywordHits: number }[] = [];
+    for (const page of textyPages) {
+      if (rasterSet.has(page.page)) continue;
+      if (!(textyPageYields[page.page] >= 1 && textyPageRunYields[page.page] >= 1)) continue;
+      const elevationItems = countElevationItems(page);
+      if (elevationItems !== 0) continue;
+      const keywordHits = countCalloutKeywordHits(page);
+      if (keywordHits < DUAL_READ_MIN_KEYWORD_HITS) continue;
+      survivors.push({ page, elevationItems, keywordHits });
+    }
+    if (survivors.length > 0) {
+      const drawn = await options.measureDrawn(survivors.map((s) => s.page.page));
+      for (const s of survivors) {
+        const pathOps = drawn.get(s.page.page)?.pathOps ?? 0;
+        if (pathOps < DUAL_READ_MIN_PATH_OPS) continue;
+        dualReadPageNums.push(s.page.page);
+        dualReadSignals[s.page.page] = { elevationItems: s.elevationItems, keywordHits: s.keywordHits, pathOps };
+        rasterSet.add(s.page.page);
+      }
+    }
+  }
   const rasterPageNums = [...rasterSet].sort((a, b) => a - b);
 
   const transcript = rasterPageNums.length > 0 ? await transcribe(rasterPageNums) : [];
@@ -771,6 +883,7 @@ export async function assembleHybridTakeoff(
   const facts = transcriptFacts ? mergeTakeoffs(textFacts, transcriptFacts) : textFacts;
   return {
     facts, transcript, textyPageNums, rasterPageNums, fallbackPageNums, runFallbackPageNums,
+    dualReadPageNums, dualReadSignals,
     textCounts: entityCountsByKind(textFacts),
     transcriptCounts: transcriptFacts ? entityCountsByKind(transcriptFacts) : null,
     textyPageYields, textyPageRunYields,
@@ -1804,13 +1917,18 @@ async function extractFromPDFInner(
         // Routing + assembly live in assembleHybridTakeoff (incl. the
         // zero-yield fallback: a texty page that assembles to zero entities
         // is re-routed to vision instead of being silently dropped).
-        const hybrid = await assembleHybridTakeoff(pageTexts, unionPages, projectName, transcribeTiles);
+        const hybrid = await assembleHybridTakeoff(pageTexts, unionPages, projectName, transcribeTiles, {
+          measureDrawn: (pages) => measureDrawnContent(pdfBuffer, pages),
+        });
         const transcript = hybrid.transcript;
         if (hybrid.fallbackPageNums.length > 0) {
           console.log(`      [extraction.ts] hybrid: texty page(s) ${hybrid.fallbackPageNums.join(', ')} yielded zero entities from the text layer — re-routed to vision transcription.`);
         }
         if (hybrid.runFallbackPageNums.length > 0) {
           console.log(`      [extraction.ts] hybrid: texty page(s) ${hybrid.runFallbackPageNums.join(', ')} yielded structures but zero pipe runs from the text layer — also vision-transcribed (text facts kept, vision adds).`);
+        }
+        if (hybrid.dualReadPageNums.length > 0) {
+          console.log(`      [extraction.ts] hybrid: texty page(s) ${hybrid.dualReadPageNums.join(', ')} carry a partial text layer (zero elevation items at full callout density over a dense drawing) — also vision-transcribed (text facts kept, vision adds).`);
         }
 
         let facts = hybrid.facts;
@@ -1856,6 +1974,7 @@ async function extractFromPDFInner(
         const rasterSetH = new Set(hybrid.rasterPageNums);
         const fallbackSetH = new Set(hybrid.fallbackPageNums);
         const runFallbackSetH = new Set(hybrid.runFallbackPageNums);
+        const dualReadSetH = new Set(hybrid.dualReadPageNums);
         attachDiagnostics(facts, 'hybrid',
           unionPages.map((p) => ({
             page: p,
@@ -1866,6 +1985,7 @@ async function extractFromPDFInner(
             tilesRendered: planH.get(p)?.rendered ?? null,
             ...(fallbackSetH.has(p) ? { zeroYieldFallback: true } : {}),
             ...(runFallbackSetH.has(p) ? { zeroRunYieldFallback: true } : {}),
+            ...(dualReadSetH.has(p) ? { dualReadTrigger: true, dualReadSignals: hybrid.dualReadSignals[p] } : {}),
           })),
           tilesDiagH,
           [

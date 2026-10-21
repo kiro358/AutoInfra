@@ -308,6 +308,14 @@ export interface PageDiagnostics {
    *  was ALSO vision-transcribed with its text facts kept (the PR24
    *  zero-run-yield fallback; route 'vision', text+vision in effect). */
   zeroRunYieldFallback?: boolean;
+  /** A texty page that yielded entities WITH pipe runs but whose text
+   *  layer provably carries only part of the annotation set (zero
+   *  elevation items at full callout density over a dense vector drawing)
+   *  and was ALSO vision-transcribed with its text facts kept (the PR46
+   *  dual-read trigger; route 'vision', text+vision in effect). */
+  dualReadTrigger?: boolean;
+  /** The routing-time signal values behind a dual-read firing. */
+  dualReadSignals?: { elevationItems: number; keywordHits: number; pathOps: number };
 }
 
 /** Tile-pipeline totals for one run. "Planned" sums tilesNeededPerPage over

@@ -6,6 +6,7 @@
  */
 import { TakeoffFacts, StructureFact, SewerFact, WatermainFact, WithheldItem } from './types';
 import { normalizeLabel, runSignature, stripSystemPrefix } from './compare-facts';
+import { isSpecialistDisabled } from './specialists';
 import { mergeCatchbasinGroups } from './extraction';
 
 const nonNullCount = (o: object) => Object.values(o).filter((v) => v !== null && v !== '').length;
@@ -706,6 +707,9 @@ export function clampImplausibleCatchbasinGroups(
   catchbasins: TakeoffFacts['catchbasins'];
   clamped: { type: string; quantity: number; clampedTo: number }[];
 } {
+  // PR47 Phase 1: the ceiling is S7's scope guard (see specialists.ts) —
+  // with the specialist disabled the quantities pass through untouched.
+  if (isSpecialistDisabled('S7-enumeration-scope')) return { catchbasins: groups, clamped: [] };
   const ceiling = 2 * Math.max(networkSize, 10);
   const clamped: { type: string; quantity: number; clampedTo: number }[] = [];
   const kept = groups.map((g) => {

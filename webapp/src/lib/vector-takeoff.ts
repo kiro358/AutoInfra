@@ -15,6 +15,7 @@ import { extractPageText, isTextyPage, PageText } from './pdf-text';
 import { mergeTakeoffs, reconcileTakeoff } from './reconcile';
 import { clusterShxStrokes } from './shx-cluster';
 import { decodeShxClusters } from './shx-decode';
+import { isSpecialistDisabled } from './specialists';
 import { buildSiteNetwork, verifyCalibration } from './site-network';
 import { assembleTextTakeoff } from './text-takeoff';
 import { TakeoffFacts, WithheldItem } from './types';
@@ -154,9 +155,11 @@ export async function extractVectorTakeoff(
       }
     }
 
-    // 3. Extract SHX vector stroke annotations
+    // 3. Extract SHX vector stroke annotations (S9's vector seam —
+    // PR47 Phase 1: the kill switch skips the decode, leaving the
+    // clusters unread, exactly the pre-decoder behaviour).
     const shxClusters = clusterShxStrokes(geometry);
-    if (shxClusters.length > 0) {
+    if (shxClusters.length > 0 && !isSpecialistDisabled('S9-shx-dialect')) {
       const shxAnnotations = decodeShxClusters(shxClusters);
       annotations.push(...shxAnnotations);
     }

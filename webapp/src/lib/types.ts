@@ -128,6 +128,19 @@ export interface FactSource {
   tile?: number;
   /** The raw callout / line / schedule-row text the fact was read from. */
   evidence?: string;
+  /** PR47 Phase 0: the producing module's registry id — 'generalist' for
+   *  the default pipeline, or a specialist id (see the registry in
+   *  specialists.ts) when a convention-family module produced the fact.
+   *  Stamped from `method` at diagnostics time (attachDiagnostics) unless
+   *  the creation site set it. Absent = not recorded. */
+  producer?: string;
+  /** PR47 Phase 0: the convention family that owns this fact's convention,
+   *  when determinable — the producing page's primary CLAIMED family tag
+   *  (see PageClassification). Absent when the page claimed no family or
+   *  the fact's page is unknown (transcript facts carry a tile, not a
+   *  page, so their family is recorded only in the diagnostics ledger
+   *  when a page mapping exists — today it does not). */
+  family?: string;
 }
 
 /**
@@ -271,6 +284,78 @@ export interface SheetCalibration {
   residual?: number | null;
 }
 
+/** Page-kind taxonomy (PR47 Phase 0; pdf_schedule_conventions.md §1a):
+ *  P1 vector-text clean / texty · P2 vector-text annotation-form · P3
+ *  vector-text PARTIAL layer · P4 vector-text sparse / fragmented (SHX,
+ *  outlined, covers) · P5 non-texty text-bearing (details / notes / spec)
+ *  · P6 raster-scan (no text layer). */
+export type PageKind = 'P1' | 'P2' | 'P3' | 'P4' | 'P5' | 'P6';
+
+/** A convention-family tag on a page, with the classifier's confidence.
+ *  'claimed' = the family's full conjunctive signature was measured on
+ *  the page; 'suspect' = a partial signature — recorded so the taxonomy
+ *  learns from live traffic, but dispatching NOTHING (a missed
+ *  specialist costs today's behaviour; a wrong one invents a failure
+ *  mode — see pdf_schedule_conventions.md §2.2). */
+export interface FamilyTag {
+  tag: string;
+  tier: 'claimed' | 'suspect';
+}
+
+/** The routing-time signal values the page classifier consumed for one
+ *  page. Null = the run never measured that signal for this page —
+ *  never estimated, never back-filled (the diagnostics discipline). */
+export interface PageClassificationSignals {
+  items: number | null;
+  chars: number | null;
+  texty: boolean | null;
+  annotationForm: boolean | null;
+  soloYield: number | null;
+  soloRunYield: number | null;
+  elevationItems: number | null;
+  keywordHits: number | null;
+  pathOps: number | null;
+  imageOps: number | null;
+  symbolFontItems: number | null;
+}
+
+/** One located page's recorded classification (PR47 Phase 0). RECORDED
+ *  ONLY: no routing, parsing, merging or workbook behaviour reads it. */
+export interface PageClassification {
+  page: number;
+  kind: PageKind;
+  /** Confidence in the kind assignment: 'claimed' when the kind's full
+   *  signature was measured; 'suspect' when a deciding signal was
+   *  unmeasured or the page sits on a kind boundary. */
+  kindTier: 'claimed' | 'suspect';
+  families: FamilyTag[];
+  signals: PageClassificationSignals;
+}
+
+/** Per-fact provenance ledger entry (PR47 Phase 0): who produced one
+ *  fact of the final takeoff, on what basis, and which convention
+ *  family owns it — derived deterministically from the fact's FactSource
+ *  and the producing page's classification, at diagnostics time. */
+export interface FactProvenance {
+  kind: 'structure' | 'sewer' | 'watermain' | 'catchbasin';
+  /** The fact's identity (structure description / run label / WM size / CB type). */
+  label: string;
+  /** Registry id of the producer: 'generalist', a specialist id, or
+   *  'unrecorded' when the fact carries no FactSource. */
+  producer: string;
+  /** 'stated' = read off the drawing; 'derived' = computed or defaulted
+   *  from stated values (FactSource method 'derived' or
+   *  'convention-default'). */
+  basis: 'stated' | 'derived';
+  /** CLAIMED family tags of the producing page; null when the fact's
+   *  page is unknown or the page claimed no family. */
+  family: string[] | null;
+  /** The fact's FactSource method, verbatim; null when unrecorded. */
+  method: FactSource['method'] | null;
+  page?: number;
+  tile?: number;
+}
+
 /** Entity counts by kind — the assembly section of ExtractionDiagnostics. */
 export interface EntityCounts {
   structures: number;
@@ -390,6 +475,32 @@ export interface ExtractionDiagnostics {
     /** Entity counts of the final merged facts. */
     final: EntityCounts;
   };
+  /** PR47 Phase 0: recorded page classification — kind + family tags
+   *  per located page, from routing-time signals only. Observational:
+   *  nothing routes, parses or merges on it. Absent when the run never
+   *  extracted page texts for its located pages. */
+  classification?: PageClassification[];
+  /** PR47 Phase 0: per-fact provenance ledger for the final takeoff
+   *  (producer / basis / family per fact — see FactProvenance). */
+  provenance?: FactProvenance[];
+  /** PR47 Phase 1: per-specialist firing records, keyed by registry id
+   *  (see specialists.ts). A specialist is listed when the run could
+   *  observe its activity — transcript assembly always reports its
+   *  three; routing specialists are listed when they fired. */
+  specialists?: Record<string, SpecialistFiring>;
+}
+
+/** One specialist's firing record for a run (PR47 Phase 1). */
+export interface SpecialistFiring {
+  /** Times the specialist's mechanisms changed an outcome: adopted a
+   *  value, excluded a label, clamped a group, decoded an item,
+   *  admitted or re-routed a page. */
+  fired: number;
+  /** Pages involved, when the firing is page-attributable. */
+  pages?: number[];
+  /** Per-mechanism firing counts (mechanism id → count), when the
+   *  specialist has distinguishable mechanisms. */
+  detail?: Record<string, number>;
 }
 
 /** Token usage for ONE model within a job (PR30: jobs are mixed-model, so

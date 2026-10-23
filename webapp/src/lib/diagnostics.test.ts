@@ -10,13 +10,15 @@ import { describe, it, expect, vi } from 'vitest';
 import { assembleHybridTakeoff, unionLocatedPages, applyImageOnlyRecheck } from './extraction';
 import {
   buildExtractionDiagnostics,
+  buildFactProvenance,
+  stampFactProvenance,
   deriveRenderedPerPage,
   entityCountsByKind,
   tileDiagnosticsWarnings,
   type ExtractionDiagnosticsInput,
 } from './diagnostics';
 import { isTextyPage, PageText } from './pdf-text';
-import { TileTranscript } from './types';
+import { PageClassification, TakeoffFacts, TileTranscript } from './types';
 
 const ptPage = (page: number, items: { text: string; x: number; y: number }[]): PageText => ({
   page, width: 2592, height: 1728,
@@ -310,5 +312,77 @@ describe('deriveRenderedPerPage', () => {
   it('reports nulls when the derivation does not reconcile with the actual total', () => {
     const planned = [{ page: 1, planned: 20 }, { page: 2, planned: 20 }];
     expect(deriveRenderedPerPage(planned, 24, 320, 17)).toEqual([null, null]);
+  });
+});
+
+describe('PR47 Phase 0 — fact provenance ledger + stamping', () => {
+  const classification: PageClassification[] = [{
+    page: 2, kind: 'P3', kindTier: 'claimed',
+    families: [{ tag: 'partial-layer', tier: 'claimed' }, { tag: 'drawn-schedule', tier: 'suspect' }],
+    signals: {
+      items: 300, chars: 8000, texty: true, annotationForm: true, soloYield: 4, soloRunYield: 2,
+      elevationItems: 0, keywordHits: 134, pathOps: 34051, imageOps: null, symbolFontItems: null,
+    },
+  }];
+  const facts = (): TakeoffFacts => ({
+    projectName: 'P', jobNumber: '', date: '',
+    structures: [
+      { description: 'MH 1', topElevation: 100, lowInvert: 97, highInvert: null, pipeOutDiameter: null, structureType: null, depth: 3, source: { method: 'text-layer', page: 2, evidence: 'MH 1' } },
+      { description: 'MH 2', topElevation: null, lowInvert: null, highInvert: null, pipeOutDiameter: null, structureType: null, depth: null, source: { method: 'transcript', tile: 5, evidence: 'MH 2' } },
+      { description: 'MH 3', topElevation: null, lowInvert: null, highInvert: null, pipeOutDiameter: null, structureType: null, depth: null },
+    ],
+    catchbasins: [{ type: 'SINGLE_CB', quantity: 4, wallThickness: null, depth: null, source: { method: 'transcript', tile: 5 } }],
+    sewers: [{ runLabel: '10.0m-300mm', isLineItem: false, length: 10, pipeDiameter: 300, typeClass: null, slope: 1, depth: null, source: { method: 'derived', page: 2 } }],
+    watermain: [], watermainSpecials: [], watermainValves: [],
+    confidence: 1, warnings: [],
+  });
+
+  it('ledger: one entry per fact, producer/basis/family derived from the source', () => {
+    const ledger = buildFactProvenance(facts(), classification);
+    expect(ledger).toHaveLength(5);
+    const [mh1, mh2, mh3, run, cb] = ledger;
+    // Page known + claimed family on that page: family attributed (claimed only).
+    expect(mh1).toMatchObject({ kind: 'structure', label: 'MH 1', producer: 'generalist', basis: 'stated', method: 'text-layer', page: 2, family: ['partial-layer'] });
+    // Tile-only source: page unknown, family not determinable.
+    expect(mh2).toMatchObject({ producer: 'generalist', basis: 'stated', method: 'transcript', tile: 5, family: null });
+    expect(mh2.page).toBeUndefined();
+    // No source at all: unrecorded, never an error.
+    expect(mh3).toMatchObject({ producer: 'unrecorded', basis: 'stated', method: null, family: null });
+    expect(cb).toMatchObject({ kind: 'catchbasin', label: 'SINGLE_CB', producer: 'generalist' });
+    // Derived method: basis derived, page family still attributed.
+    expect(run).toMatchObject({ kind: 'sewer', basis: 'derived', family: ['partial-layer'] });
+  });
+
+  it('ledger: without classification, family is null but producer still derives', () => {
+    const ledger = buildFactProvenance(facts());
+    expect(ledger[0]).toMatchObject({ producer: 'generalist', family: null });
+  });
+
+  it('stamping writes producer/family onto fact sources and never overwrites a creation-site stamp', () => {
+    const f = facts();
+    f.structures[0].source!.producer = 'S6-detached-elevation';
+    stampFactProvenance(f, classification);
+    expect(f.structures[0].source).toMatchObject({ producer: 'S6-detached-elevation', family: 'partial-layer' });
+    expect(f.structures[1].source).toMatchObject({ producer: 'generalist' });
+    expect(f.structures[1].source!.family).toBeUndefined(); // tile-only: page unknown
+    expect(f.structures[2].source).toBeUndefined(); // no source: left unrecorded
+    expect(f.sewers[0].source).toMatchObject({ producer: 'generalist', family: 'partial-layer' });
+  });
+
+  it('diagnostics record carries classification + provenance only when supplied', () => {
+    const input: ExtractionDiagnosticsInput = {
+      mode: 'hybrid', durationMs: 1,
+      locator: { ran: true, rawPicks: [2], unionAdded: [], finalPages: [2], tileAllFallback: false },
+      pages: [], tiles: { planned: null, rendered: null, uploaded: null, transcribed: null, missingAfterRetry: null, degenerateDiscarded: null, blocks: null },
+      sources: [], finalFacts: facts(),
+      classification, provenance: buildFactProvenance(facts(), classification),
+    };
+    const withSections = buildExtractionDiagnostics(input);
+    expect(withSections.classification).toEqual(classification);
+    expect(withSections.provenance).toHaveLength(5);
+    const { classification: _c, provenance: _p, ...bare } = input;
+    const without = buildExtractionDiagnostics(bare as ExtractionDiagnosticsInput);
+    expect('classification' in without).toBe(false);
+    expect('provenance' in without).toBe(false);
   });
 });

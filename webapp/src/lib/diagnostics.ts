@@ -18,7 +18,11 @@
 import type {
   EntityCounts,
   ExtractionDiagnostics,
+  FactProvenance,
+  FactSource,
+  PageClassification,
   PageDiagnostics,
+  SpecialistFiring,
   TakeoffFacts,
   TileDiagnostics,
 } from './types';
@@ -74,6 +78,12 @@ export interface ExtractionDiagnosticsInput {
   /** PR34: fallback trips recorded during the run (see model-config.ts).
    *  PR40: trips may carry source: 'probe' (job-start probe trip). */
   modelFallback?: { role: string; from: string; to: string; source?: string }[];
+  /** PR47 Phase 0: recorded page classification (see page-classifier.ts). */
+  classification?: PageClassification[];
+  /** PR47 Phase 0: per-fact provenance ledger (see buildFactProvenance). */
+  provenance?: FactProvenance[];
+  /** PR47 Phase 1: per-specialist firing records (see specialists.ts). */
+  specialists?: Record<string, SpecialistFiring>;
 }
 
 /** Assemble the record. Final assembly counts are read from the finished
@@ -87,11 +97,115 @@ export function buildExtractionDiagnostics(input: ExtractionDiagnosticsInput): E
     pages: input.pages,
     tiles: input.tiles,
     ...(input.modelFallback && input.modelFallback.length > 0 ? { modelFallback: input.modelFallback } : {}),
+    ...(input.classification ? { classification: input.classification } : {}),
+    ...(input.provenance ? { provenance: input.provenance } : {}),
+    ...(input.specialists ? { specialists: input.specialists } : {}),
     assembly: {
       sources: input.sources,
       final: entityCountsByKind(input.finalFacts),
     },
   };
+}
+
+/**
+ * FactSource method → producer registry id (PR47 Phase 0). Every method
+ * the pipeline produces today belongs to the generalist; the map exists
+ * so the attribution rule lives in exactly one place — a specialist
+ * that starts stamping its own facts sets FactSource.producer at
+ * creation, and that stamp wins over this derivation (see
+ * buildFactProvenance). A method missing from the map is a future
+ * generalist path by default, never an error.
+ */
+export const PRODUCER_BY_METHOD: Record<FactSource['method'], string> = {
+  'text-layer': 'generalist',
+  transcript: 'generalist',
+  schedule: 'generalist',
+  vector: 'generalist',
+  'single-pass': 'generalist',
+  derived: 'generalist',
+  'convention-default': 'generalist',
+};
+
+/** Page number → the page's CLAIMED family tags (suspect tags dispatch
+ *  nothing and claim nothing, so they never attribute a fact). */
+export function claimedFamiliesByPage(
+  classification?: PageClassification[],
+): Map<number, string[]> {
+  const map = new Map<number, string[]>();
+  for (const c of classification ?? []) {
+    const tags = c.families.filter((f) => f.tier === 'claimed').map((f) => f.tag);
+    if (tags.length > 0) map.set(c.page, tags);
+  }
+  return map;
+}
+
+/**
+ * Stamp producer / family onto the final facts' FactSources in place
+ * (PR47 Phase 0). Runs at diagnostics time, on finished facts, so the
+ * persisted record carries the substrate on the facts themselves.
+ * Facts without a source stay unstamped (absence = not recorded, the
+ * FactSource contract); a producer a creation site already set is
+ * never overwritten.
+ */
+export function stampFactProvenance(
+  facts: TakeoffFacts,
+  classification?: PageClassification[],
+): void {
+  const claimed = claimedFamiliesByPage(classification);
+  const stamp = (source?: FactSource): void => {
+    if (!source) return;
+    if (source.producer === undefined) {
+      source.producer = PRODUCER_BY_METHOD[source.method] ?? 'generalist';
+    }
+    if (source.family === undefined && source.page != null) {
+      const tags = claimed.get(source.page);
+      if (tags && tags.length > 0) source.family = tags[0];
+    }
+  };
+  for (const s of facts.structures ?? []) stamp(s.source);
+  for (const s of facts.sewers ?? []) stamp(s.source);
+  for (const w of facts.watermain ?? []) stamp(w.source);
+  for (const cb of facts.catchbasins ?? []) stamp(cb.source);
+}
+
+/**
+ * The per-fact provenance ledger (PR47 Phase 0): one entry per fact of
+ * the final takeoff — producer (the fact's own stamp when present,
+ * else derived from its method), stated/derived basis, and the
+ * producing page's claimed families. Pure and post-hoc, like the rest
+ * of this module: it describes the takeoff, it never alters it.
+ */
+export function buildFactProvenance(
+  facts: TakeoffFacts,
+  classification?: PageClassification[],
+): FactProvenance[] {
+  const claimed = claimedFamiliesByPage(classification);
+  const out: FactProvenance[] = [];
+  const push = (
+    kind: FactProvenance['kind'],
+    label: string,
+    source?: FactSource,
+  ): void => {
+    if (!source) {
+      out.push({ kind, label, producer: 'unrecorded', basis: 'stated', family: null, method: null });
+      return;
+    }
+    out.push({
+      kind,
+      label,
+      producer: source.producer ?? PRODUCER_BY_METHOD[source.method] ?? 'generalist',
+      basis: source.method === 'derived' || source.method === 'convention-default' ? 'derived' : 'stated',
+      family: source.page != null ? (claimed.get(source.page) ?? null) : null,
+      method: source.method,
+      ...(source.page != null ? { page: source.page } : {}),
+      ...(source.tile != null ? { tile: source.tile } : {}),
+    });
+  };
+  for (const s of facts.structures ?? []) push('structure', s.description, s.source);
+  for (const s of facts.sewers ?? []) push('sewer', s.runLabel, s.source);
+  for (const w of facts.watermain ?? []) push('watermain', w.sizeAndType, w.source);
+  for (const cb of facts.catchbasins ?? []) push('catchbasin', cb.type, cb.source);
+  return out;
 }
 
 /**

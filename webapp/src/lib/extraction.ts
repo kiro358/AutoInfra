@@ -5,14 +5,16 @@ dotenv.config({ path: path.resolve(__dirname, '../../.env.local') });
 
 import { GoogleGenAI } from '@google/genai';
 import { Storage } from '@google-cloud/storage';
-import { TakeoffFacts, CatchbasinGroupFact, TileTranscript, WatermainFact, WatermainSpecialFact, WatermainValveFact, EntityCounts, ExtractionDiagnostics, PageDiagnostics, TileDiagnostics, ModelUsageBucket } from './types';
+import { TakeoffFacts, CatchbasinGroupFact, TileTranscript, WatermainFact, WatermainSpecialFact, WatermainValveFact, EntityCounts, ExtractionDiagnostics, PageDiagnostics, SpecialistFiring, TileDiagnostics, ModelUsageBucket, PageClassification, FactProvenance } from './types';
 import {
   resolveRoleModels, resolveRoleLocations, resolveFallbackModel, roleThinkingConfig, thinkingConfigFor,
   createModelFallbackState, effectiveModelFor, tripModelFallback, modelFallbackWarning,
   probeModelAvailability, isModelProbeDisabled,
   type ModelRole, type RoleThinkingConfig, type ModelFallbackState,
 } from './model-config';
-import { buildExtractionDiagnostics, deriveRenderedPerPage, entityCountsByKind, tileDiagnosticsWarnings } from './diagnostics';
+import { buildExtractionDiagnostics, buildFactProvenance, stampFactProvenance, deriveRenderedPerPage, entityCountsByKind, tileDiagnosticsWarnings } from './diagnostics';
+import { classifyPages, type PageSignalInput } from './page-classifier';
+import { isSpecialistDisabled } from './specialists';
 import type { ExtractionModeId } from './extraction-modes';
 import { PIPE_DIAMETERS } from './constants';
 import { snapToPipeDiameter, normalizeSlope } from './geometry';
@@ -700,6 +702,10 @@ export interface HybridAssembly {
   /** Per-page PIPE-RUN yield (sewers + watermain) for texty pages — the
    *  counts the zero-run-yield fallback check itself computed. */
   textyPageRunYields: Record<number, number>;
+  /** PR47 Phase 1: the transcript assembly's specialist firing records
+   *  (S6/S7/S10 — see specialists.ts), for the diagnostics record;
+   *  undefined when no page was transcribed. */
+  specialistFirings?: Record<string, SpecialistFiring>;
 }
 
 /** Routing-time signals recorded for a page the dual-read trigger fired on. */
@@ -713,15 +719,13 @@ export interface DualReadSignals {
 }
 
 /**
- * Dual-read trigger kill switch. Default (unset) is ON. Mirrors the
- * codebase's env conventions (see isModelProbeDisabled) so
+ * Dual-read trigger kill switch. Default (unset) is ON. Formalised
+ * behind the specialist registry (PR47 Phase 1, see specialists.ts) —
+ * the semantics are the registry's 'disable-when-set' convention, so
  * DISABLE_DUAL_READ_TRIGGER=false can never read as "disable".
  */
 export function isDualReadTriggerDisabled(env: Record<string, string | undefined> = process.env): boolean {
-  const v = env.DISABLE_DUAL_READ_TRIGGER;
-  if (v === undefined) return false;
-  const t = v.trim().toLowerCase();
-  return t !== '' && t !== 'false' && t !== '0' && t !== 'no';
+  return isSpecialistDisabled('dual-read-trigger', env);
 }
 
 /** Minimum vector path operators for the dual-read trigger: a full CAD
@@ -879,7 +883,8 @@ export async function assembleHybridTakeoff(
   const rasterPageNums = [...rasterSet].sort((a, b) => a - b);
 
   const transcript = rasterPageNums.length > 0 ? await transcribe(rasterPageNums) : [];
-  const transcriptFacts = transcript.length > 0 ? assembleTranscriptTakeoff(transcript, projectName) : null;
+  const transcriptStats: { specialists: Record<string, SpecialistFiring> } = { specialists: {} };
+  const transcriptFacts = transcript.length > 0 ? assembleTranscriptTakeoff(transcript, projectName, transcriptStats) : null;
   const facts = transcriptFacts ? mergeTakeoffs(textFacts, transcriptFacts) : textFacts;
   return {
     facts, transcript, textyPageNums, rasterPageNums, fallbackPageNums, runFallbackPageNums,
@@ -887,6 +892,7 @@ export async function assembleHybridTakeoff(
     textCounts: entityCountsByKind(textFacts),
     transcriptCounts: transcriptFacts ? entityCountsByKind(transcriptFacts) : null,
     textyPageYields, textyPageRunYields,
+    ...(transcriptFacts ? { specialistFirings: transcriptStats.specialists } : {}),
   };
 }
 
@@ -1322,8 +1328,9 @@ async function extractFromPDFInner(
     // final. Under the same conditions as the union (a proper-subset
     // located set), the drawn-content gates select the pages that provably
     // hold drawings and one visual re-check admits the ones carrying
-    // servicing content. Disable with ENABLE_IMAGE_ONLY_LOCATOR=false.
-    if (locatorIndex && process.env.ENABLE_IMAGE_ONLY_LOCATOR !== 'false') {
+    // servicing content. Disable with ENABLE_IMAGE_ONLY_LOCATOR=false
+    // (the registry's 'enable-unless-false' convention for this entry).
+    if (locatorIndex && !isSpecialistDisabled('image-only-locator')) {
       const locatedSet = new Set([
         ...locatorIndex.manholePages, ...locatorIndex.sewerPages, ...locatorIndex.watermainPages,
       ]);
@@ -1510,6 +1517,23 @@ async function extractFromPDFInner(
       tiles: TileDiagnostics,
       sources: ExtractionDiagnostics['assembly']['sources'],
       finalPages: number[],
+      classificationInput?: {
+        /** Page texts the run extracted (hybrid: the located pages;
+         *  other modes: the locator union's whole-document extraction,
+         *  or null when it never ran). Classification is recorded only
+         *  when these exist — signals are never reconstructed after the
+         *  fact (PR47 Phase 0). */
+        pageTexts: PageText[] | null;
+        /** Per-page solo text yield (hybrid's fallback-check counts). */
+        yields?: Record<number, number> | null;
+        /** Per-page solo pipe-run yield (hybrid). */
+        runYields?: Record<number, number> | null;
+        /** PR47 Phase 1: firing records the caller collected (the
+         *  transcript assembly's S6/S7/S10 records). Merged with the
+         *  records attachDiagnostics can observe itself (locator
+         *  admissions, dual-read pages, symbol-font decodes). */
+        specialistFirings?: Record<string, SpecialistFiring> | null;
+      },
     ): TakeoffFacts => {
       // Model fallback (PR34): a tripped family already degraded this job
       // to the fallback model — say so on the facts (warning) and in the
@@ -1530,6 +1554,69 @@ async function extractFromPDFInner(
           if (!existing.has(w)) facts.warnings = [...(facts.warnings ?? []), w];
         }
       }
+      // PR47 Phase 0: record the page classification + per-fact
+      // provenance ledger on the finished facts, and stamp producer /
+      // family onto the facts' own FactSources. Purely observational —
+      // the classifier reads routing-time signals the run already
+      // computed (page texts, solo yields, the dual-read trigger's
+      // measured path counts on the PageDiagnostics records); nothing
+      // routes, parses, merges or prices on any of it.
+      let classification: PageClassification[] | undefined;
+      let provenance: FactProvenance[] | undefined;
+      if (classificationInput?.pageTexts && classificationInput.pageTexts.length > 0) {
+        const byPage = new Map(classificationInput.pageTexts.map((pt) => [pt.page, pt]));
+        const inputs: PageSignalInput[] = pages.map((pd) => {
+          const pt = byPage.get(pd.page);
+          return {
+            page: pd.page,
+            items: pt ? pt.items.length : null,
+            chars: pt ? pt.items.reduce((a, i) => a + i.text.length, 0) : pd.textChars,
+            texty: pt ? isTextyPage(pt) : null,
+            annotationForm: pt ? hasAnnotationForm(pt) : null,
+            soloYield: classificationInput.yields?.[pd.page] ?? pd.textYield ?? null,
+            soloRunYield: classificationInput.runYields?.[pd.page] ?? null,
+            elevationItems: pt ? countElevationItems(pt) : null,
+            keywordHits: pt ? countCalloutKeywordHits(pt) : null,
+            pathOps: pd.dualReadSignals?.pathOps ?? null,
+            imageOps: null,
+            symbolFontItems: pt?.symbolFontItems ?? null,
+          };
+        });
+        classification = classifyPages(inputs);
+        stampFactProvenance(facts, classification);
+        provenance = buildFactProvenance(facts, classification);
+      }
+      // PR47 Phase 1: the specialists section of the record — every
+      // firing this run could observe, keyed by registry id (see
+      // specialists.ts). Observational, like the rest of the record.
+      const specialists: Record<string, SpecialistFiring> = {};
+      const imageOnlyAdded = unionAdded.filter((a) => a.reason === 'image-only-locator');
+      if (imageOnlyAdded.length > 0) {
+        specialists['image-only-locator'] = {
+          fired: imageOnlyAdded.length,
+          pages: imageOnlyAdded.map((a) => a.page),
+        };
+      }
+      const dualReadPages = pages.filter((p) => p.dualReadTrigger).map((p) => p.page);
+      if (dualReadPages.length > 0) {
+        specialists['dual-read-trigger'] = { fired: dualReadPages.length, pages: dualReadPages };
+      }
+      if (classificationInput?.pageTexts) {
+        const locatedSet = new Set(pages.map((p) => p.page));
+        let decodedItems = 0;
+        const decodedPages: number[] = [];
+        for (const pt of classificationInput.pageTexts) {
+          if (!locatedSet.has(pt.page)) continue;
+          const n = pt.symbolFontItems ?? 0;
+          if (n > 0) { decodedItems += n; decodedPages.push(pt.page); }
+        }
+        if (decodedItems > 0) {
+          specialists['S9-shx-dialect'] = { fired: decodedItems, pages: decodedPages };
+        }
+      }
+      if (classificationInput?.specialistFirings) {
+        Object.assign(specialists, classificationInput.specialistFirings);
+      }
       facts.diagnostics = buildExtractionDiagnostics({
         mode,
         durationMs: Date.now() - runStartedAt,
@@ -1545,6 +1632,9 @@ async function extractFromPDFInner(
         sources,
         finalFacts: facts,
         modelFallback: modelFallback.trips.length > 0 ? modelFallback.trips : undefined,
+        classification,
+        provenance,
+        specialists: Object.keys(specialists).length > 0 ? specialists : undefined,
       });
       return facts;
     };
@@ -1849,7 +1939,8 @@ async function extractFromPDFInner(
           unionPages.map((p) => ({ page: p, route: 'vector' as const, textChars: vectorChars?.get(p) ?? null, textYield: null, tilesPlanned: null, tilesRendered: null })),
           transcribeTileSection(),
           [{ path: 'vector', counts: entityCountsByKind(facts) }],
-          unionPages);
+          unionPages,
+          { pageTexts: unionPageTexts });
         console.log(`      [extraction.ts] vector-native: ${unionPages.length} located page(s). cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);
         return facts;
       }
@@ -1858,7 +1949,8 @@ async function extractFromPDFInner(
       // does ALL the interpretation ($0 offline iteration).
       if (mode === 'transcribe') {
         const transcript = await transcribeTiles(unionPages);
-        let facts = assembleTranscriptTakeoff(transcript, projectName);
+        const transcriptStats: { specialists: Record<string, SpecialistFiring> } = { specialists: {} };
+        let facts = assembleTranscriptTakeoff(transcript, projectName, transcriptStats);
         const transcriptCounts = entityCountsByKind(facts);
 
         // Two-pass watermain extraction: if no watermain runs were transcribed,
@@ -1905,7 +1997,8 @@ async function extractFromPDFInner(
           })),
           tilesDiagT,
           [{ path: 'transcript', counts: transcriptCounts }],
-          unionPages);
+          unionPages,
+          { pageTexts: unionPageTexts, specialistFirings: transcriptStats.specialists });
         console.log(`      [extraction.ts] transcribe: cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);
         return facts;
       }
@@ -1992,7 +2085,8 @@ async function extractFromPDFInner(
             { path: 'text', counts: hybrid.textCounts },
             ...(hybrid.transcriptCounts ? [{ path: 'transcript' as const, counts: hybrid.transcriptCounts }] : []),
           ],
-          unionPages);
+          unionPages,
+          { pageTexts, yields: hybrid.textyPageYields, runYields: hybrid.textyPageRunYields, specialistFirings: hybrid.specialistFirings });
         console.log(`      [extraction.ts] hybrid: ${hybrid.textyPageNums.length} texty / ${hybrid.rasterPageNums.length} raster of ${unionPages.length} located page(s). cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);
         return facts;
       }
@@ -2271,7 +2365,8 @@ async function extractFromPDFInner(
         })),
         spTiles,
         [{ path: 'single-pass', counts: singlePassCounts }],
-        unionPages);
+        unionPages,
+        { pageTexts: unionPageTexts });
       facts.locatorIndex = locatorIndex;
       facts.cost = cost;
       console.log(`      [extraction.ts] cost: ${cost.tiles} tiles @${cost.dpi}dpi, ${cost.llmCalls} LLM call(s), tokens in=${cost.promptTokens} out=${cost.outputTokens} total=${cost.totalTokens}`);

@@ -16,11 +16,12 @@ import {
   isDanglingRunHead, isRunContinuation, ParsedStructure, ParsedRun, ParsedElevation,
 } from './callout-parser';
 import { reconcileTakeoff } from './reconcile';
+import { isSpecialistDisabled } from './specialists';
 import { withConfidence } from './confidence';
 import { appendCoverageWarnings } from './coverage-checks';
 import { appendPhysicsWarnings } from './physics-checks';
 import { normalizeLabel } from './compare-facts';
-import { TakeoffFacts, StructureFact, SewerFact, WatermainFact, CatchbasinGroupFact, TileTranscript, FactSource, WithheldItem } from './types';
+import { TakeoffFacts, StructureFact, SewerFact, WatermainFact, CatchbasinGroupFact, TileTranscript, FactSource, SpecialistFiring, WithheldItem } from './types';
 
 function cbKindType(kind: ParsedStructure['kind']): CatchbasinGroupFact['type'] | null {
   switch (kind) {
@@ -78,6 +79,19 @@ interface Sink {
    * the end of assembly.
    */
   droppedStructureBlocks: { tile: number; lines: string[] }[];
+  /**
+   * PR47 Phase 1: specialist firing counters, composed into the
+   * diagnostics record by assembleTranscriptTakeoff (see specialists.ts).
+   * Counting only — no counter feeds a decision.
+   */
+  stats: {
+    /** Detached adoptions of the value-first forms (S10's dialect). */
+    valueFirstAdoptions: number;
+    /** Detached adoptions of bare directional inverts (S6's M1). */
+    directionalAdoptions: number;
+    /** Hyphenated system-prefix reads kept as corroboration (S6's M2). */
+    hyphenCorroborated: number;
+  };
 }
 
 /**
@@ -461,29 +475,44 @@ const OPSD_DRAWING_NUMBER_RE = /^\d{3}\.0\d{2}$/;
 // TOP or RIM) — so the classification is safe inside a structure block.
 const BARE_DIRECTIONAL_ELEVATION_RE = /^\s*(NE|NW|SE|SW|N|S|E|W)\s+(\d{2,3}\.\d{1,3})\s*$/;
 
+/**
+ * Which detached form a line matched (PR47 Phase 1): the value-first
+ * forms are S10's dialect; the bare directional form is S6's M1. The
+ * two families share this parser as a utility but gate independently —
+ * `allow` lets a caller refuse one family's forms while keeping the
+ * other's (a kill switch disables its specialist, not the parser).
+ */
+export type DetachedForm = 'value-first-tg' | 'bare' | 'directional';
+
 function parseDetachedElevation(
   line: string,
   hasRim: boolean,
-  hasInvert: boolean
-): ParsedElevation | null {
+  hasInvert: boolean,
+  allow: { valueFirst?: boolean; directional?: boolean } = {}
+): (ParsedElevation & { form: DetachedForm }) | null {
   const t = line.trim();
   const tg = VALUE_FIRST_TG_RE.exec(t);
-  if (tg) return { type: 'TG', direction: null, value: parseFloat(tg[1]) };
+  if (tg) {
+    if (allow.valueFirst === false) return null;
+    return { type: 'TG', direction: null, value: parseFloat(tg[1]), form: 'value-first-tg' };
+  }
   const dir = BARE_DIRECTIONAL_ELEVATION_RE.exec(t);
   if (dir) {
+    if (allow.directional === false) return null;
     if (OPSD_DRAWING_NUMBER_RE.test(dir[2])) return null;
     const dirValue = parseFloat(dir[2]);
     if (dirValue < 50) return null;
-    return { type: 'INV', direction: null, value: dirValue };
+    return { type: 'INV', direction: null, value: dirValue, form: 'directional' };
   }
   const bare = BARE_ELEVATION_RE.exec(t);
   if (!bare) return null;
+  if (allow.valueFirst === false) return null;
   if (OPSD_DRAWING_NUMBER_RE.test(bare[1])) return null;
   const value = parseFloat(bare[1]);
   if (value < 50) return null;
   const parenthesised = t.startsWith('(');
-  if (!hasRim && (parenthesised || !hasInvert)) return { type: 'TG', direction: null, value };
-  return { type: 'INV', direction: null, value };
+  if (!hasRim && (parenthesised || !hasInvert)) return { type: 'TG', direction: null, value, form: 'bare' };
+  return { type: 'INV', direction: null, value, form: 'bare' };
 }
 
 // Steps 2-3: classify a set of lines that belong together (a joined block, or
@@ -518,8 +547,23 @@ function processLines(lines: string[], out: Sink, warnings: string[], tile: numb
       }
       // PR39: a line parseElevation cannot read may still be this block's
       // geometry in the value-first dialect — adopt it before warning.
-      const e: ParsedElevation | null = parseElevation(line)
-        ?? parseDetachedElevation(line, topElevation !== null, inverts.length > 0);
+      // PR47 Phase 1: the detached forms belong to two registered
+      // specialists — the value-first forms to S10, the bare directional
+      // form to S6 (its M1) — and each family's kill switch refuses its
+      // own forms here (see specialists.ts). With both switches unset
+      // this is exactly the pre-registry behaviour.
+      let e: ParsedElevation | null = parseElevation(line);
+      if (!e) {
+        const detached = parseDetachedElevation(line, topElevation !== null, inverts.length > 0, {
+          valueFirst: !isSpecialistDisabled('S10-value-first'),
+          directional: !isSpecialistDisabled('S6-detached-elevation'),
+        });
+        if (detached) {
+          e = detached;
+          if (detached.form === 'directional') out.stats.directionalAdoptions++;
+          else out.stats.valueFirstAdoptions++;
+        }
+      }
       if (!e) {
         warnings.push(`Unrecognized line in structure block: "${line}"`);
         continue;
@@ -725,7 +769,8 @@ function mergeGroupKey(description: string): string {
  * is imported from another structure — the winning rim is one of the
  * structure's own reads.
  */
-function applyLastRimPreference(out: Sink): void {
+function applyLastRimPreference(out: Sink): number {
+  let rewrites = 0;
   const groups = new Map<string, StructureFact[]>();
   for (const s of out.structures) {
     const key = mergeGroupKey(s.description);
@@ -758,7 +803,9 @@ function applyLastRimPreference(out: Sink): void {
     if (rimReads.filter((r) => r.topElevation === last).length < 2) continue;
     if (!reads.some((r) => r.lowInvert !== null)) continue;
     rimReads[0].topElevation = last;
+    rewrites++;
   }
+  return rewrites;
 }
 
 function compactLabelText(s: string): string {
@@ -968,12 +1015,25 @@ function adoptOrphanInverts(out: Sink): string[] {
   return warnings;
 }
 
-export function assembleTranscriptTakeoff(transcripts: TileTranscript[], projectName: string): TakeoffFacts {
+export function assembleTranscriptTakeoff(
+  transcripts: TileTranscript[],
+  projectName: string,
+  statsOut?: { specialists: Record<string, SpecialistFiring> }
+): TakeoffFacts {
+  // PR47 Phase 1: the registered specialists consult their kill
+  // switches once per assembly (see specialists.ts). Unset switches
+  // reproduce today's behaviour exactly.
+  const s6Disabled = isSpecialistDisabled('S6-detached-elevation');
+  const s7Disabled = isSpecialistDisabled('S7-enumeration-scope');
   const out: Sink = {
     structures: [],
     catchbasinLabels: new Map(),
     catchbasinFirstSource: new Map(),
-    scope: analyzeEnumerationScope(transcripts),
+    // S7's detector: disabled → an empty scope, so every consumer
+    // (occurrence exclusion, mention accounting) keeps everything.
+    scope: s7Disabled
+      ? { cbLabels: new Map(), structureLabels: new Set() }
+      : analyzeEnumerationScope(transcripts),
     demotedStructures: [],
     sewers: [],
     watermain: [],
@@ -985,6 +1045,7 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
     droppedStructureBlocks: [],
     currentPage: 0,
     readPages: new Map(),
+    stats: { valueFirstAdoptions: 0, directionalAdoptions: 0, hyphenCorroborated: 0 },
   };
   const warnings: string[] = [];
 
@@ -1077,9 +1138,13 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
   }
 
   // PR23: surface the enumeration scope exclusions — neither is silent.
+  // PR47 Phase 1: S7's firing count accumulates here (labels the scope
+  // analysis excluded: enumeration-only CB labels + demoted structures).
+  let enumerationExclusions = 0;
   for (const [type, labels] of out.scope.cbLabels) {
     const counted = out.catchbasinLabels.get(type) ?? new Set<string>();
     const excludedOnly = [...labels].filter((k) => !counted.has(k));
+    enumerationExclusions += excludedOnly.length;
     if (excludedOnly.length === 0) continue;
     warnings.push(
       `Scope: ${excludedOnly.length} ${type} label(s) arrive only as a hyphenated site-wide ` +
@@ -1090,6 +1155,7 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
   }
   if (out.demotedStructures.length > 0) {
     const unique = [...new Set(out.demotedStructures)].sort();
+    enumerationExclusions += unique.length;
     warnings.push(
       `Scope: ${unique.length} structure(s) appear only inside a complete site-wide numbering ` +
         `enumeration and are not read from any plan callout — excluded as out of takeoff scope: ` +
@@ -1107,28 +1173,43 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
     /^(?:EX\.?\s*|(?:NEW|PROP(?:OSED)?|PR)\.?\s+)?(?:SANITARY|SAN|STORM|STM)\s*-/.test(
       (s.source?.evidence ?? '').trim().toUpperCase()
     );
-  // Corroboration only: a hyphenated read counts toward a structure the
-  // established grammar also read (its merge group has a plain-form read).
-  // A structure visible ONLY in the hyphenated form is not emitted — on
-  // the frozen corpus those are out-of-scope reads (sibling-phase
-  // structures the estimator did not take off), the same failure mode the
-  // PR23 enumeration guards exclude; the coverage warning at the end of
-  // assembly surfaces the labels it leaves behind.
-  const plainGroups = new Set(
-    out.structures.filter((s) => !hyphenSystemRead(s)).map((s) => mergeGroupKey(s.description))
-  );
-  out.structures = [
-    ...out.structures.filter((s) => !hyphenSystemRead(s)),
-    ...out.structures.filter((s) => hyphenSystemRead(s) && plainGroups.has(mergeGroupKey(s.description))),
-  ];
+  // PR47 Phase 1: the hyphenated corroboration rule is S6's M2 — with
+  // S6 disabled the reads stay in assembly order, exactly as assembled
+  // before PR #64 (and hyphen-only structures are emitted again).
+  let rimRewrites = 0;
+  let garbleRescues = 0;
+  let orphanAdoptions = 0;
+  if (!s6Disabled) {
+    // Corroboration only: a hyphenated read counts toward a structure the
+    // established grammar also read (its merge group has a plain-form read).
+    // A structure visible ONLY in the hyphenated form is not emitted — on
+    // the frozen corpus those are out-of-scope reads (sibling-phase
+    // structures the estimator did not take off), the same failure mode the
+    // PR23 enumeration guards exclude; the coverage warning at the end of
+    // assembly surfaces the labels it leaves behind.
+    const plainGroups = new Set(
+      out.structures.filter((s) => !hyphenSystemRead(s)).map((s) => mergeGroupKey(s.description))
+    );
+    out.stats.hyphenCorroborated = out.structures.filter(
+      (s) => hyphenSystemRead(s) && plainGroups.has(mergeGroupKey(s.description))
+    ).length;
+    out.structures = [
+      ...out.structures.filter((s) => !hyphenSystemRead(s)),
+      ...out.structures.filter((s) => hyphenSystemRead(s) && plainGroups.has(mergeGroupKey(s.description))),
+    ];
 
-  // PR42 L1: elevation recovery passes over the sink. Order matters — the
-  // rim preference runs on the clean reads only; the garble rescue and the
-  // orphan adoption then append fill-only reads after them, so a recovered
-  // value can never override a direct read at the merge.
-  applyLastRimPreference(out);
-  warnings.push(...rescueGarbledLabelBlocks(out));
-  warnings.push(...adoptOrphanInverts(out));
+    // PR42 L1: elevation recovery passes over the sink. Order matters — the
+    // rim preference runs on the clean reads only; the garble rescue and the
+    // orphan adoption then append fill-only reads after them, so a recovered
+    // value can never override a direct read at the merge.
+    rimRewrites = applyLastRimPreference(out);
+    const rescueWarnings = rescueGarbledLabelBlocks(out);
+    garbleRescues = rescueWarnings.length;
+    warnings.push(...rescueWarnings);
+    const adoptionWarnings = adoptOrphanInverts(out);
+    orphanAdoptions = adoptionWarnings.length;
+    warnings.push(...adoptionWarnings);
+  }
 
   const catchbasins: CatchbasinGroupFact[] = Array.from(out.catchbasinLabels.entries()).map(([type, labels]) => ({
     type, quantity: labels.size, wallThickness: null, depth: null,
@@ -1143,6 +1224,37 @@ export function assembleTranscriptTakeoff(transcripts: TileTranscript[], project
     watermainSpecials: [], watermainValves: [],
     confidence: 1, warnings, withheld: out.withheld,
   });
+
+  // PR47 Phase 1: compose the specialist firing records for diagnostics
+  // (see specialists.ts). Counting only — the records describe this
+  // assembly; nothing reads them back into it.
+  if (statsOut) {
+    const s6Detail: Record<string, number> = {
+      M1: out.stats.directionalAdoptions,
+      M2: out.stats.hyphenCorroborated,
+      M3: garbleRescues,
+      M4: orphanAdoptions,
+      M5: rimRewrites,
+    };
+    statsOut.specialists = {
+      'S6-detached-elevation': {
+        fired: Object.values(s6Detail).reduce((a, b) => a + b, 0),
+        detail: s6Detail,
+      },
+      'S7-enumeration-scope': {
+        fired: enumerationExclusions,
+        detail: {
+          cbEnumerationLabels: [...out.scope.cbLabels.values()].reduce((a, s) => a + s.size, 0),
+          structureEnumerationLabels: out.scope.structureLabels.size,
+          demotedStructures: new Set(out.demotedStructures).size,
+        },
+      },
+      'S10-value-first': {
+        fired: out.stats.valueFirstAdoptions,
+        detail: { adoptions: out.stats.valueFirstAdoptions },
+      },
+    };
+  }
 
   // Step 6: partial-miss surfacing — purely additive warnings (assembly-level
   // here, facts-level from coverage-checks.ts). No fact is created, altered

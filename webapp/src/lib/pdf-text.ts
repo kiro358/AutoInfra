@@ -10,6 +10,7 @@
  * Coordinates are PDF user space (origin BOTTOM-LEFT, y grows upward).
  */
 import { getPdfjs } from './pdfjs-loader';
+import { isSpecialistDisabled } from './specialists';
 
 export interface PositionedText {
   text: string;
@@ -24,6 +25,11 @@ export interface PageText {
   width: number;
   height: number;
   items: PositionedText[];
+  /** Items whose text the symbol-font decode actually rewrote on this
+   *  page (PR47 Phase 0: the SHX/symbol-font dialect's routing-time
+   *  signal — a page whose callouts needed decoding carries its dialect
+   *  on its face). Present only when at least one item was rewritten. */
+  symbolFontItems?: number;
 }
 
 // --- Symbol-font encoded callouts ---------------------------------------------
@@ -73,6 +79,17 @@ export function decodeSymbolFontText(text: string): string {
   return out;
 }
 
+/**
+ * The S9 dialect seam (PR47 Phase 1, see specialists.ts): the symbol-font
+ * decode as extraction actually applies it -- with the specialist's
+ * kill switch (DISABLE_SHX_DECODE) set, the raw item passes through
+ * exactly as pdf.js returned it (the pre-PR #47 behaviour: such items
+ * then face the grammar as the raw codes they are).
+ */
+export function decodePageItemText(raw: string): string {
+  return isSpecialistDisabled('S9-shx-dialect') ? raw : decodeSymbolFontText(raw);
+}
+
 export async function extractPageText(pdfBuffer: Buffer, pages?: number[]): Promise<PageText[]> {
   const lib = await getPdfjs();
   const doc = await lib.getDocument({ data: new Uint8Array(pdfBuffer.buffer.slice(pdfBuffer.byteOffset, pdfBuffer.byteOffset + pdfBuffer.byteLength)), isEvalSupported: false, useSystemFonts: true }).promise;
@@ -86,13 +103,16 @@ export async function extractPageText(pdfBuffer: Buffer, pages?: number[]): Prom
         const viewport = page.getViewport({ scale: 1 });
         const content = await page.getTextContent();
         const items: PositionedText[] = [];
+        let symbolFontItems = 0;
         for (const it of content.items as any[]) {
-          const text = decodeSymbolFontText(String(it.str || '').trim());
+          const raw = String(it.str || '').trim();
+          const text = decodePageItemText(raw);
+          if (text !== raw) symbolFontItems++;
           if (!text) continue;
           // transform = [a, b, c, d, e, f]; e/f are the glyph origin in user space.
           items.push({ text, x: it.transform[4], y: it.transform[5], width: it.width ?? 0, height: it.height ?? 0 });
         }
-        out.push({ page: pageNum, width: viewport.width, height: viewport.height, items });
+        out.push({ page: pageNum, width: viewport.width, height: viewport.height, items, ...(symbolFontItems > 0 ? { symbolFontItems } : {}) });
       } finally {
         page.cleanup?.();
       }

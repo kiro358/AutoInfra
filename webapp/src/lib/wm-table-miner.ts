@@ -99,8 +99,9 @@ export interface WmTableRow {
 export interface WmTable {
   title: string;
   rows: WmTableRow[];
-  channel: 'text-layer' | 'transcript';
-  /** Set for the text-layer channel. */
+  channel: 'text-layer' | 'transcript' | 'vision';
+  /** Set for the text-layer channel, and for the vision channel (the
+   *  page the targeted read was issued on). */
   page?: number;
   /** Set for the transcript channel. */
   tile?: number;
@@ -361,6 +362,41 @@ const isTitleLine = (line: string): boolean => {
   return t.length <= TITLE_MAX_CHARS && TITLE_RE.test(t) && !t.includes('|');
 };
 
+interface WmTableScan {
+  title: string;
+  rows: WmTableRow[];
+  evidence: string[];
+}
+
+/** The transcript-channel line scan, shared by the general transcript
+ *  and by the PR49 vision hook's synthetic reads — the grammar is one:
+ *  a standalone title line, an optional header row, then diameter-led
+ *  rows, all validated by validateRows. */
+function scanLinesForWmTables(lines: string[]): { found: WmTableScan[]; rejectedTitles: number } {
+  const found: WmTableScan[] = [];
+  let rejectedTitles = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (!isTitleLine(lines[i])) continue;
+    const title = lines[i].trim();
+    let j = i + 1;
+    let headerCells: string[] | null = null;
+    const header = j < lines.length ? transcriptCells(lines[j]) : null;
+    if (header && isHeaderRow(header)) { headerCells = header; j++; }
+    const rawRows: string[][] = [];
+    while (j < lines.length) {
+      const cells = transcriptCells(lines[j]);
+      if (!cells || !isDiameterRow(cells)) break;
+      rawRows.push(cells);
+      j++;
+    }
+    const parsed = validateRows(rawRows, headerCells);
+    if (!parsed) { rejectedTitles++; continue; }
+    found.push({ title, rows: parsed, evidence: [title, ...rawRows.map((r) => r.join(' | '))] });
+    i = j - 1;
+  }
+  return { found, rejectedTitles };
+}
+
 export function detectWmTablesInTranscript(
   tiles: TileTranscript[],
 ): { tables: WmTable[]; rejectedTitles: number } {
@@ -368,30 +404,40 @@ export function detectWmTablesInTranscript(
   let rejectedTitles = 0;
   for (const tile of tiles) {
     const lines = (tile.blocks ?? []).flatMap((b) => (Array.isArray(b) ? b : [String(b)]));
-    for (let i = 0; i < lines.length; i++) {
-      if (!isTitleLine(lines[i])) continue;
-      const title = lines[i].trim();
-      let j = i + 1;
-      let headerCells: string[] | null = null;
-      const header = j < lines.length ? transcriptCells(lines[j]) : null;
-      if (header && isHeaderRow(header)) { headerCells = header; j++; }
-      const rawRows: string[][] = [];
-      while (j < lines.length) {
-        const cells = transcriptCells(lines[j]);
-        if (!cells || !isDiameterRow(cells)) break;
-        rawRows.push(cells);
-        j++;
+    const scan = scanLinesForWmTables(lines);
+    rejectedTitles += scan.rejectedTitles;
+    for (const f of scan.found) {
+      tables.push({ title: f.title, rows: f.rows, channel: 'transcript', tile: tile.tile, evidence: f.evidence });
+    }
+  }
+  return { tables, rejectedTitles };
+}
+
+/** One targeted vision read of a single page (PR49 hook): the synthetic
+ *  transcript tiles the reader produced from that page's images. */
+export interface VisionWmTableRead {
+  page: number;
+  tiles: TileTranscript[];
+}
+
+/** The vision channel: the SAME line grammar as the transcript
+ *  channel, over the hook's targeted reads. Tables are stamped
+ *  channel 'vision' + the read page, so every downstream rule (fill,
+ *  conflict poisoning, provenance) treats them exactly like a
+ *  transcript read — except the AUDIT trail names the vision read. */
+export function detectWmTablesInVisionRead(
+  reads: VisionWmTableRead[],
+): { tables: WmTable[]; rejectedTitles: number } {
+  const tables: WmTable[] = [];
+  let rejectedTitles = 0;
+  for (const read of reads) {
+    for (const tile of read.tiles) {
+      const lines = (tile.blocks ?? []).flatMap((b) => (Array.isArray(b) ? b : [String(b)]));
+      const scan = scanLinesForWmTables(lines);
+      rejectedTitles += scan.rejectedTitles;
+      for (const f of scan.found) {
+        tables.push({ title: f.title, rows: f.rows, channel: 'vision', page: read.page, evidence: f.evidence });
       }
-      const parsed = validateRows(rawRows, headerCells);
-      if (!parsed) { rejectedTitles++; continue; }
-      tables.push({
-        title,
-        rows: parsed,
-        channel: 'transcript',
-        tile: tile.tile,
-        evidence: [title, ...rawRows.map((r) => r.join(' | '))],
-      });
-      i = j - 1;
     }
   }
   return { tables, rejectedTitles };
@@ -416,6 +462,7 @@ export function applyWmTableMiner(
   facts: TakeoffFacts,
   pageTexts: PageText[],
   transcript: TileTranscript[],
+  visionReads: VisionWmTableRead[] = [],
 ): WmTableMiningResult {
   const empty: WmTableMiningResult = { facts, tables: [], rejectedTitles: 0, filled: [], refusals: [] };
   if (isSpecialistDisabled(WM_TABLE_MINER_ID)) return empty;
@@ -430,6 +477,11 @@ export function applyWmTableMiner(
   const fromTranscript = detectWmTablesInTranscript(transcript);
   tables.push(...fromTranscript.tables);
   rejectedTitles += fromTranscript.rejectedTitles;
+  if (visionReads.length > 0) {
+    const fromVision = detectWmTablesInVisionRead(visionReads);
+    tables.push(...fromVision.tables);
+    rejectedTitles += fromVision.rejectedTitles;
+  }
   if (tables.length === 0) return { ...empty, rejectedTitles };
 
   // One printed total per diameter across the whole job; two tables
@@ -476,7 +528,7 @@ export function applyWmTableMiner(
         method: 'schedule',
         ...(table.page != null ? { page: table.page } : {}),
         ...(table.tile != null ? { tile: table.tile } : {}),
-        evidence: `${table.title} :: ${table.evidence[rowIdx + 1] ?? ''}`.trim(),
+        evidence: `${table.channel === 'vision' ? 'vision-read :: ' : ''}${table.title} :: ${table.evidence[rowIdx + 1] ?? ''}`.trim(),
         producer: WM_TABLE_MINER_ID,
         family: 'wm-table',
       },
@@ -495,7 +547,11 @@ export function applyWmTableMiner(
     withheld = withheld.filter(
       (w) => !(w.field === 'length' && w.kind === 'withheld' && withheldEntityForDiameter(w.entity, fill.diameterMm)),
     );
-    const where = fill.table.channel === 'text-layer' ? `p.${fill.table.page}` : `tile ${fill.table.tile}`;
+    const where = fill.table.channel === 'text-layer'
+      ? `p.${fill.table.page}`
+      : fill.table.channel === 'vision'
+        ? `vision read of p.${fill.table.page}`
+        : `tile ${fill.table.tile}`;
     withheld.push({
       entity: `${fill.diameterMm}mm`,
       field: 'length',
@@ -523,13 +579,23 @@ export function applyWmTableMiner(
 }
 
 /** The diagnostics firing record for one mining pass (PR47 Phase 1
- *  shape). Built by the caller only when at least one table claimed. */
-export function wmTableFiring(result: WmTableMiningResult): SpecialistFiring {
+ *  shape). Built by the caller when at least one table claimed — or,
+ *  with `hook` set (PR49), when the vision hook spent reads even if no
+ *  table was ultimately claimed, so the spend is never invisible. */
+export function wmTableFiring(
+  result: WmTableMiningResult,
+  hook?: { candidatePages: number[]; calls: number; readPages: number[] },
+): SpecialistFiring {
   const pages = [...new Set(result.filled.map((f) => f.table.page).filter((p): p is number => p != null))];
   const detail: Record<string, number> = {
     tables: result.tables.length,
     filled: result.filled.length,
   };
+  if (hook) {
+    detail.hookCandidates = hook.candidatePages.length;
+    detail.hookCalls = hook.calls;
+    detail.hookReads = hook.readPages.length;
+  }
   if (result.rejectedTitles > 0) detail.rejectedTitles = result.rejectedTitles;
   for (const r of result.refusals) {
     const key = `refused:${r.reason}`;

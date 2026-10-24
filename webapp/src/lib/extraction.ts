@@ -26,7 +26,10 @@ import { getSinglePassPrompt, getPageLocatorPrompt, getImageOnlyRecheckPrompt, g
 import { renderTilesFlat, renderPageThumbnails, measureDrawnContent, IMAGE_MIME, type DrawnContentStat } from './rasterize';
 import { normalizeLabel, runSignature } from './compare-facts';
 import { assembleTranscriptTakeoff } from './transcript-takeoff';
-import { applyWmTableMiner, wmTableFiring, WM_TABLE_MINER_ID } from './wm-table-miner';
+import { applyWmTableMiner, wmTableFiring, WM_TABLE_MINER_ID, type VisionWmTableRead } from './wm-table-miner';
+import {
+  attributeTilesToPages, buildWmTableReadPrompt, detectWmTableCandidates, parseWmTableReadResponse,
+} from './wm-table-hook';
 import { mergeTakeoffs, dropSpecNoteStructures, clampImplausibleCatchbasinGroups, reconcileTakeoff } from './reconcile';
 import { appendCoverageWarnings } from './coverage-checks';
 import { appendPhysicsWarnings } from './physics-checks';
@@ -692,6 +695,11 @@ export interface HybridAssembly {
   dualReadPageNums: number[];
   /** The routing-time signal values behind each dual-read firing. */
   dualReadSignals: Record<number, DualReadSignals>;
+  /** Raster pages the S2 vision hook (PR49) issued a targeted WM-table
+   *  read on (a read was returned; the miner may still have refused). */
+  wmHookPageNums: number[];
+  /** The candidate-signal values behind each S2 vision-hook firing. */
+  wmHookSignals: Record<number, WmHookSignals>;
   /** Entity counts of the text-path assembly, before the merge (diagnostics). */
   textCounts: EntityCounts;
   /** Entity counts of the transcript-path assembly, before the merge;
@@ -707,6 +715,20 @@ export interface HybridAssembly {
    *  (S6/S7/S10 — see specialists.ts), for the diagnostics record;
    *  undefined when no page was transcribed. */
   specialistFirings?: Record<string, SpecialistFiring>;
+}
+
+/** Routing-time signals recorded for a page the S2 vision hook fired on. */
+export interface WmHookSignals {
+  /** The fragment-carrying transcript tile attributed to the page. */
+  tile: number;
+  /** Scope-header lines in that tile (hook requires ≥ 1). */
+  scopeHeaders: number;
+  /** Bare number-pair lines in that tile (hook requires ≥ 2). */
+  pairs: number;
+  /** Text items on the page (glyph gate requires ≥ 50). */
+  items: number;
+  /** Single-character fraction of those items (gate requires ≥ 0.40). */
+  singleCharFraction: number;
 }
 
 /** Routing-time signals recorded for a page the dual-read trigger fired on. */
@@ -745,6 +767,13 @@ export interface AssembleHybridOptions {
    *  that pass the trigger's text-side gates. Absent → the trigger cannot
    *  fire: no drawn evidence, no dual read (fail-closed). */
   measureDrawn?: (pages: number[]) => Promise<Map<number, DrawnContentStat>>;
+  /** Targeted WM-table reader for the S2 vision hook (PR49; production
+   *  passes a one-page transcription on the transcription role, asking
+   *  only for a printed watermain-lengths table). Called ONLY with
+   *  candidate pages the hook's conjunctive detector selects, at most
+   *  once per page. Absent → the hook cannot fire: no reader, no read
+   *  (fail-closed — offline replays stay byte-identical). */
+  readWmTable?: (page: number) => Promise<TileTranscript | null>;
 }
 
 /**
@@ -893,17 +922,73 @@ export async function assembleHybridTakeoff(
   // the tiles just transcribed. The miner returns the SAME facts
   // reference unless a claimed table actually fills a length, so
   // non-firing projects are untouched by construction.
-  const wmMined = applyWmTableMiner(mergedFacts, pageTexts, transcript);
-  const facts = wmMined.facts;
+  let wmMined = applyWmTableMiner(mergedFacts, pageTexts, transcript);
+  let facts = wmMined.facts;
+
+  // S2 vision hook (PR49): when NO channel could read a table but a
+  // raster page carries the table's fragment in its general transcript
+  // (scope headers + bare number pairs) over a glyph-garbage text
+  // layer, spend ONE targeted read per candidate page and mine again
+  // with the reads included (channel 'vision'). The detector is
+  // conjunctive and fail-closed (wm-table-hook.ts); with no reader
+  // injected the hook cannot fire at all.
+  const wmHookPageNums: number[] = [];
+  const wmHookSignals: Record<number, WmHookSignals> = {};
+  let wmHookCalls = 0;
+  if (options?.readWmTable) {
+    const plannedByPage = new Map(pageTexts.map((pt) => [pt.page, tilesNeededPerPage(pt.width, pt.height)]));
+    const totalCap = Math.min(
+      Number(process.env.MAX_TILES_TOTAL) || 320,
+      rasterPageNums.length * MAX_TILES_PER_PAGE,
+    );
+    const tilesByPage = attributeTilesToPages(
+      rasterPageNums.map((page) => ({ page, plannedTiles: plannedByPage.get(page) ?? 0 })),
+      transcript,
+      MAX_TILES_PER_PAGE,
+      totalCap,
+    );
+    const candidates = detectWmTableCandidates({
+      pageTexts, tilesByPage, facts, tablesClaimed: wmMined.tables.length,
+    });
+    for (const c of candidates) {
+      wmHookSignals[c.page] = {
+        tile: c.tile, scopeHeaders: c.scopeHeaders, pairs: c.pairs,
+        items: c.items, singleCharFraction: c.singleCharFraction,
+      };
+    }
+    if (candidates.length > 0) {
+      const visionReads: VisionWmTableRead[] = [];
+      for (const c of candidates) {
+        wmHookCalls += 1;
+        let read: TileTranscript | null = null;
+        try { read = await options.readWmTable(c.page); } catch { read = null; }
+        if (read) {
+          visionReads.push({ page: c.page, tiles: [read] });
+          wmHookPageNums.push(c.page);
+        }
+      }
+      if (visionReads.length > 0) {
+        wmMined = applyWmTableMiner(facts, pageTexts, transcript, visionReads);
+        facts = wmMined.facts;
+      }
+    }
+  }
+
   const specialistFirings: Record<string, SpecialistFiring> = {
     ...(transcriptFacts ? transcriptStats.specialists : {}),
   };
-  if (wmMined.tables.length > 0) {
-    specialistFirings[WM_TABLE_MINER_ID] = wmTableFiring(wmMined);
+  if (wmMined.tables.length > 0 || wmHookCalls > 0) {
+    specialistFirings[WM_TABLE_MINER_ID] = wmTableFiring(
+      wmMined,
+      wmHookCalls > 0
+        ? { candidatePages: Object.keys(wmHookSignals).map(Number), calls: wmHookCalls, readPages: wmHookPageNums }
+        : undefined,
+    );
   }
   return {
     facts, transcript, textyPageNums, rasterPageNums, fallbackPageNums, runFallbackPageNums,
     dualReadPageNums, dualReadSignals,
+    wmHookPageNums, wmHookSignals,
     textCounts: entityCountsByKind(textFacts),
     transcriptCounts: transcriptFacts ? entityCountsByKind(transcriptFacts) : null,
     textyPageYields, textyPageRunYields,
@@ -2018,6 +2103,63 @@ async function extractFromPDFInner(
         return facts;
       }
 
+      // PR49 — S2 vision-hook reader: ONE targeted transcription of a
+      // single candidate page's tiles on the transcription role, asking
+      // ONLY for a printed watermain-lengths table (fail-closed prompt
+      // and parser in wm-table-hook.ts). assembleHybridTakeoff calls it
+      // at most once per detector candidate. Any failure degrades to
+      // null — the hook never blocks the job.
+      const readWmTablePage = async (page: number): Promise<TileTranscript | null> => {
+        try {
+          const tiles = await renderTilesFlat(pdfBuffer, [page], {
+            dpi: TILE_DPI, tilePx: TILE_PX, overlapPx: TILE_OVERLAP,
+            maxTilesPerPage: MAX_TILES_PER_PAGE, maxTilesTotal: MAX_TILES_PER_PAGE,
+          });
+          if (tiles.length === 0) return null;
+          const parts = await uploadTiles(tiles);
+          cost.tiles += parts.length;
+          const prompt = buildWmTableReadPrompt(projectName, page, parts.length);
+          const configured = ROLE_MODELS.transcription;
+          const runCall = async (model: string): Promise<string> =>
+            getCachedOrCallLLM(`${sourceHash}_wmtable_p${page}::${model}`, prompt, 'transcribe', async () =>
+              await callWithRetry(async () => {
+                // Streaming, like every tiled call: a non-streaming
+                // request leaves the socket idle long enough to drop.
+                const stream = await aiTranscription.models.generateContentStream({
+                  model,
+                  contents: [{ role: 'user', parts: [{ text: prompt }, ...parts] }],
+                  config: {
+                    temperature: Number(process.env.EXTRACTION_TEMPERATURE || '0'),
+                    responseMimeType: 'application/json',
+                    maxOutputTokens: MAX_OUTPUT_TOKENS,
+                    thinkingConfig: model === configured
+                      ? ROLE_THINKING.transcription
+                      : roleThinkingConfig('transcription', model, THINKING_BUDGET),
+                  },
+                });
+                let acc = '', usage: any = null;
+                for await (const chunk of stream) {
+                  acc += chunk.text || '';
+                  if (chunk.usageMetadata) usage = chunk.usageMetadata;
+                }
+                addUsage(cost, usage, model);
+                return acc;
+              }));
+          let text: string;
+          try {
+            text = await runCall(effectiveModelFor(modelFallback, 'transcription', configured));
+          } catch (e) {
+            const fb = tripModelFallback(modelFallback, 'transcription', configured, e);
+            if (!fb) { recordCallFailure(`S2 vision-hook read of p${page}`, e); return null; }
+            try { text = await runCall(fb); } catch (e2) { recordCallFailure(`S2 vision-hook read of p${page}`, e2); return null; }
+          }
+          return parseWmTableReadResponse(tryParseJSONWithRepair(text), page);
+        } catch (e) {
+          recordCallFailure(`S2 vision-hook read of p${page}`, e);
+          return null;
+        }
+      };
+
       // EXTRACTION_MODE=hybrid (default): text-layer pages are read exactly ($0 LLM cost);
       // only non-texty pages go through the transcribe path. Text layer wins on conflicts.
       if (mode === 'hybrid') {
@@ -2027,6 +2169,7 @@ async function extractFromPDFInner(
         // is re-routed to vision instead of being silently dropped).
         const hybrid = await assembleHybridTakeoff(pageTexts, unionPages, projectName, transcribeTiles, {
           measureDrawn: (pages) => measureDrawnContent(pdfBuffer, pages),
+          readWmTable: readWmTablePage,
         });
         const transcript = hybrid.transcript;
         if (hybrid.fallbackPageNums.length > 0) {
@@ -2037,6 +2180,9 @@ async function extractFromPDFInner(
         }
         if (hybrid.dualReadPageNums.length > 0) {
           console.log(`      [extraction.ts] hybrid: texty page(s) ${hybrid.dualReadPageNums.join(', ')} carry a partial text layer (zero elevation items at full callout density over a dense drawing) — also vision-transcribed (text facts kept, vision adds).`);
+        }
+        if (hybrid.wmHookPageNums.length > 0) {
+          console.log(`      [extraction.ts] hybrid: S2 vision hook issued a targeted watermain-table read on page(s) ${hybrid.wmHookPageNums.join(', ')} (WM-table fragment over a glyph-garbage text layer; the miner validates any table it returns).`);
         }
 
         let facts = hybrid.facts;
@@ -2083,6 +2229,7 @@ async function extractFromPDFInner(
         const fallbackSetH = new Set(hybrid.fallbackPageNums);
         const runFallbackSetH = new Set(hybrid.runFallbackPageNums);
         const dualReadSetH = new Set(hybrid.dualReadPageNums);
+        const wmHookSetH = new Set(hybrid.wmHookPageNums);
         attachDiagnostics(facts, 'hybrid',
           unionPages.map((p) => ({
             page: p,
@@ -2094,6 +2241,7 @@ async function extractFromPDFInner(
             ...(fallbackSetH.has(p) ? { zeroYieldFallback: true } : {}),
             ...(runFallbackSetH.has(p) ? { zeroRunYieldFallback: true } : {}),
             ...(dualReadSetH.has(p) ? { dualReadTrigger: true, dualReadSignals: hybrid.dualReadSignals[p] } : {}),
+            ...(wmHookSetH.has(p) ? { wmTableHook: true, wmTableHookSignals: hybrid.wmHookSignals[p] } : {}),
           })),
           tilesDiagH,
           [

@@ -161,7 +161,14 @@ export const SPECIALIST_REGISTRY: SpecialistEntry[] = [
       'diameter\'s printed total attaches only when the generalist stated NO length for that ' +
       'diameter anywhere (every segment length 0); a stated segment, a diameter with no ' +
       'generalist row (harvesting is not this specialist\'s scope), or two tables disagreeing ' +
-      'on a diameter each refuse the fill and are recorded.',
+      'on a diameter each refuse the fill and are recorded. ' +
+      'Vision hook (PR 49, same kill switch): when NO channel claimed a table and a fill is ' +
+      'still possible, a raster page whose text layer is glyph garbage (>= 50 items, >= 40% ' +
+      'single-character) and whose attributed transcript tile carries the table\'s fragment ' +
+      '(>= 1 scope-header line naming >= 2 scope tokens AND >= 2 bare number-pair lines) ' +
+      'earns ONE targeted vision read of that page, mined through the identical grammar as ' +
+      'channel \'vision\' — the stroke-font case (Panattoni) where the table exists in no ' +
+      'text layer at all.',
     killSwitchEnv: 'DISABLE_WM_TABLE_MINER',
     killSwitchKind: 'disable-when-set',
   },

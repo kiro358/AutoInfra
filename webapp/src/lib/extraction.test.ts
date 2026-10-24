@@ -40,6 +40,8 @@ import {
 import { ThinkingLevel } from '@google/genai';
 import { createModelFallbackState } from './model-config';
 import { assembleTextTakeoff } from './text-takeoff';
+import { parseWmTableReadResponse } from './wm-table-hook';
+import { WM_TABLE_MINER_ID } from './wm-table-miner';
 import { isTextyPage, hasAnnotationForm, countElevationItems, countCalloutKeywordHits, PageText } from './pdf-text';
 import { TileTranscript } from './types';
 
@@ -1680,5 +1682,90 @@ describe('envNumber', () => {
     expect(envNumber('', 8192)).toBe(8192);
     expect(envNumber('abc', 8192)).toBe(8192);
     expect(envNumber('-1', 160)).toBe(160);
+  });
+});
+
+describe('assembleHybridTakeoff — S2 vision hook (PR49)', () => {
+  // The Panattoni shape in miniature: one stroke-font sheet (612x792pt,
+  // so the tile plan is exactly 2) whose text layer is glyph garbage —
+  // 80 items, 87.5% single-character, zero callout keywords, hence
+  // non-texty and vision-routed. Its general transcript reads the WM
+  // callouts (tile 1) and the printed table's value columns (tile 2:
+  // scope header + bare number pairs) but not the table itself.
+  const glyphItems = [
+    ...Array.from({ length: 70 }, (_, i) => ({ text: 'X', x: (i % 20) * 30, y: 100 + Math.floor(i / 20) * 20, width: 8, height: 10 })),
+    ...Array.from({ length: 10 }, (_, i) => ({ text: 'GLYPH', x: i * 50, y: 300, width: 40, height: 10 })),
+  ];
+  const glyphPage: PageText = { page: 9, width: 612, height: 792, items: glyphItems };
+
+  const generalTiles: TileTranscript[] = [
+    { tile: 1, blocks: [['250mmØ PVC WATERMAIN'], ['150mmØ PVC WATERMAIN'], ['100mmØ PVC WATERMAIN']] },
+    { tile: 2, blocks: [['BLDG A | BLDG B'], ['167 | 70'], ['316 | 40'], ['39 | 27'], ['24 | 20']] },
+  ];
+
+  const tableRead = () => parseWmTableReadResponse({
+    tablePresent: true,
+    title: 'WATERMAIN LENGTHS (METERS)',
+    header: ['', 'BLDG A', 'BLDG B'],
+    rows: [
+      ['100mm', '43', '32'], ['150mm', '167', '70'], ['200mm', '316', '40'],
+      ['250mm', '39', '27'], ['300mm', '24', '20'],
+    ],
+  }, 9);
+
+  const transcribe = async (_pages: number[]) => generalTiles;
+  const lengthsByDiameter = (out: Awaited<ReturnType<typeof assembleHybridTakeoff>>) =>
+    Object.fromEntries(out.facts.watermain.map((w) => [w.pipeDiameter, w.length]));
+
+  it('fixture has the routing properties the tests rely on', () => {
+    expect(isTextyPage(glyphPage)).toBe(false);
+    expect(tilesNeededPerPage(glyphPage.width, glyphPage.height)).toBe(2);
+  });
+
+  it('fires one targeted read on the candidate page and S2 fills from it', async () => {
+    const readWmTable = vi.fn(async (_page: number) => tableRead());
+    const out = await assembleHybridTakeoff([glyphPage], [9], 'T', transcribe, { readWmTable });
+
+    expect(readWmTable).toHaveBeenCalledTimes(1);
+    expect(readWmTable).toHaveBeenCalledWith(9);
+    expect(out.wmHookPageNums).toEqual([9]);
+    expect(out.wmHookSignals[9]).toMatchObject({ tile: 2, scopeHeaders: 1, pairs: 4, items: 80 });
+    expect(lengthsByDiameter(out)).toEqual({ 250: 66, 150: 237, 100: 75 });
+    const firing = out.specialistFirings?.[WM_TABLE_MINER_ID];
+    expect(firing?.detail).toMatchObject({ hookCandidates: 1, hookCalls: 1, hookReads: 1, filled: 3 });
+    const derived = (out.facts.withheld ?? []).filter((w) => w.kind === 'derived');
+    expect(derived.length).toBeGreaterThanOrEqual(3);
+    expect(derived.every((w) => w.question.includes('vision read of p.9'))).toBe(true);
+  });
+
+  it('without an injected reader the hook cannot fire and facts are untouched', async () => {
+    const baseline = await assembleHybridTakeoff([glyphPage], [9], 'T', transcribe);
+    const noReader = await assembleHybridTakeoff([glyphPage], [9], 'T', transcribe, {});
+    expect(noReader.wmHookPageNums).toEqual([]);
+    expect(JSON.stringify(noReader.facts)).toBe(JSON.stringify(baseline.facts));
+    expect(Object.values(lengthsByDiameter(noReader)).every((l) => l === 0)).toBe(true);
+  });
+
+  it('a read that finds no legible table spends the call but changes nothing', async () => {
+    const readWmTable = vi.fn(async (_page: number) => null);
+    const out = await assembleHybridTakeoff([glyphPage], [9], 'T', transcribe, { readWmTable });
+    expect(readWmTable).toHaveBeenCalledTimes(1);
+    expect(out.wmHookPageNums).toEqual([]);
+    expect(out.wmHookSignals[9]).toBeDefined();
+    expect(Object.values(lengthsByDiameter(out)).every((l) => l === 0)).toBe(true);
+    expect(out.specialistFirings?.[WM_TABLE_MINER_ID]?.detail).toMatchObject({ hookCalls: 1, hookReads: 0 });
+  });
+
+  it('the S2 kill switch disables the hook: the reader is never called', async () => {
+    process.env.DISABLE_WM_TABLE_MINER = '1';
+    try {
+      const readWmTable = vi.fn(async (_page: number) => tableRead());
+      const out = await assembleHybridTakeoff([glyphPage], [9], 'T', transcribe, { readWmTable });
+      expect(readWmTable).not.toHaveBeenCalled();
+      expect(out.wmHookPageNums).toEqual([]);
+      expect(Object.values(lengthsByDiameter(out)).every((l) => l === 0)).toBe(true);
+    } finally {
+      delete process.env.DISABLE_WM_TABLE_MINER;
+    }
   });
 });

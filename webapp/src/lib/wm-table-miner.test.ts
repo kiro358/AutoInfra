@@ -16,7 +16,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { PageText, PositionedText } from './pdf-text';
 import type { TakeoffFacts, TileTranscript, WatermainFact, WithheldItem } from './types';
 import {
-  applyWmTableMiner, detectWmTablesInText, detectWmTablesInTranscript, wmTableFiring,
+  applyWmTableMiner, detectWmTablesInText, detectWmTablesInTranscript, detectWmTablesInVisionRead,
+  wmTableFiring, type VisionWmTableRead,
 } from './wm-table-miner';
 import { isSpecialistDisabled } from './specialists';
 
@@ -329,6 +330,73 @@ describe('S2 WM-table fill', () => {
     expect(result.facts).toBe(facts);
     expect(result.tables).toHaveLength(0);
     expect(result.filled).toHaveLength(0);
+  });
+
+  it('fills from the vision channel (PR49 hook) with vision provenance', () => {
+    // The hook's synthetic read of Panattoni p9: the full table, as the
+    // targeted transcription returns it (parser output shape).
+    const visionRead: VisionWmTableRead = {
+      page: 9,
+      tiles: [{
+        tile: 0,
+        blocks: [[
+          'WATERMAIN LENGTHS (METERS)',
+          ' | BLDG A | BLDG B',
+          '100mm | 43 | 32',
+          '150mm | 167 | 70',
+          '200mm | 316 | 40',
+          '250mm | 39 | 27',
+          '300mm | 24 | 20',
+        ]],
+      }],
+    };
+    const detected = detectWmTablesInVisionRead([visionRead]);
+    expect(detected.tables).toHaveLength(1);
+    expect(detected.tables[0]).toMatchObject({ channel: 'vision', page: 9 });
+
+    const facts = panattoniFacts();
+    const result = applyWmTableMiner(facts, [], [], [visionRead]);
+    expect(result.filled.map((f) => [f.diameterMm, f.totalLengthM])).toEqual([[250, 66], [150, 237], [100, 75]]);
+    expect(result.refusals).toEqual([
+      { diameterMm: 300, reason: 'no-generalist-row' },
+      { diameterMm: 200, reason: 'no-generalist-row' },
+    ]);
+    const filledFact = result.facts.watermain.find((w) => w.sizeAndType === '150mm PVC')!;
+    expect(filledFact.source).toMatchObject({
+      method: 'schedule', producer: 'S2-wm-table-miner', family: 'wm-table', page: 9,
+    });
+    expect(filledFact.source!.evidence).toContain('vision-read ::');
+    expect(filledFact.source!.evidence).toContain('150mm | 167 | 70');
+    const derived = result.facts.withheld!.filter((w) => w.kind === 'derived');
+    expect(derived).toHaveLength(3);
+    expect(derived.every((w) => w.question.includes('vision read of p.9'))).toBe(true);
+    expect(derived.every((w) => w.defaultApplied!.source.includes('vision read of p.9'))).toBe(true);
+    // Firing record carries the hook's spend when asked.
+    const firing = wmTableFiring(result, { candidatePages: [9], calls: 1, readPages: [9] });
+    expect(firing.detail).toMatchObject({ tables: 1, filled: 3, hookCandidates: 1, hookCalls: 1, hookReads: 1 });
+  });
+
+  it('a vision read that disagrees with a text-layer table poisons only that diameter', () => {
+    const visionRead: VisionWmTableRead = {
+      page: 9,
+      tiles: [{
+        tile: 0,
+        blocks: [[
+          'WATERMAIN LENGTHS (METERS)',
+          ' | BLDG A | BLDG B',
+          '100mm | 43 | 32',
+          '150mm | 900 | 99',
+        ]],
+      }],
+    };
+    const facts = baseFacts({
+      watermain: [wm('150mm PVC', 150), wm('100mm PVC', 100)],
+      withheld: [withheldFor('150mm PVC'), withheldFor('100mm PVC')],
+    });
+    const result = applyWmTableMiner(facts, [panattoniPage()], [], [visionRead]);
+    expect(result.refusals).toContainEqual({ diameterMm: 150, reason: 'conflicting-tables' });
+    expect(result.facts.watermain.find((w) => w.pipeDiameter === 150)!.length).toBe(0);
+    expect(result.facts.watermain.find((w) => w.pipeDiameter === 100)!.length).toBe(75);
   });
 
   it('kill switch: DISABLE_WM_TABLE_MINER disables; "false" never does', () => {

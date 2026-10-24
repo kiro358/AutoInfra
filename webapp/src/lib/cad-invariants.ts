@@ -321,7 +321,20 @@ export function evaluateNetworkInvariants(
           defaultApplied: null,
         });
       }
-      const pipeDiameter = edge.diameterMm ?? (edge.system === 'SAN' ? 200 : 300);
+      // No silent diameter default (the pre-conformance code substituted
+      // 200 SAN / 300 STORM): a diameter the sheet never states is withheld
+      // as a question, exactly like an unmeasurable length above — inventing
+      // a pipe size is the same fabrication as inventing a scale (PR 12).
+      const pipeDiameter = edge.diameterMm ?? null;
+      if (pipeDiameter == null) {
+        withheld.push({
+          entity: runLabel,
+          field: 'diameter',
+          kind: 'withheld',
+          question: `Diameter of run ${runLabel} is not stated in a callout — confirm the pipe size. Left blank and not priced.`,
+          defaultApplied: null,
+        });
+      }
 
       sewerFacts.push({
         runLabel,
@@ -332,6 +345,11 @@ export function evaluateNetworkInvariants(
         typeClass: edge.typeClass ?? null,
         slope: edge.slopePercent ?? null,
         depth: 2.5,
+        // Provenance: lengths here are stated callouts or scale
+        // measurements off drawn geometry, already convention-processed
+        // by applyEstimatorConventions — reconcile's whole-metre rule
+        // for stated text/schedule lengths must not re-round them.
+        source: { method: 'vector' },
       });
     }
   }

@@ -1685,6 +1685,30 @@ describe('envNumber', () => {
   });
 });
 
+describe('callWithRetry — aggregate execution budget (PR51)', () => {
+  it('fails a hung logical call with the distinct budget error, unless the kill switch is set', async () => {
+    const { callWithRetry } = await import('./extraction');
+    const prevBudget = process.env.MODEL_RETRY_BUDGET_MINUTES;
+    const prevDisable = process.env.DISABLE_MODEL_RETRY_BUDGET;
+    try {
+      process.env.MODEL_RETRY_BUDGET_MINUTES = '0.001'; // 60 ms, for this test only
+      await expect(callWithRetry(() => new Promise<string>(() => undefined)))
+        .rejects.toMatchObject({ code: 'RETRY_BUDGET_EXHAUSTED', attempts: 1 });
+
+      process.env.DISABLE_MODEL_RETRY_BUDGET = '1';
+      await expect(callWithRetry(async () => {
+        await new Promise((r) => setTimeout(r, 80));
+        return 'survived past the disabled budget';
+      })).resolves.toBe('survived past the disabled budget');
+    } finally {
+      if (prevBudget === undefined) delete process.env.MODEL_RETRY_BUDGET_MINUTES;
+      else process.env.MODEL_RETRY_BUDGET_MINUTES = prevBudget;
+      if (prevDisable === undefined) delete process.env.DISABLE_MODEL_RETRY_BUDGET;
+      else process.env.DISABLE_MODEL_RETRY_BUDGET = prevDisable;
+    }
+  });
+});
+
 describe('assembleHybridTakeoff — S2 vision hook (PR49, detector rebased PR50)', () => {
   // The Panattoni shape in miniature: one stroke-font sheet (612x792pt,
   // so the tile plan is exactly 2) whose text layer is glyph garbage —

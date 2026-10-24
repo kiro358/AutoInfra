@@ -39,6 +39,7 @@ import { extractPageText, isTextyPage, hasAnnotationForm, countElevationItems, c
 import { verifyStructureProvenance } from './provenance';
 import { assembleTextTakeoff } from './text-takeoff';
 import { extractVectorTakeoff, type VectorVerifier } from './vector-takeoff';
+import { callWithRetryBudget, retryBudgetConfigFromEnv } from './execution-budget';
 import type { VerificationAnswer } from './vector-verifier';
 
 // Globally override Undici's default 30-second headers/body timeout and configure proxy if present
@@ -518,49 +519,18 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, idx: numb
   return results;
 }
 
-async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 7, initialDelay = 6000): Promise<T> {
-  let attempt = 0;
-  while (true) {
-    try {
-      return await fn();
-    } catch (err: any) {
-      attempt++;
-      const msg = (err.message || '').toLowerCase();
-      const isRateLimit = err.status === 429 || msg.includes('429') || msg.includes('resource exhausted');
-      const isAbort = err.name === 'AbortError' || err.message === 'This operation was aborted' || msg.includes('abort');
-      const isServerError = err.status >= 500 && err.status <= 599;
-      const isCancelled = err.status === 499 || msg.includes('499') || msg.includes('cancel');
-      // Transient transport failures (undici): these previously fell through and
-      // zeroed a whole project. They're almost always retryable.
-      const isNetwork =
-        err.name === 'TypeError' && msg.includes('fetch failed') ||
-        msg.includes('fetch failed') ||
-        msg.includes('econnreset') ||
-        msg.includes('etimedout') ||
-        msg.includes('econnrefused') ||
-        msg.includes('enotfound') ||
-        msg.includes('socket hang up') ||
-        msg.includes('network') ||
-        msg.includes('terminated') ||
-        (err.cause && String(err.cause.code || err.cause).toLowerCase().match(/econn|etimedout|und_err|enotfound|socket/) != null);
-
-      if (attempt >= maxRetries || (!isRateLimit && !isAbort && !isServerError && !isCancelled && !isNetwork)) {
-        throw err;
-      }
-
-      let errType = 'Timeout/Abort';
-      if (isRateLimit) errType = '429 Rate Limit';
-      else if (isCancelled) errType = '499 Cancelled';
-      else if (isServerError) errType = `${err.status || '5xx'} Server Error`;
-      else if (isNetwork) errType = 'Network/Transport';
-
-      // Cap the backoff so a failing call doesn't burn minutes of dead sleep.
-      const delay = Math.min(30000, initialDelay * Math.pow(2, attempt - 1)) + Math.random() * 2000;
-      const causeStr = err.cause ? ` cause=${String(err.cause.code || err.cause.message || err.cause)}` : '';
-      console.warn(`      [extraction.ts] Attempt ${attempt} failed with ${errType} (${err.message}${causeStr}). Retrying in ${(delay / 1000).toFixed(1)}s...`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-  }
+export async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 7, initialDelay = 6000): Promise<T> {
+  const budget = retryBudgetConfigFromEnv();
+  return callWithRetryBudget(fn, {
+    maxRetries,
+    initialDelayMs: initialDelay,
+    budgetMs: budget.budgetMs,
+    onRetry: ({ attempt, errorType, error, delayMs }) => {
+      const err: any = error;
+      const causeStr = err?.cause ? ` cause=${String(err.cause.code || err.cause.message || err.cause)}` : '';
+      console.warn(`      [extraction.ts] Attempt ${attempt} failed with ${errorType} (${err?.message || String(err)}${causeStr}). Retrying in ${(delayMs / 1000).toFixed(1)}s...`);
+    },
+  });
 }
 
 import { PDFDocument } from 'pdf-lib';

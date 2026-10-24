@@ -28,7 +28,8 @@ import { normalizeLabel, runSignature } from './compare-facts';
 import { assembleTranscriptTakeoff } from './transcript-takeoff';
 import { applyWmTableMiner, wmTableFiring, WM_TABLE_MINER_ID, type VisionWmTableRead } from './wm-table-miner';
 import {
-  attributeTilesToPages, buildWmTableReadPrompt, detectWmTableCandidates, parseWmTableReadResponse,
+  buildWmTableReadPrompt, detectWmTableCandidates, parseWmTableReadResponse,
+  WM_HOOK_MAX_CALLS_PER_JOB,
 } from './wm-table-hook';
 import { mergeTakeoffs, dropSpecNoteStructures, clampImplausibleCatchbasinGroups, reconcileTakeoff } from './reconcile';
 import { appendCoverageWarnings } from './coverage-checks';
@@ -719,12 +720,10 @@ export interface HybridAssembly {
 
 /** Routing-time signals recorded for a page the S2 vision hook fired on. */
 export interface WmHookSignals {
-  /** The fragment-carrying transcript tile attributed to the page. */
-  tile: number;
-  /** Scope-header lines in that tile (hook requires ≥ 1). */
-  scopeHeaders: number;
-  /** Bare number-pair lines in that tile (hook requires ≥ 2). */
-  pairs: number;
+  /** The page's claimed Phase-0 kind (hook requires P2 or P5). */
+  kind: string;
+  /** The sheet-title item that proved a servicing sheet ("SERVICING PLAN"). */
+  title: string;
   /** Text items on the page (glyph gate requires ≥ 50). */
   items: number;
   /** Single-character fraction of those items (gate requires ≥ 0.40). */
@@ -925,40 +924,57 @@ export async function assembleHybridTakeoff(
   let wmMined = applyWmTableMiner(mergedFacts, pageTexts, transcript);
   let facts = wmMined.facts;
 
-  // S2 vision hook (PR49): when NO channel could read a table but a
-  // raster page carries the table's fragment in its general transcript
-  // (scope headers + bare number pairs) over a glyph-garbage text
-  // layer, spend ONE targeted read per candidate page and mine again
-  // with the reads included (channel 'vision'). The detector is
-  // conjunctive and fail-closed (wm-table-hook.ts); with no reader
-  // injected the hook cannot fire at all.
+  // S2 vision hook (PR49; detector rebased PR50): when NO channel
+  // could read a table, spend ONE targeted read per candidate page
+  // and mine again with the reads included (channel 'vision'). A
+  // candidate is a located, non-texty, glyph-garbage page whose
+  // recorded Phase-0 classification is claimed (P2/P5) and whose own
+  // text layer carries its sheet title naming SERVICING — every
+  // signal intrinsic to the page (PR49's transcript-fragment
+  // signature was a frozen-cache artifact and never fired live; see
+  // wm-table-hook.ts). Spend is capped per job
+  // (WM_HOOK_MAX_CALLS_PER_JOB); candidates past the cap are recorded
+  // as budget-refused. The detector is conjunctive and fail-closed;
+  // with no reader injected the hook cannot fire at all.
   const wmHookPageNums: number[] = [];
   const wmHookSignals: Record<number, WmHookSignals> = {};
   let wmHookCalls = 0;
+  let wmHookBudgetRefused = 0;
   if (options?.readWmTable) {
-    const plannedByPage = new Map(pageTexts.map((pt) => [pt.page, tilesNeededPerPage(pt.width, pt.height)]));
-    const totalCap = Math.min(
-      Number(process.env.MAX_TILES_TOTAL) || 320,
-      rasterPageNums.length * MAX_TILES_PER_PAGE,
-    );
-    const tilesByPage = attributeTilesToPages(
-      rasterPageNums.map((page) => ({ page, plannedTiles: plannedByPage.get(page) ?? 0 })),
-      transcript,
-      MAX_TILES_PER_PAGE,
-      totalCap,
+    // The classification the diagnostics record will carry for these
+    // pages, computed here from the same routing-time signals
+    // (attachDiagnostics' inputs, mirrored — solo yields from the
+    // fallback checks above, drawn counts from the dual-read record).
+    const classifications = new Map(
+      classifyPages(pageTexts.map((pt): PageSignalInput => ({
+        page: pt.page,
+        items: pt.items.length,
+        chars: pt.items.reduce((a, i) => a + i.text.length, 0),
+        texty: isTextyPage(pt),
+        annotationForm: hasAnnotationForm(pt),
+        soloYield: textyPageYields[pt.page] ?? null,
+        soloRunYield: textyPageRunYields[pt.page] ?? null,
+        elevationItems: countElevationItems(pt),
+        keywordHits: countCalloutKeywordHits(pt),
+        pathOps: dualReadSignals[pt.page]?.pathOps ?? null,
+        imageOps: null,
+        symbolFontItems: pt.symbolFontItems ?? null,
+      }))).map((c) => [c.page, c]),
     );
     const candidates = detectWmTableCandidates({
-      pageTexts, tilesByPage, facts, tablesClaimed: wmMined.tables.length,
+      pageTexts, locatedPages, classifications, facts, tablesClaimed: wmMined.tables.length,
     });
     for (const c of candidates) {
       wmHookSignals[c.page] = {
-        tile: c.tile, scopeHeaders: c.scopeHeaders, pairs: c.pairs,
+        kind: c.kind, title: c.title,
         items: c.items, singleCharFraction: c.singleCharFraction,
       };
     }
-    if (candidates.length > 0) {
+    const callable = candidates.slice(0, WM_HOOK_MAX_CALLS_PER_JOB);
+    wmHookBudgetRefused = candidates.length - callable.length;
+    if (callable.length > 0) {
       const visionReads: VisionWmTableRead[] = [];
-      for (const c of candidates) {
+      for (const c of callable) {
         wmHookCalls += 1;
         let read: TileTranscript | null = null;
         try { read = await options.readWmTable(c.page); } catch { read = null; }
@@ -978,12 +994,14 @@ export async function assembleHybridTakeoff(
     ...(transcriptFacts ? transcriptStats.specialists : {}),
   };
   if (wmMined.tables.length > 0 || wmHookCalls > 0) {
-    specialistFirings[WM_TABLE_MINER_ID] = wmTableFiring(
+    const firing = wmTableFiring(
       wmMined,
       wmHookCalls > 0
         ? { candidatePages: Object.keys(wmHookSignals).map(Number), calls: wmHookCalls, readPages: wmHookPageNums }
         : undefined,
     );
+    if (wmHookBudgetRefused > 0 && firing.detail) firing.detail.hookBudgetRefused = wmHookBudgetRefused;
+    specialistFirings[WM_TABLE_MINER_ID] = firing;
   }
   return {
     facts, transcript, textyPageNums, rasterPageNums, fallbackPageNums, runFallbackPageNums,
@@ -2182,7 +2200,7 @@ async function extractFromPDFInner(
           console.log(`      [extraction.ts] hybrid: texty page(s) ${hybrid.dualReadPageNums.join(', ')} carry a partial text layer (zero elevation items at full callout density over a dense drawing) — also vision-transcribed (text facts kept, vision adds).`);
         }
         if (hybrid.wmHookPageNums.length > 0) {
-          console.log(`      [extraction.ts] hybrid: S2 vision hook issued a targeted watermain-table read on page(s) ${hybrid.wmHookPageNums.join(', ')} (WM-table fragment over a glyph-garbage text layer; the miner validates any table it returns).`);
+          console.log(`      [extraction.ts] hybrid: S2 vision hook issued a targeted watermain-table read on page(s) ${hybrid.wmHookPageNums.join(', ')} (glyph-garbage servicing sheet, claimed classification; the miner validates any table it returns).`);
         }
 
         let facts = hybrid.facts;

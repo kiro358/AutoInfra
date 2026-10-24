@@ -1,20 +1,26 @@
 /**
- * PR49 — the S2 vision hook (wm-table-hook.ts): the fragment
- * signature, the glyph-garbage gate, the tile→page attribution walk,
- * the conjunctive candidate detector, and the fail-closed read
- * prompt/parser. The positive page fixture reproduces the Panattoni
- * shape measured on the corpus: a stroke-font sheet (475 text items,
- * 55% single-character) whose general transcript tile carries the
- * printed WM table's value columns — "BLDG A | BLDG B" over bare
- * number pairs — with no title, diameters, or first row.
+ * PR50 — the S2 vision hook (wm-table-hook.ts) after the detector
+ * rebase: the page-intrinsic signature (glyph garbage + located +
+ * claimed P2/P5 classification + the sheet's own SERVICING title),
+ * fill eligibility, and the fail-closed read prompt/parser.
+ *
+ * The PR49 signature keyed candidates off a fragment of the table in
+ * the page's general transcript tile; the PR49 live gate proved that
+ * fragment a frozen-cache artifact (the live roll never produced the
+ * tile). The rebased detector therefore takes NO transcript input at
+ * all — the positive fixture below is a stroke-font servicing sheet
+ * (81 text items, 86% single-character, its title item reading
+ * "SERVICING PLAN") and fires with no transcript in sight.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { PageText, PositionedText } from './pdf-text';
-import type { TakeoffFacts, TileTranscript, WatermainFact } from './types';
+import { countCalloutKeywordHits, countElevationItems, hasAnnotationForm, isTextyPage } from './pdf-text';
+import { classifyPage } from './page-classifier';
+import type { PageClassification, TakeoffFacts, WatermainFact } from './types';
 import {
-  attributeTilesToPages, buildWmTableReadPrompt, detectWmTableCandidates,
-  fillEligibleWmDiameters, glyphGarbageStats, parseWmTableReadResponse,
-  tileCarriesWmTableFragment, wmTableFragmentStats,
+  buildWmTableReadPrompt, detectWmTableCandidates, fillEligibleWmDiameters,
+  glyphGarbageStats, parseWmTableReadResponse, servicingTitleOf,
+  WM_HOOK_MAX_CALLS_PER_JOB,
 } from './wm-table-hook';
 
 const savedDisable = process.env.DISABLE_WM_TABLE_MINER;
@@ -25,24 +31,15 @@ afterEach(() => {
 
 // ---- fixtures ---------------------------------------------------------------
 
-/** The fragment tile: Panattoni tile 129's table blocks, verbatim shape. */
-const fragmentTile: TileTranscript = {
-  tile: 129,
-  blocks: [
-    ['BLDG A | BLDG B'],
-    ['167 | 70'],
-    ['316 | 40'],
-    ['39 | 27'],
-    ['24 | 20'],
-  ],
-};
-
-/** A stroke-font sheet: many items, most of them single glyphs. */
-const glyphPage = (page: number, singles = 70, words = 10): PageText => {
+/** A stroke-font sheet: many items, most of them single glyphs, plus
+ *  one readable sheet-title item (the Panattoni shape: the title block
+ *  is TrueType, the annotations are stroke-font glyphs). */
+const glyphPage = (page: number, title: string | null = 'SERVICING PLAN'): PageText => {
   const items: PositionedText[] = [];
-  for (let i = 0; i < singles; i++) items.push({ text: 'X', x: i * 10, y: 100, width: 8, height: 10 });
-  for (let i = 0; i < words; i++) items.push({ text: 'GLYPH', x: i * 10, y: 200, width: 40, height: 10 });
-  return { page, width: 612, height: 792, items };
+  for (let i = 0; i < 70; i++) items.push({ text: 'X', x: i * 10, y: 100, width: 8, height: 10 });
+  for (let i = 0; i < 10; i++) items.push({ text: 'GLYPH', x: i * 10, y: 200, width: 40, height: 10 });
+  if (title) items.push({ text: title, x: 324, y: 257, width: 168, height: 20 });
+  return { page, width: 3456, height: 2592, items };
 };
 
 /** A readable text page (long words, callout density — texty). */
@@ -52,8 +49,32 @@ const readablePage = (page: number): PageText => {
   for (let r = 0; r < 6; r++) {
     for (const w of words) items.push({ text: w, x: r * 90, y: 100 + r * 20, width: 50, height: 10 });
   }
+  items.push({ text: 'SERVICING PLAN', x: 324, y: 700, width: 168, height: 20 });
   return { page, width: 612, height: 792, items };
-}
+};
+
+const cls = (page: number, kind: PageClassification['kind'] = 'P5', kindTier: PageClassification['kindTier'] = 'claimed'): PageClassification => ({
+  page, kind, kindTier, families: [],
+  signals: {
+    items: null, chars: null, texty: false, annotationForm: false, soloYield: null,
+    soloRunYield: null, elevationItems: null, keywordHits: null, pathOps: null,
+    imageOps: null, symbolFontItems: null,
+  },
+});
+
+/** The classification the production seam computes for a page: the
+ *  real classifier over attachDiagnostics-mirrored inputs. */
+const realCls = (pt: PageText): PageClassification => classifyPage({
+  page: pt.page,
+  items: pt.items.length,
+  chars: pt.items.reduce((a, i) => a + i.text.length, 0),
+  texty: isTextyPage(pt),
+  annotationForm: hasAnnotationForm(pt),
+  soloYield: null, soloRunYield: null,
+  elevationItems: countElevationItems(pt),
+  keywordHits: countCalloutKeywordHits(pt),
+  pathOps: null, imageOps: null, symbolFontItems: pt.symbolFontItems ?? null,
+});
 
 const wm = (diameter: number, length = 0): WatermainFact => ({
   sizeAndType: `${diameter}mm PVC`,
@@ -73,38 +94,34 @@ const factsWith = (watermain: WatermainFact[]): TakeoffFacts => ({
 
 const candidateInput = (over: Partial<Parameters<typeof detectWmTableCandidates>[0]> = {}) => ({
   pageTexts: [glyphPage(9)],
-  tilesByPage: new Map([[9, [fragmentTile]]]),
+  locatedPages: [9],
+  classifications: new Map([[9, cls(9)]]),
   facts: factsWith([wm(250), wm(150), wm(100)]),
   tablesClaimed: 0,
   ...over,
 });
 
-// ---- fragment signature -------------------------------------------------------
+// ---- sheet-title gate ---------------------------------------------------------
 
-describe('WM-table fragment signature', () => {
-  it('counts the scope header and the bare number pairs', () => {
-    expect(wmTableFragmentStats(fragmentTile)).toEqual({ scopeHeaders: 1, pairs: 4 });
-    expect(tileCarriesWmTableFragment(fragmentTile)).toBe(true);
+describe('servicingTitleOf', () => {
+  it('reads the sheet title as printed ("SERVICING PLAN", "SITE SERVICING PLAN")', () => {
+    expect(servicingTitleOf(glyphPage(9))).toBe('SERVICING PLAN');
+    expect(servicingTitleOf(glyphPage(9, 'SITE SERVICING PLAN'))).toBe('SITE SERVICING PLAN');
+    expect(servicingTitleOf(glyphPage(9, 'SERVICING'))).toBe('SERVICING');
   });
 
-  it('scope headers alone do not carry it (the Woodbine legend shape)', () => {
-    const legend: TileTranscript = { tile: 3, blocks: [['BLDG A | BLDG B'], ['PHASE 1 | PHASE 2'], ['Some note | text']] };
-    expect(wmTableFragmentStats(legend)).toEqual({ scopeHeaders: 2, pairs: 0 });
-    expect(tileCarriesWmTableFragment(legend)).toBe(false);
+  it('a grading sheet\'s title does not qualify', () => {
+    expect(servicingTitleOf(glyphPage(9, 'GRADING PLAN'))).toBeNull();
   });
 
-  it('number pairs alone do not carry it (coincidence guard)', () => {
-    const pairsOnly: TileTranscript = { tile: 4, blocks: [['167 | 70'], ['316 | 40'], ['39 | 27']] };
-    expect(wmTableFragmentStats(pairsOnly).pairs).toBe(3);
-    expect(tileCarriesWmTableFragment(pairsOnly)).toBe(false);
+  it('a prose sentence mentioning servicing is not a title (the Milton note shape)', () => {
+    const prose = glyphPage(9, null);
+    prose.items.push({ text: 'ALL SERVICING INFORMATION IS TO BE VERIFIED ON SITE BEFORE CONSTRUCTION', x: 100, y: 700, width: 600, height: 8 });
+    expect(servicingTitleOf(prose)).toBeNull();
   });
 
-  it('one pair is not enough, and labelled rows are not bare pairs', () => {
-    const onePair: TileTranscript = { tile: 5, blocks: [['BLDG A | BLDG B'], ['167 | 70']] };
-    expect(tileCarriesWmTableFragment(onePair)).toBe(false);
-    const labelled: TileTranscript = { tile: 6, blocks: [['BLDG A | BLDG B'], ['CB-237 | 70'], ['MH 3 | 40'], ['39 | 27']] };
-    expect(wmTableFragmentStats(labelled).pairs).toBe(1);
-    expect(tileCarriesWmTableFragment(labelled)).toBe(false);
+  it('no readable title (titles are glyphs too) — fails closed', () => {
+    expect(servicingTitleOf(glyphPage(9, null))).toBeNull();
   });
 });
 
@@ -112,53 +129,9 @@ describe('WM-table fragment signature', () => {
 
 describe('glyph-garbage gate', () => {
   it('measures the single-character fraction', () => {
-    expect(glyphGarbageStats(glyphPage(9))).toEqual({ items: 80, singleCharFraction: 0.875 });
+    expect(glyphGarbageStats(glyphPage(9))).toEqual({ items: 81, singleCharFraction: 70 / 81 });
     expect(glyphGarbageStats(readablePage(9)).singleCharFraction).toBeLessThan(0.4);
     expect(glyphGarbageStats({ page: 1, width: 100, height: 100, items: [] })).toEqual({ items: 0, singleCharFraction: 0 });
-  });
-});
-
-// ---- attribution walk -------------------------------------------------------------
-
-describe('attributeTilesToPages', () => {
-  const t = (tile: number): TileTranscript => ({ tile, blocks: [] });
-
-  it('walks pages in order by planned counts', () => {
-    const byPage = attributeTilesToPages(
-      [{ page: 1, plannedTiles: 2 }, { page: 2, plannedTiles: 1 }],
-      [t(1), t(2), t(3)], 24, 48,
-    );
-    expect(byPage?.get(1)?.map((x) => x.tile)).toEqual([1, 2]);
-    expect(byPage?.get(2)?.map((x) => x.tile)).toEqual([3]);
-  });
-
-  it('honours the total cap the way the renderer does (later pages starve)', () => {
-    const byPage = attributeTilesToPages(
-      [{ page: 1, plannedTiles: 2 }, { page: 2, plannedTiles: 2 }],
-      [t(1), t(2), t(3)], 24, 3,
-    );
-    expect(byPage?.get(1)?.map((x) => x.tile)).toEqual([1, 2]);
-    expect(byPage?.get(2)?.map((x) => x.tile)).toEqual([3]);
-  });
-
-  it('tolerates missing tiles: a gap is a hole in its owner\'s range, shifting nothing', () => {
-    // Tile 2 was lost in transcription; tile 3 still belongs to page 1's
-    // range and tile 4 to page 2 — position-based attribution would
-    // misassign both.
-    const byPage = attributeTilesToPages(
-      [{ page: 1, plannedTiles: 3 }, { page: 2, plannedTiles: 1 }],
-      [t(1), t(3), t(4)], 24, 48,
-    );
-    expect(byPage?.get(1)?.map((x) => x.tile)).toEqual([1, 3]);
-    expect(byPage?.get(2)?.map((x) => x.tile)).toEqual([4]);
-  });
-
-  it('returns null on a duplicate tile number', () => {
-    expect(attributeTilesToPages([{ page: 1, plannedTiles: 4 }], [t(1), t(1)], 24, 48)).toBeNull();
-  });
-
-  it('returns null when a tile falls outside every planned range', () => {
-    expect(attributeTilesToPages([{ page: 1, plannedTiles: 1 }], [t(1), t(2)], 24, 48)).toBeNull();
   });
 });
 
@@ -173,12 +146,64 @@ describe('fillEligibleWmDiameters', () => {
 
 // ---- the conjunctive detector ---------------------------------------------------------
 
-describe('detectWmTableCandidates', () => {
-  it('fires on the full Panattoni shape', () => {
+describe('detectWmTableCandidates (PR50 rebased signature)', () => {
+  it('fires on the full Panattoni shape — no transcript involved at all', () => {
     const out = detectWmTableCandidates(candidateInput());
     expect(out).toHaveLength(1);
-    expect(out[0]).toMatchObject({ page: 9, tile: 129, scopeHeaders: 1, pairs: 4, items: 80 });
-    expect(out[0].singleCharFraction).toBeCloseTo(0.875);
+    expect(out[0]).toMatchObject({ page: 9, kind: 'P5', title: 'SERVICING PLAN', items: 81 });
+    expect(out[0].singleCharFraction).toBeCloseTo(70 / 81);
+  });
+
+  it('fires with the classification the production seam really computes', () => {
+    const page = glyphPage(9);
+    const real = realCls(page);
+    expect(real.kind).toBe('P5');
+    expect(real.kindTier).toBe('claimed');
+    const out = detectWmTableCandidates(candidateInput({
+      pageTexts: [page], classifications: new Map([[9, real]]),
+    }));
+    expect(out.map((c) => c.page)).toEqual([9]);
+  });
+
+  it('does not fire on a grading sheet — the title gate separates the C100s from the C101s', () => {
+    const page = glyphPage(9, 'GRADING PLAN');
+    expect(detectWmTableCandidates(candidateInput({
+      pageTexts: [page], classifications: new Map([[9, realCls(page)]]),
+    }))).toEqual([]);
+  });
+
+  it('does not fire when the sheet\'s title is itself glyphs (C300/C301 shape) — fail-closed miss', () => {
+    expect(detectWmTableCandidates(candidateInput({ pageTexts: [glyphPage(9, null)] }))).toEqual([]);
+  });
+
+  it('does not fire on a details/spec sheet: no servicing title, whatever its layer', () => {
+    const page = glyphPage(9, 'STANDARD DETAILS');
+    expect(detectWmTableCandidates(candidateInput({ pageTexts: [page] }))).toEqual([]);
+  });
+
+  it('does not fire on an unlocated page, even with every other gate green', () => {
+    expect(detectWmTableCandidates(candidateInput({ locatedPages: [3] }))).toEqual([]);
+    expect(detectWmTableCandidates(candidateInput({ locatedPages: [] }))).toEqual([]);
+  });
+
+  it('does not fire when the classification is only suspect (unmeasured evidence)', () => {
+    expect(detectWmTableCandidates(candidateInput({
+      classifications: new Map([[9, cls(9, 'P5', 'suspect')]]),
+    }))).toEqual([]);
+  });
+
+  it('does not fire when the claimed kind is not a text-bearing sheet kind', () => {
+    expect(detectWmTableCandidates(candidateInput({
+      classifications: new Map([[9, cls(9, 'P1', 'claimed')]]),
+    }))).toEqual([]);
+    expect(detectWmTableCandidates(candidateInput({
+      classifications: new Map([[9, cls(9, 'P6', 'claimed')]]),
+    }))).toEqual([]);
+  });
+
+  it('does not fire when classification is unmeasured (null map, or page missing)', () => {
+    expect(detectWmTableCandidates(candidateInput({ classifications: null }))).toEqual([]);
+    expect(detectWmTableCandidates(candidateInput({ classifications: new Map() }))).toEqual([]);
   });
 
   it('does not fire when a table was already claimed (hook is last resort)', () => {
@@ -189,37 +214,47 @@ describe('detectWmTableCandidates', () => {
     expect(detectWmTableCandidates(candidateInput({ facts: factsWith([wm(250, 66), wm(150, 237)]) }))).toEqual([]);
   });
 
-  it('does not fire when attribution is unknown', () => {
-    expect(detectWmTableCandidates(candidateInput({ tilesByPage: null }))).toEqual([]);
-  });
-
-  it('does not fire on a texty page even with a fragment tile', () => {
+  it('does not fire on a texty page even with a servicing title', () => {
     const page = readablePage(9);
+    expect(isTextyPage(page)).toBe(true);
     expect(detectWmTableCandidates(candidateInput({
-      pageTexts: [page], tilesByPage: new Map([[9, [fragmentTile]]]),
+      pageTexts: [page], classifications: new Map([[9, realCls(page)]]),
     }))).toEqual([]);
   });
 
   it('does not fire on a clean raster page (no glyph layer to speak of)', () => {
     const scan: PageText = { page: 9, width: 612, height: 792, items: [] };
-    expect(detectWmTableCandidates(candidateInput({
-      pageTexts: [scan], tilesByPage: new Map([[9, [fragmentTile]]]),
-    }))).toEqual([]);
+    expect(detectWmTableCandidates(candidateInput({ pageTexts: [scan] }))).toEqual([]);
   });
 
-  it('does not fire when the glyph fraction is low (readable layer, odd transcript)', () => {
-    const mostlyReadable = glyphPage(9, 20, 60); // 25% single-char
+  it('does not fire when the glyph fraction is low (readable layer)', () => {
+    const mostlyReadable = glyphPage(9);
+    // Swap 50 glyph items for words: single-char fraction drops to 20/81.
+    mostlyReadable.items = [
+      ...Array.from({ length: 20 }, (_, i) => ({ text: 'X', x: i * 10, y: 100, width: 8, height: 10 })),
+      ...Array.from({ length: 60 }, (_, i) => ({ text: 'WORD', x: i * 10, y: 200, width: 40, height: 10 })),
+      { text: 'SERVICING PLAN', x: 324, y: 257, width: 168, height: 20 },
+    ];
     expect(detectWmTableCandidates(candidateInput({ pageTexts: [mostlyReadable] }))).toEqual([]);
   });
 
-  it('does not fire when the page\'s tiles carry no fragment', () => {
-    const plain: TileTranscript = { tile: 12, blocks: [['MH 7', 'RIM: 90.50']] };
-    expect(detectWmTableCandidates(candidateInput({ tilesByPage: new Map([[9, [plain]]]) }))).toEqual([]);
+  it('returns multiple candidates in page order', () => {
+    const pages = [glyphPage(12), glyphPage(9), glyphPage(10, 'SITE SERVICING PLAN')];
+    const out = detectWmTableCandidates(candidateInput({
+      pageTexts: pages,
+      locatedPages: [9, 10, 12],
+      classifications: new Map([[9, cls(9)], [10, cls(10, 'P2')], [12, cls(12)]]),
+    }));
+    expect(out.map((c) => c.page)).toEqual([9, 10, 12]);
   });
 
   it('the S2 kill switch disables the detector (and so the hook)', () => {
     process.env.DISABLE_WM_TABLE_MINER = '1';
     expect(detectWmTableCandidates(candidateInput())).toEqual([]);
+  });
+
+  it('the per-job spend cap is a small constant (registry budget)', () => {
+    expect(WM_HOOK_MAX_CALLS_PER_JOB).toBe(3);
   });
 });
 

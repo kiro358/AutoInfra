@@ -1685,22 +1685,24 @@ describe('envNumber', () => {
   });
 });
 
-describe('assembleHybridTakeoff — S2 vision hook (PR49)', () => {
+describe('assembleHybridTakeoff — S2 vision hook (PR49, detector rebased PR50)', () => {
   // The Panattoni shape in miniature: one stroke-font sheet (612x792pt,
   // so the tile plan is exactly 2) whose text layer is glyph garbage —
-  // 80 items, 87.5% single-character, zero callout keywords, hence
-  // non-texty and vision-routed. Its general transcript reads the WM
-  // callouts (tile 1) and the printed table's value columns (tile 2:
-  // scope header + bare number pairs) but not the table itself.
+  // 81 items, 86% single-character, zero callout keywords, hence
+  // non-texty and vision-routed — plus the one readable item the
+  // rebased detector keys on: the sheet's own title, "SERVICING PLAN".
+  // Its general transcript reads ONLY the WM callouts (tile 1): no
+  // table fragment anywhere (the PR49 signature's condition, proven a
+  // frozen-cache artifact by the PR49 live gate, is gone).
   const glyphItems = [
     ...Array.from({ length: 70 }, (_, i) => ({ text: 'X', x: (i % 20) * 30, y: 100 + Math.floor(i / 20) * 20, width: 8, height: 10 })),
     ...Array.from({ length: 10 }, (_, i) => ({ text: 'GLYPH', x: i * 50, y: 300, width: 40, height: 10 })),
+    { text: 'SERVICING PLAN', x: 324, y: 257, width: 168, height: 20 },
   ];
   const glyphPage: PageText = { page: 9, width: 612, height: 792, items: glyphItems };
 
   const generalTiles: TileTranscript[] = [
     { tile: 1, blocks: [['250mmØ PVC WATERMAIN'], ['150mmØ PVC WATERMAIN'], ['100mmØ PVC WATERMAIN']] },
-    { tile: 2, blocks: [['BLDG A | BLDG B'], ['167 | 70'], ['316 | 40'], ['39 | 27'], ['24 | 20']] },
   ];
 
   const tableRead = () => parseWmTableReadResponse({
@@ -1722,14 +1724,15 @@ describe('assembleHybridTakeoff — S2 vision hook (PR49)', () => {
     expect(tilesNeededPerPage(glyphPage.width, glyphPage.height)).toBe(2);
   });
 
-  it('fires one targeted read on the candidate page and S2 fills from it', async () => {
+  it('fires one targeted read on the candidate page and S2 fills from it — no transcript fragment needed', async () => {
     const readWmTable = vi.fn(async (_page: number) => tableRead());
     const out = await assembleHybridTakeoff([glyphPage], [9], 'T', transcribe, { readWmTable });
 
     expect(readWmTable).toHaveBeenCalledTimes(1);
     expect(readWmTable).toHaveBeenCalledWith(9);
     expect(out.wmHookPageNums).toEqual([9]);
-    expect(out.wmHookSignals[9]).toMatchObject({ tile: 2, scopeHeaders: 1, pairs: 4, items: 80 });
+    expect(out.wmHookSignals[9]).toMatchObject({ kind: 'P5', title: 'SERVICING PLAN', items: 81 });
+    expect(out.wmHookSignals[9].singleCharFraction).toBeCloseTo(70 / 81);
     expect(lengthsByDiameter(out)).toEqual({ 250: 66, 150: 237, 100: 75 });
     const firing = out.specialistFirings?.[WM_TABLE_MINER_ID];
     expect(firing?.detail).toMatchObject({ hookCandidates: 1, hookCalls: 1, hookReads: 1, filled: 3 });
@@ -1767,5 +1770,31 @@ describe('assembleHybridTakeoff — S2 vision hook (PR49)', () => {
     } finally {
       delete process.env.DISABLE_WM_TABLE_MINER;
     }
+  });
+
+  it('a grading-titled glyph sheet never fires (the C100 shape)', async () => {
+    const gradingPage: PageText = {
+      page: 9, width: 612, height: 792,
+      items: glyphItems.map((i) => (i.text === 'SERVICING PLAN' ? { ...i, text: 'GRADING PLAN' } : i)),
+    };
+    const readWmTable = vi.fn(async (_page: number) => tableRead());
+    const out = await assembleHybridTakeoff([gradingPage], [9], 'T', transcribe, { readWmTable });
+    expect(readWmTable).not.toHaveBeenCalled();
+    expect(out.wmHookPageNums).toEqual([]);
+    expect(Object.values(lengthsByDiameter(out)).every((l) => l === 0)).toBe(true);
+  });
+
+  it('the per-job cap bounds targeted reads at 3 and records the budget refusal', async () => {
+    const pages: PageText[] = [9, 10, 11, 12].map((page) => ({ ...glyphPage, page }));
+    const readWmTable = vi.fn(async (page: number) => (page === 9 ? tableRead() : null));
+    const out = await assembleHybridTakeoff(pages, [9, 10, 11, 12], 'T', transcribe, { readWmTable });
+
+    expect(readWmTable).toHaveBeenCalledTimes(3);
+    expect(readWmTable.mock.calls.map((c) => c[0])).toEqual([9, 10, 11]);
+    expect(Object.keys(out.wmHookSignals).map(Number).sort((a, b) => a - b)).toEqual([9, 10, 11, 12]);
+    expect(out.specialistFirings?.[WM_TABLE_MINER_ID]?.detail).toMatchObject({
+      hookCandidates: 4, hookCalls: 3, hookReads: 1, hookBudgetRefused: 1,
+    });
+    expect(lengthsByDiameter(out)).toEqual({ 250: 66, 150: 237, 100: 75 });
   });
 });

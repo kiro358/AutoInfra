@@ -1,93 +1,98 @@
 /**
- * PR49 — the S2 vision hook: the offline half (candidate detection,
- * tile→page attribution, prompt, response parsing). The production
- * reader that spends the model call lives in extraction.ts and is
- * injected into assembleHybridTakeoff as `readWmTable`; with no reader
- * injected the hook cannot fire, so offline replays stay byte-identical.
+ * The S2 vision hook: the offline half (candidate detection, prompt,
+ * response parsing). The production reader that spends the model call
+ * lives in extraction.ts and is injected into assembleHybridTakeoff as
+ * `readWmTable`; with no reader injected the hook cannot fire, so
+ * offline replays stay byte-identical.
  *
  * WHY THIS EXISTS. S2 (wm-table-miner.ts) mines printed WATERMAIN
  * LENGTHS tables, but on the one corpus project that prints one —
  * Panattoni — the table is stroke-font vector art: the text layer
  * yields single-character glyph items ('X'-garbage), and the table
- * cells exist in NO text channel. The general tile transcription DID
- * read the table's value columns (its tile carries "BLDG A | BLDG B"
- * and bare number pairs "167 | 70", "316 | 40", "39 | 27", "24 | 20")
- * but not its title, diameter column, or first row — so S2's grammar
- * cannot claim it from the general transcript. The hook issues ONE
- * targeted transcription of the candidate page, asking only for that
- * table, and feeds the result into S2's existing transcript grammar
- * (channel 'vision'). S2's validation, fill-only attach, conflict
- * poisoning and refusal rules apply unchanged.
+ * cells exist in NO text channel. The hook issues ONE targeted
+ * transcription of a candidate page, asking only for that table, and
+ * feeds the result into S2's existing transcript grammar (channel
+ * 'vision'). S2's validation, fill-only attach, conflict poisoning and
+ * refusal rules apply unchanged.
  *
- * CANDIDATE SIGNATURE (conjunctive, fail-closed — every gate must
- * hold; corpus census 2026-10-24: fires on exactly one page of the 26
- * golden projects, Panattoni p9):
+ * CANDIDATE SIGNATURE — PR50 REBASE (conjunctive, fail-closed; every
+ * gate at routing/assembly time, every signal intrinsic to the page
+ * itself — nothing depends on how a transcript roll happens to fall).
+ * PR49's original signature keyed the candidate page off a FRAGMENT
+ * of the table in the page's general transcript tile (scope-header +
+ * bare number-pair lines). The PR49 live gate null result proved that
+ * fragment is a frozen-cache artifact: the live roll transcribed 96
+ * tiles where the cache had 143 and never produced the fragment tile,
+ * so the hook never fired, though the table page itself satisfied
+ * every page-intrinsic gate. The fragment condition is therefore
+ * DROPPED ENTIRELY. What remains:
  *   0. S2 enabled (same kill switch, DISABLE_WM_TABLE_MINER) AND the
  *      first mining pass claimed ZERO tables — the hook is a last
  *      resort for tables no channel could read, never a second read
  *      of a table already claimed.
  *   1. The merged facts carry ≥1 watermain diameter whose every
  *      segment length is unstated (0) — a fill must be possible.
- *   2. The page is NOT texty (the text layer routes it to vision
- *      already) and its text layer is glyph garbage: ≥50 items with
- *      ≥40% single-character items — the layer exists but cannot be
- *      read, which is what separates a stroke-font sheet from a clean
+ *   2. The page is NOT texty (a texty page's layer routes it to the
+ *      text paths already, and its table — if any — is S2's text /
+ *      transcript channels' job, not the hook's).
+ *   3. The page's text layer is glyph garbage: ≥50 items with ≥40%
+ *      single-character items — the layer exists but cannot be read,
+ *      which is what separates a stroke-font sheet from a clean
  *      raster scan (few/no items) and from a readable text page.
- *   3. A tile ATTRIBUTED to the page carries the fragment signature:
- *      ≥1 scope-header line (a pipe line naming ≥2 scope tokens:
- *      BLDG/BUILDING/PHASE/BLK/BLOCK/AREA/SITE/SECTION) AND ≥2 bare
- *      number-pair lines ("167 | 70"). Either half alone occurs
- *      elsewhere (Woodbine's plan-and-profile legend has scope
- *      headers with no pairs); the conjunction is the table's shadow
- *      in the general transcript.
+ *   4. The page is a LOCATED plan/servicing sheet, proven from the
+ *      page itself:
+ *      - it is in the run's located set (an unlocated page is never
+ *        a candidate — the locator did not claim it as takeoff
+ *        bearing), AND
+ *      - its recorded Phase-0 classification (page-classifier.ts)
+ *        is CLAIMED and of a text-bearing sheet kind (P2 annotation-
+ *        form or P5 text-bearing — the only kinds a glyph-garbage
+ *        page can carry: ≥50 items rules out P4/P6, and non-texty
+ *        rules out P1/P3; a suspect classification is unmeasured
+ *        evidence and never fires), AND
+ *      - the layer's readable items carry the sheet's own title,
+ *        title-shaped (a single item of ≤ 40 chars — the sheet title
+ *        as printed in the title block, e.g. "SERVICING PLAN" /
+ *        "SITE SERVICING PLAN", not a prose sentence mentioning the
+ *        word), naming SERVICING. A watermain lengths table is a
+ *        servicing-plan artifact; on the corpus this title gate is
+ *        what separates Panattoni's three C101 servicing sheets
+ *        (title item "SERVICING PLAN") from its five C100 grading
+ *        sheets (title item "GRADING PLAN", zero SERVICING items)
+ *        whose glyph layers are otherwise indistinguishable, and it
+ *        fails closed on sheets whose titles are themselves glyphs
+ *        (Panattoni's own C300/C301 below-ground servicing sheets,
+ *        Wigmore) — a missed read costs today's behaviour, never a
+ *        wrong one.
+ *   Spend bound: at most WM_HOOK_MAX_CALLS_PER_JOB targeted reads per
+ *   job (candidates in page order); further candidates are recorded
+ *   as budget-refused in the S2 firing record, never silently dropped.
+ *
+ * Corpus census for this signature (PR50, pr50-census.ts over the 26
+ * golden projects): fires on exactly 4 pages — Panattoni's three
+ * located C101 servicing sheets (incl. p9, the table page) and
+ * Milton's site servicing plan. See pr50_evidence.md.
  */
 import { isTextyPage, type PageText } from './pdf-text';
 import { isSpecialistDisabled } from './specialists';
-import type { TakeoffFacts, TileTranscript } from './types';
+import type { PageClassification, TakeoffFacts, TileTranscript } from './types';
 import { WM_TABLE_MINER_ID } from './wm-table-miner';
 
-export const WM_HOOK_MIN_SCOPE_HEADERS = 1;
-export const WM_HOOK_MIN_FRAGMENT_PAIRS = 2;
 export const WM_HOOK_GLYPH_MIN_ITEMS = 50;
 export const WM_HOOK_GLYPH_MIN_SINGLE_FRACTION = 0.4;
+/** Per-job spend bound for targeted reads (the registry-budget
+ *  discipline: a specialist's live cost is capped, and the cap's
+ *  refusals are recorded). Set to the corpus's largest defensible
+ *  candidate count in one job — Panattoni's three located servicing-
+ *  titled glyph sheets. */
+export const WM_HOOK_MAX_CALLS_PER_JOB = 3;
+/** A sheet title is a short printed line, not a sentence: the title
+ *  items measured on the corpus are ≤19 chars ("SITE SERVICING
+ *  PLAN"); the measured prose negative (a Milton note sentence,
+ *  "GRADING PLAN COMPLETED FOR THE SUBDIVISION BY SCS …") is ~50. */
+export const WM_HOOK_TITLE_MAX_CHARS = 40;
 
-const SCOPE_TOKENS = new Set(['BLDG', 'BUILDING', 'PHASE', 'BLK', 'BLOCK', 'AREA', 'SITE', 'SECTION']);
-/** A bare number-pair line: two plain numbers and a pipe, nothing else. */
-const NUMBER_PAIR_RE = /^\s*\d+(?:\.\d+)?\s*\|\s*\d+(?:\.\d+)?\s*$/;
-
-/** Scope tokens named in one line ("BLDG A | BLDG B" → 2). */
-export function countScopeTokens(line: string): number {
-  return line.toUpperCase().split(/[^A-Z]+/).filter((t) => SCOPE_TOKENS.has(t)).length;
-}
-
-/** A scope-header line: pipe-delimited and naming ≥2 scope tokens. */
-export function isScopeHeaderLine(line: string): boolean {
-  return line.includes('|') && countScopeTokens(line) >= 2;
-}
-
-export interface WmFragmentStats {
-  scopeHeaders: number;
-  pairs: number;
-}
-
-/** The fragment signature's two halves, counted over one tile. */
-export function wmTableFragmentStats(tile: TileTranscript): WmFragmentStats {
-  let scopeHeaders = 0;
-  let pairs = 0;
-  for (const block of tile.blocks ?? []) {
-    const lines = Array.isArray(block) ? block : [String(block)];
-    for (const line of lines) {
-      if (isScopeHeaderLine(line)) scopeHeaders += 1;
-      else if (NUMBER_PAIR_RE.test(line)) pairs += 1;
-    }
-  }
-  return { scopeHeaders, pairs };
-}
-
-export function tileCarriesWmTableFragment(tile: TileTranscript): boolean {
-  const s = wmTableFragmentStats(tile);
-  return s.scopeHeaders >= WM_HOOK_MIN_SCOPE_HEADERS && s.pairs >= WM_HOOK_MIN_FRAGMENT_PAIRS;
-}
+const SERVICING_TITLE_RE = /\bSERVICING\b/i;
 
 export interface GlyphGarbageStats {
   items: number;
@@ -104,45 +109,22 @@ export function glyphGarbageStats(pt: PageText): GlyphGarbageStats {
 }
 
 /**
- * Attribute a flat transcript back to its raster pages by NUMBER
- * RANGES — the same accounting diagnostics.ts uses to derive per-page
- * rendered counts: pages in render order own consecutive tile-number
- * ranges of min(planned, perPageCap) tiles, truncated by the total
- * cap. A tile belongs to the page whose range contains its number.
- *
- * Ranges (not positions) are what make this robust: a tile still
- * missing after the transcription recovery ladder leaves a HOLE in
- * its owner's range and shifts nothing — every surviving tile keeps
- * its true page. Returns null only when the accounting cannot be
- * trusted at all: a duplicate tile number, or a tile number outside
- * every range (the plan and the transcript genuinely disagree).
- * Planned counts are passed in so this module needs no import from
- * extraction.ts.
+ * The sheet's own title, when the layer's readable items carry it
+ * title-shaped: a single short item naming SERVICING ("SERVICING
+ * PLAN", "SITE SERVICING PLAN"). Returns the item's text, or null.
+ * Prose mentions (long sentence items) are not titles and never
+ * qualify — the title block is the sheet's identity, printed as a
+ * standalone line; a note talking about servicing is not the sheet
+ * being a servicing sheet.
  */
-export function attributeTilesToPages(
-  rasterPages: { page: number; plannedTiles: number }[],
-  transcript: TileTranscript[],
-  perPageCap: number,
-  totalCap: number,
-): Map<number, TileTranscript[]> | null {
-  const ranges: { page: number; lo: number; hi: number }[] = [];
-  let assigned = 0;
-  for (const rp of rasterPages) {
-    const count = Math.max(0, Math.min(rp.plannedTiles, perPageCap, totalCap - assigned));
-    ranges.push({ page: rp.page, lo: assigned + 1, hi: assigned + count });
-    assigned += count;
+export function servicingTitleOf(pt: PageText): string | null {
+  for (const item of pt.items) {
+    const text = item.text.trim();
+    if (text.length > 0 && text.length <= WM_HOOK_TITLE_MAX_CHARS && SERVICING_TITLE_RE.test(text)) {
+      return text;
+    }
   }
-  const byPage = new Map<number, TileTranscript[]>(ranges.map((r) => [r.page, []]));
-  const seen = new Set<number>();
-  for (const t of transcript) {
-    if (seen.has(t.tile)) return null;
-    seen.add(t.tile);
-    const r = ranges.find((x) => t.tile >= x.lo && t.tile <= x.hi);
-    if (!r) return null;
-    byPage.get(r.page)!.push(t);
-  }
-  for (const ts of byPage.values()) ts.sort((a, b) => a.tile - b.tile);
-  return byPage;
+  return null;
 }
 
 /** Watermain diameters present in the facts with NO stated segment
@@ -160,10 +142,10 @@ export function fillEligibleWmDiameters(facts: TakeoffFacts): number[] {
 
 export interface WmTableCandidate {
   page: number;
-  /** The fragment-carrying tile attributed to the page. */
-  tile: number;
-  scopeHeaders: number;
-  pairs: number;
+  /** The page's claimed Phase-0 kind (P2 or P5 — see the header). */
+  kind: string;
+  /** The sheet-title item that proved the servicing sheet. */
+  title: string;
   /** Glyph-gate values for the page, for the firing record. */
   items: number;
   singleCharFraction: number;
@@ -171,8 +153,11 @@ export interface WmTableCandidate {
 
 export interface WmTableCandidateInput {
   pageTexts: PageText[];
-  /** Tile attribution for the raster pages; null = unknown → no fire. */
-  tilesByPage: Map<number, TileTranscript[]> | null;
+  /** The run's located pages — a page outside this set never fires. */
+  locatedPages: number[];
+  /** Phase-0 classification per page, as recorded for diagnostics;
+   *  null (unmeasured) → no fire: unproven sheet, no spend. */
+  classifications: Map<number, PageClassification> | null;
   facts: TakeoffFacts;
   /** Tables the first mining pass already claimed (any channel). */
   tablesClaimed: number;
@@ -182,33 +167,28 @@ export interface WmTableCandidateInput {
 export function detectWmTableCandidates(input: WmTableCandidateInput): WmTableCandidate[] {
   if (isSpecialistDisabled(WM_TABLE_MINER_ID)) return [];
   if (input.tablesClaimed > 0) return [];
-  if (!input.tilesByPage) return [];
+  if (!input.classifications) return [];
   if (fillEligibleWmDiameters(input.facts).length === 0) return [];
+  const located = new Set(input.locatedPages);
   const candidates: WmTableCandidate[] = [];
   for (const pt of input.pageTexts) {
+    if (!located.has(pt.page)) continue;
     if (isTextyPage(pt)) continue;
-    const tiles = input.tilesByPage.get(pt.page);
-    if (!tiles || tiles.length === 0) continue;
     const glyph = glyphGarbageStats(pt);
     if (glyph.items < WM_HOOK_GLYPH_MIN_ITEMS) continue;
     if (glyph.singleCharFraction < WM_HOOK_GLYPH_MIN_SINGLE_FRACTION) continue;
-    let best: { tile: number; scopeHeaders: number; pairs: number } | null = null;
-    for (const tile of tiles) {
-      const s = wmTableFragmentStats(tile);
-      if (s.scopeHeaders >= WM_HOOK_MIN_SCOPE_HEADERS && s.pairs >= WM_HOOK_MIN_FRAGMENT_PAIRS) {
-        if (!best || s.pairs > best.pairs) best = { tile: tile.tile, scopeHeaders: s.scopeHeaders, pairs: s.pairs };
-      }
-    }
-    if (best) {
-      candidates.push({
-        page: pt.page,
-        tile: best.tile,
-        scopeHeaders: best.scopeHeaders,
-        pairs: best.pairs,
-        items: glyph.items,
-        singleCharFraction: glyph.singleCharFraction,
-      });
-    }
+    const cls = input.classifications.get(pt.page);
+    if (!cls || cls.kindTier !== 'claimed') continue;
+    if (cls.kind !== 'P2' && cls.kind !== 'P5') continue;
+    const title = servicingTitleOf(pt);
+    if (!title) continue;
+    candidates.push({
+      page: pt.page,
+      kind: cls.kind,
+      title,
+      items: glyph.items,
+      singleCharFraction: glyph.singleCharFraction,
+    });
   }
   return candidates.sort((a, b) => a.page - b.page);
 }

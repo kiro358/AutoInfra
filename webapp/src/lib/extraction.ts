@@ -26,6 +26,7 @@ import { getSinglePassPrompt, getPageLocatorPrompt, getImageOnlyRecheckPrompt, g
 import { renderTilesFlat, renderPageThumbnails, measureDrawnContent, IMAGE_MIME, type DrawnContentStat } from './rasterize';
 import { normalizeLabel, runSignature } from './compare-facts';
 import { assembleTranscriptTakeoff } from './transcript-takeoff';
+import { applyWmTableMiner, wmTableFiring, WM_TABLE_MINER_ID } from './wm-table-miner';
 import { mergeTakeoffs, dropSpecNoteStructures, clampImplausibleCatchbasinGroups, reconcileTakeoff } from './reconcile';
 import { appendCoverageWarnings } from './coverage-checks';
 import { appendPhysicsWarnings } from './physics-checks';
@@ -885,14 +886,28 @@ export async function assembleHybridTakeoff(
   const transcript = rasterPageNums.length > 0 ? await transcribe(rasterPageNums) : [];
   const transcriptStats: { specialists: Record<string, SpecialistFiring> } = { specialists: {} };
   const transcriptFacts = transcript.length > 0 ? assembleTranscriptTakeoff(transcript, projectName, transcriptStats) : null;
-  const facts = transcriptFacts ? mergeTakeoffs(textFacts, transcriptFacts) : textFacts;
+  const mergedFacts = transcriptFacts ? mergeTakeoffs(textFacts, transcriptFacts) : textFacts;
+
+  // WM-table miner (S2, PR48): fill-only harvest of designer-printed
+  // watermain length tables from the located pages' text layers and
+  // the tiles just transcribed. The miner returns the SAME facts
+  // reference unless a claimed table actually fills a length, so
+  // non-firing projects are untouched by construction.
+  const wmMined = applyWmTableMiner(mergedFacts, pageTexts, transcript);
+  const facts = wmMined.facts;
+  const specialistFirings: Record<string, SpecialistFiring> = {
+    ...(transcriptFacts ? transcriptStats.specialists : {}),
+  };
+  if (wmMined.tables.length > 0) {
+    specialistFirings[WM_TABLE_MINER_ID] = wmTableFiring(wmMined);
+  }
   return {
     facts, transcript, textyPageNums, rasterPageNums, fallbackPageNums, runFallbackPageNums,
     dualReadPageNums, dualReadSignals,
     textCounts: entityCountsByKind(textFacts),
     transcriptCounts: transcriptFacts ? entityCountsByKind(transcriptFacts) : null,
     textyPageYields, textyPageRunYields,
-    ...(transcriptFacts ? { specialistFirings: transcriptStats.specialists } : {}),
+    ...(Object.keys(specialistFirings).length > 0 ? { specialistFirings } : {}),
   };
 }
 

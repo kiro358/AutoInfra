@@ -359,6 +359,12 @@ describe('cad-invariants on uncalibrated sheets (PR 12: drawnLengthMeters null)'
         toNodeId: 'node_2',
         system: 'STORM',
         calloutLengthMeters: 25,
+        // The callout that states this run's length states its diameter in
+        // the same string ("25.0m - 300mmØ …"). This fixture originally
+        // omitted it and silently relied on the engine's 300mm diameter
+        // default; since that default was removed (unstated diameters are
+        // withheld, not invented), the fixture states it explicitly.
+        diameterMm: 300,
       },
     ]);
     const result = evaluateNetworkInvariants(bound);

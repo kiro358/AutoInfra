@@ -88,6 +88,13 @@ export interface SyntheticCadPdfOptions {
   schedule?: SyntheticScheduleTableDef | boolean;
   layers?: string[]; // AutoCAD OCG layer names
   scaleRatio?: number; // e.g. 1m = 5pt (default 5.0)
+  /** Scale note drawn in the title block (default "SCALE 1:200").
+   *  null omits the note entirely (an uncalibrated sheet). */
+  scaleNote?: string | null;
+  /** Additional scale notes drawn as separate lines under the title block —
+   *  e.g. an enlarged detail's "SCALE 1:50" next to the sheet's own note,
+   *  which makes the sheet's scale ambiguous. */
+  extraScaleNotes?: string[];
 }
 
 // Canonical default civil colors matching CAD drafting standards
@@ -492,13 +499,23 @@ export async function createSyntheticCadPdf(
     font: boldFont,
     color: CAD_COLORS.structure,
   });
-  page.drawText('SCALE 1:200  |  DRAWING NO. SS-101', {
+  const scaleNote = options.scaleNote === undefined ? 'SCALE 1:200' : options.scaleNote;
+  page.drawText(scaleNote ? `${scaleNote}  |  DRAWING NO. SS-101` : 'DRAWING NO. SS-101', {
     x: 40,
     y: height - 66,
     size: 8,
     font,
     color: CAD_COLORS.annotation,
   });
+  for (const [i, extra] of (options.extraScaleNotes ?? []).entries()) {
+    page.drawText(extra, {
+      x: 40,
+      y: height - 82 - i * 14,
+      size: 8,
+      font,
+      color: CAD_COLORS.annotation,
+    });
+  }
 
   // Map structures by ID for fast coordinate lookup
   const structureMap = new Map<string, SyntheticStructureDef>();

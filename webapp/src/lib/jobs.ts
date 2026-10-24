@@ -21,6 +21,8 @@ export type JobStatus = 'queued' | 'running' | 'completed' | 'failed';
 export const JOB_STAGES = ['queued', 'extracting', 'pricing', 'documents', 'done'] as const;
 export type JobStage = (typeof JOB_STAGES)[number];
 
+export type JobFailureKind = 'watchdog-timeout' | 'execution-error';
+
 export interface Job<R = unknown> {
   id: string;
   status: JobStatus;
@@ -29,6 +31,10 @@ export interface Job<R = unknown> {
   createdAt: number;
   updatedAt: number;
   error?: string;
+  failureKind?: JobFailureKind;
+  /** Machine-/operator-readable detail behind a failure. In particular, a
+   * watchdog kill says so here while the public error remains concise. */
+  diagnostic?: string;
   result?: R;
 }
 
@@ -40,6 +46,8 @@ export interface JobView<R = unknown> {
   fileName: string;
   elapsedMs: number;
   error?: string;
+  failureKind?: JobFailureKind;
+  diagnostic?: string;
   result?: R;
 }
 
@@ -57,12 +65,15 @@ export class JobStore<R = unknown> {
       /** How long finished jobs (and their results) are kept for polling. */
       ttlMs: number;
       /**
-       * Wall-clock limit for one job. Past it the job is reported failed so the
-       * user isn't left polling a hung model call (retries can stack to ~37 min).
-       * The work itself can't be cancelled, so it keeps its concurrency slot
-       * until it really finishes, and its late result is discarded.
+       * Wall-clock watchdog for one running job. Past it the job is failed
+       * with a watchdog diagnostic and its concurrency slot is released
+       * immediately. JavaScript cannot forcibly cancel the underlying
+       * promise, so detached work may finish in the background, but its
+       * late result is discarded.
        */
       deadlineMs?: number;
+      /** Explicit test/config override for DISABLE_JOB_WATCHDOG. */
+      watchdogDisabled?: boolean;
       now?: () => number;
     }
   ) {}
@@ -99,6 +110,8 @@ export class JobStore<R = unknown> {
       fileName: job.fileName,
       elapsedMs: job.updatedAt - job.createdAt,
       error: job.error,
+      failureKind: job.failureKind,
+      diagnostic: job.diagnostic,
       result: job.status === 'completed' ? job.result : undefined,
     };
   }
@@ -126,7 +139,12 @@ export class JobStore<R = unknown> {
     };
     this.jobs.set(job.id, job);
 
+    let watchdogFired = false;
     const setStage = (stage: JobStage) => {
+      // A watchdog-killed job is terminal. Detached work may keep calling
+      // this callback, but it must not mutate the record or make the
+      // partial run look alive again.
+      if (watchdogFired) return;
       job.stage = stage;
       job.updatedAt = this.now();
     };
@@ -135,19 +153,24 @@ export class JobStore<R = unknown> {
       .then(async () => {
         job.status = 'running';
         setStage('extracting');
-        const timer = this.opts.deadlineMs
-          ? setTimeout(() => {
-              if (job.status !== 'running') return;
-              job.status = 'failed';
-              job.error = `This takeoff took longer than ${Math.round(
-                (this.opts.deadlineMs as number) / 60_000
-              )} minutes and was stopped. Try again, or upload only the servicing sheets.`;
-              job.updatedAt = this.now();
-              console.error(`[jobs] ${job.id} (${fileName}) exceeded its deadline.`);
-            }, this.opts.deadlineMs)
+        const watchdogMs = this.opts.watchdogDisabled ? undefined : this.opts.deadlineMs;
+        let timer: ReturnType<typeof setTimeout> | null = null;
+        const watchdogPromise = watchdogMs
+          ? new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(() => {
+                watchdogFired = true;
+                reject(new JobWatchdogError(watchdogMs));
+              }, watchdogMs);
+            })
           : null;
+
+        // Promise.resolve().then also turns a synchronous throw from work
+        // into the same handled rejection path as an async failure.
+        const workPromise = Promise.resolve().then(() => work(setStage, job.id));
         try {
-          const result = await work(setStage, job.id);
+          const result = watchdogPromise
+            ? await Promise.race([workPromise, watchdogPromise])
+            : await workPromise;
           if (job.status === 'running') {
             job.result = result;
             job.status = 'completed';
@@ -156,12 +179,25 @@ export class JobStore<R = unknown> {
         } catch (err) {
           if (job.status === 'running') {
             job.status = 'failed';
-            job.error = describeError(err);
             job.updatedAt = this.now();
+            if (err instanceof JobWatchdogError) {
+              job.failureKind = 'watchdog-timeout';
+              job.error = err.userMessage;
+              job.diagnostic = err.diagnostic;
+            } else {
+              job.failureKind = 'execution-error';
+              job.error = describeError(err);
+              const code = (err as { code?: unknown } | null)?.code;
+              if (typeof code === 'string' && code) {
+                job.diagnostic = `${code}: ${err instanceof Error ? err.message : String(err)}`;
+              }
+            }
           }
           console.error(`[jobs] ${job.id} (${fileName}) failed:`, err);
         } finally {
           if (timer) clearTimeout(timer);
+          // Release is tied to the race, not to the underlying work
+          // promise. A hung promise therefore cannot retain the worker.
           this.release();
         }
       });
@@ -189,6 +225,28 @@ export class JobStore<R = unknown> {
   }
 }
 
+export class JobWatchdogError extends Error {
+  readonly code = 'JOB_WATCHDOG_TIMEOUT';
+  readonly deadlineMs: number;
+  readonly userMessage: string;
+  readonly diagnostic: string;
+
+  constructor(deadlineMs: number) {
+    const duration = deadlineMs >= 60_000
+      ? `${Math.round(deadlineMs / 60_000)} minutes`
+      : `${deadlineMs} milliseconds`;
+    super(`Job watchdog timeout after ${deadlineMs} ms.`);
+    this.name = 'JobWatchdogError';
+    this.deadlineMs = deadlineMs;
+    this.userMessage =
+      `This takeoff took longer than ${duration} and was stopped. ` +
+      'Try again, or upload only the servicing sheets.';
+    this.diagnostic =
+      `watchdog-timeout: job exceeded ${deadlineMs} ms; concurrency slot released; ` +
+      'late work, if any, is detached and its result will be discarded, never presented as completed.';
+  }
+}
+
 export class JobCapacityError extends Error {
   constructor() {
     super('The server is busy with other takeoffs. Try again in a few minutes.');
@@ -202,6 +260,9 @@ export class JobCapacityError extends Error {
  */
 export function describeError(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err);
+  if (/Retry budget exhausted/i.test(msg)) {
+    return msg;
+  }
   if (/RESOURCE_EXHAUSTED|429|quota/i.test(msg)) {
     return 'The AI service is rate-limited right now. Wait a minute and try again.';
   }
@@ -212,6 +273,16 @@ export function describeError(err: unknown): string {
     return 'That PDF could not be read — it may be corrupted or password-protected.';
   }
   return msg || 'Processing failed.';
+}
+
+const FALSEY_ENV_VALUES = new Set(['', 'false', '0', 'no', 'off']);
+
+export function isJobWatchdogDisabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const raw = env.DISABLE_JOB_WATCHDOG;
+  if (raw === undefined) return false;
+  return !FALSEY_ENV_VALUES.has(raw.trim().toLowerCase());
 }
 
 function envInt(name: string, fallback: number): number {
@@ -227,5 +298,5 @@ export const jobStore: JobStore =
     maxConcurrent: envInt('MAX_CONCURRENT_JOBS', 1), // ~0.75 GB peak per job
     maxActive: envInt('MAX_ACTIVE_JOBS', 10),
     ttlMs: envInt('JOB_TTL_MINUTES', 60) * 60_000,
-    deadlineMs: envInt('JOB_DEADLINE_MINUTES', 40) * 60_000,
+    deadlineMs: isJobWatchdogDisabled() ? undefined : envInt('JOB_DEADLINE_MINUTES', 30) * 60_000,
   }));

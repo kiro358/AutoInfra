@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { JobStore, JobCapacityError, describeError } from './jobs';
+import { JobStore, JobCapacityError, describeError, isJobWatchdogDisabled } from './jobs';
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
@@ -76,6 +76,60 @@ describe('JobStore deadline', () => {
     await tick();
     expect(store.get(id)).toMatchObject({ status: 'failed', result: undefined });
   });
+
+  it('watchdog-kills a never-returning job, records the diagnostic, and releases the only worker', async () => {
+    const store = new JobStore<string>({ maxConcurrent: 1, maxActive: 5, ttlMs: 60_000, deadlineMs: 20 });
+    const hung = deferred<string>();
+    let nextStarted = false;
+    const hungId = store.start('hung.pdf', () => hung.promise);
+    const nextId = store.start('next.pdf', async () => {
+      nextStarted = true;
+      return 'next done';
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(store.get(hungId)).toMatchObject({
+      status: 'failed',
+      failureKind: 'watchdog-timeout',
+      result: undefined,
+    });
+    expect(store.get(hungId)?.diagnostic).toMatch(/watchdog-timeout: job exceeded 20 ms; concurrency slot released/);
+    expect(nextStarted).toBe(true);
+    expect(store.get(nextId)).toMatchObject({ status: 'completed', result: 'next done' });
+
+    // A late rejection from detached work is handled by the race and
+    // cannot resurrect the killed job or poison the completed queue.
+    hung.reject(new Error('late background failure'));
+    await tick();
+    expect(store.get(hungId)).toMatchObject({ status: 'failed', result: undefined });
+    expect(store.get(nextId)).toMatchObject({ status: 'completed', result: 'next done' });
+  });
+
+  it('watchdog kill switch leaves an over-deadline job running until its work settles', async () => {
+    const store = new JobStore<string>({
+      maxConcurrent: 1,
+      maxActive: 5,
+      ttlMs: 60_000,
+      deadlineMs: 20,
+      watchdogDisabled: true,
+    });
+    const d = deferred<string>();
+    const id = store.start('slow-but-allowed.pdf', () => d.promise);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(store.get(id)).toMatchObject({ status: 'running', result: undefined });
+    d.resolve('finished');
+    await tick();
+    expect(store.get(id)).toMatchObject({ status: 'completed', result: 'finished' });
+  });
+});
+
+describe('job watchdog environment switch', () => {
+  it('uses disable-when-set semantics', () => {
+    expect(isJobWatchdogDisabled({})).toBe(false);
+    expect(isJobWatchdogDisabled({ DISABLE_JOB_WATCHDOG: '1' })).toBe(true);
+    expect(isJobWatchdogDisabled({ DISABLE_JOB_WATCHDOG: 'false' })).toBe(false);
+    expect(isJobWatchdogDisabled({ DISABLE_JOB_WATCHDOG: '0' })).toBe(false);
+  });
 });
 
 describe('describeError', () => {
@@ -84,5 +138,7 @@ describe('describeError', () => {
     expect(describeError(new Error('UND_ERR_SOCKET other side closed'))).toMatch(/connection/);
     expect(describeError(new Error('Invalid PDF structure'))).toMatch(/could not be read/);
     expect(describeError(new Error('plain'))).toBe('plain');
+    expect(describeError(new Error('Retry budget exhausted after 2 attempts and 10.0 minutes (budget 10.0 minutes).')))
+      .toContain('Retry budget exhausted after 2 attempts');
   });
 });

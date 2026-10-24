@@ -162,13 +162,15 @@ export const SPECIALIST_REGISTRY: SpecialistEntry[] = [
       'diameter anywhere (every segment length 0); a stated segment, a diameter with no ' +
       'generalist row (harvesting is not this specialist\'s scope), or two tables disagreeing ' +
       'on a diameter each refuse the fill and are recorded. ' +
-      'Vision hook (PR 49, same kill switch): when NO channel claimed a table and a fill is ' +
-      'still possible, a raster page whose text layer is glyph garbage (>= 50 items, >= 40% ' +
-      'single-character) and whose attributed transcript tile carries the table\'s fragment ' +
-      '(>= 1 scope-header line naming >= 2 scope tokens AND >= 2 bare number-pair lines) ' +
-      'earns ONE targeted vision read of that page, mined through the identical grammar as ' +
-      'channel \'vision\' — the stroke-font case (Panattoni) where the table exists in no ' +
-      'text layer at all.',
+      'Vision hook (PR 49, detector rebased PR 50, same kill switch): when NO channel claimed ' +
+      'a table and a fill is still possible, a located non-texty page whose text layer is ' +
+      'glyph garbage (>= 50 items, >= 40% single-character), whose recorded Phase-0 ' +
+      'classification is claimed P2/P5, and whose own readable items carry its sheet title ' +
+      'naming SERVICING (a title-shaped item of <= 40 chars — "SERVICING PLAN") earns ONE ' +
+      'targeted vision read, at most 3 per job — mined through the identical grammar as ' +
+      'channel \'vision\'. The stroke-font case (Panattoni) where the table exists in no ' +
+      'text layer at all. (PR 49\'s transcript-fragment signature was dropped in PR 50: the ' +
+      'live gate proved it a frozen-cache artifact.)',
     killSwitchEnv: 'DISABLE_WM_TABLE_MINER',
     killSwitchKind: 'disable-when-set',
   },

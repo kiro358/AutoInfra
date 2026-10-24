@@ -401,13 +401,14 @@ export interface PageDiagnostics {
   dualReadTrigger?: boolean;
   /** The routing-time signal values behind a dual-read firing. */
   dualReadSignals?: { elevationItems: number; keywordHits: number; pathOps: number };
-  /** A raster page the S2 vision hook (PR49) issued a targeted
-   *  watermain-table read on: its general transcript carried the
-   *  table's fragment (scope headers + number pairs) but its text layer
-   *  is glyph garbage, so no text channel could read the table itself. */
+  /** A raster page the S2 vision hook (PR49; detector rebased PR50)
+   *  issued a targeted watermain-table read on: a located servicing
+   *  sheet (claimed P2/P5 classification, its own title naming
+   *  SERVICING) whose text layer is glyph garbage, so no text channel
+   *  could read a printed table on it. */
   wmTableHook?: boolean;
   /** The candidate-signal values behind an S2 vision-hook firing. */
-  wmTableHookSignals?: { tile: number; scopeHeaders: number; pairs: number; items: number; singleCharFraction: number };
+  wmTableHookSignals?: { kind: string; title: string; items: number; singleCharFraction: number };
 }
 
 /** Tile-pipeline totals for one run. "Planned" sums tilesNeededPerPage over

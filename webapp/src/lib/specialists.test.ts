@@ -51,7 +51,7 @@ const byLabel = (facts: ReturnType<typeof assembleTranscriptTakeoff>, want: stri
   facts.structures.find((x) => x.description.replace(/\s/g, '') === want);
 
 describe('specialist registry (PR47 Phase 1)', () => {
-  it('registers exactly the six formalised proto-specialists', () => {
+  it('registers exactly the six formalised proto-specialists plus S2 (PR48)', () => {
     expect(SPECIALIST_REGISTRY.map((s) => s.id)).toEqual([
       'S6-detached-elevation',
       'S7-enumeration-scope',
@@ -59,6 +59,7 @@ describe('specialist registry (PR47 Phase 1)', () => {
       'S10-value-first',
       'image-only-locator',
       'dual-read-trigger',
+      'S2-wm-table-miner',
     ]);
   });
 

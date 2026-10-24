@@ -25,6 +25,10 @@
  * behaviour. The mechanisms consult isSpecialistDisabled at their
  * existing seams, with defaults that reproduce today's behaviour
  * exactly (PR47's proof bar: byte-identical cached A/B).
+ *
+ * PR48 (routing Phase 2) added the first NEW specialist on this
+ * registry — S2, the WM-table miner (wm-table-miner.ts) — registered
+ * the same way: family, detector, kill switch, firing record.
  */
 
 export type SpecialistId =
@@ -33,7 +37,8 @@ export type SpecialistId =
   | 'S9-shx-dialect'
   | 'S10-value-first'
   | 'image-only-locator'
-  | 'dual-read-trigger';
+  | 'dual-read-trigger'
+  | 'S2-wm-table-miner';
 
 export interface SpecialistEntry {
   id: SpecialistId;
@@ -140,6 +145,24 @@ export const SPECIALIST_REGISTRY: SpecialistEntry[] = [
       'callout-keyword hits, and >= 10,000 measured vector path operators. All three signals ' +
       'at routing time; without an injected drawn-content measurer the trigger cannot fire.',
     killSwitchEnv: 'DISABLE_DUAL_READ_TRIGGER',
+    killSwitchKind: 'disable-when-set',
+  },
+  {
+    id: 'S2-wm-table-miner',
+    name: 'WM-table miner (designer-printed watermain lengths)',
+    families: ['wm-table'],
+    origin: 'PR 48 (routing Phase 2) — first NEW specialist on this registry; the surviving sub-finding of the PR 29 vision pilot (a designer-printed WM table read 3/3 exact where geometry routes read 0)',
+    detector:
+      'A located page\'s text layer (or a transcript tile) carries a designer watermain length ' +
+      'table: a standalone "WATERMAIN LENGTH(S)" title over a grid of >= 2 data rows whose first ' +
+      'cell is a standard diameter (Nmm, exact after snapping) and whose remaining cells are ' +
+      'plain positive numbers — one length column, per-scope columns (BLDG / PHASE / BLK / AREA) ' +
+      'summed as the estimator sums them, or an explicit TOTAL column. Mining is FILL-ONLY: a ' +
+      'diameter\'s printed total attaches only when the generalist stated NO length for that ' +
+      'diameter anywhere (every segment length 0); a stated segment, a diameter with no ' +
+      'generalist row (harvesting is not this specialist\'s scope), or two tables disagreeing ' +
+      'on a diameter each refuse the fill and are recorded.',
+    killSwitchEnv: 'DISABLE_WM_TABLE_MINER',
     killSwitchKind: 'disable-when-set',
   },
 ];

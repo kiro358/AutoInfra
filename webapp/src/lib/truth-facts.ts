@@ -93,10 +93,14 @@ export async function readTruthFacts(xlsxPath: string, projectName: string): Pro
         //     mentions an ID doesn't qualify.
         // Template chrome ("MH F&C $", "CB F&C $") never counts on the label
         // path — F&C price rows are not structures.
+        // PR55: the compact form also admits a fused alpha qualifier between
+        // the token and the number ("MHTEE111" = MH + TEE + 111) and the EF
+        // unit token ("EF4") — both are real generated-workbook structure
+        // labels with all-null physicals that the scorer silently dropped.
         const looksLikeStructure =
           !/F\s*&\s*C/i.test(label) &&
           (/\b(D?CBMH|DI?CB|MH|CB|HS|OS|CHAMBER)\b/i.test(label) ||
-            /(?:^|[\s\-/,(])(D?CBMH|DI?CB|STMH|SANMH|MH|CB)\s*-?\s*\d/i.test(label));
+            /(?:^|[\s\-/,(])(D?CBMH|DI?CB|STMH|SANMH|MH|CB|EF)[A-Z]*\s*-?\s*\d/i.test(label));
         if (hasPhysical || looksLikeStructure) structures.push(s);
       }
       // Catchbasin group block (rows 53-56)

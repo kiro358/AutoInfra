@@ -7,16 +7,18 @@
 import { PageText, PositionedText } from './pdf-text';
 import {
   parseRunCallout, parseStructureLabel, parseElevation, parseWatermainCallout,
-  isDanglingRunHead, isRunContinuation, parseSubdrainCallout, ParsedStructure,
+  isDanglingRunHead, isRunContinuation, isLengthOnlyRunHead, isDiameterBearingFragment,
+  parseColFragJoin, parseSubdrainCallout, ParsedStructure,
   parseComponentStructures,
   structureDescription, chamberWarning,
 } from './callout-parser';
+import { isSpecialistDisabled } from './specialists';
 import { reconcileTakeoff } from './reconcile';
 import { withConfidence } from './confidence';
 import { appendPhysicsWarnings } from './physics-checks';
 import { normalizeLabel } from './compare-facts';
 import { detectTables, tableToSewers } from './schedule-table';
-import { TakeoffFacts, StructureFact, SewerFact, WatermainFact, CatchbasinGroupFact, FactSource, WithheldItem } from './types';
+import { TakeoffFacts, StructureFact, SewerFact, WatermainFact, CatchbasinGroupFact, FactSource, SpecialistFiring, WithheldItem } from './types';
 
 interface Line { text: string; x: number; y: number; }
 
@@ -32,14 +34,90 @@ function cbKindType(kind: ParsedStructure['kind']): CatchbasinGroupFact['type'] 
   }
 }
 
+/** S4 COL-FRAG (PR58): the most items one fragmented callout may span —
+ *  the head plus a diameter, a material/system and a slope fragment
+ *  (Oakville's rotated stack is exactly four). */
+const COL_FRAG_MAX_ITEMS = 4;
+/** S4 COL-FRAG: per-step radius for the spatial fold — the generic
+ *  merge's 40pt, applied step to step rather than head to tail. */
+const COL_FRAG_RADIUS = 40;
+
+/**
+ * S4 COL-FRAG (PR58): try to reassemble a length-only head ("8.2m -")
+ * from the fragments the text layer scattered around it. Fail-closed:
+ * the first folded item must be diameter-bearing, each later item a run
+ * continuation, every step within COL_FRAG_RADIUS of the previous one,
+ * and the accumulated text is committed only when parseColFragJoin's
+ * conjunction accepts it (complete not-existing parse WITH slope,
+ * joined text fully consumed). Returns the items to consume, or null —
+ * in which case nothing is consumed and the head stands alone.
+ */
+function tryColFragJoin(
+  items: PositionedText[],
+  headIndex: number,
+  consumed: Set<number>,
+): { text: string; indices: number[] } | null {
+  const head = items[headIndex];
+  // Step 1: the nearest diameter-bearing fragment.
+  let firstJ = -1, firstD = Infinity;
+  for (let j = 0; j < items.length; j++) {
+    if (j === headIndex || consumed.has(j)) continue;
+    if (!isDiameterBearingFragment(items[j].text)) continue;
+    const d = dist(head, items[j]);
+    if (d <= COL_FRAG_RADIUS && d < firstD) { firstD = d; firstJ = j; }
+  }
+  if (firstJ === -1) return null;
+  const indices = [firstJ];
+  let text = `${head.text} ${items[firstJ].text}`;
+  if (parseColFragJoin(head.text, items[firstJ].text, text)) return { text, indices };
+  // Later steps: nearest continuation to the last folded fragment.
+  let anchor = items[firstJ];
+  while (indices.length < COL_FRAG_MAX_ITEMS - 1) {
+    let bestJ = -1, bestD = Infinity;
+    for (let j = 0; j < items.length; j++) {
+      if (j === headIndex || consumed.has(j) || indices.includes(j)) continue;
+      if (!isRunContinuation(items[j].text)) continue;
+      const d = dist(anchor, items[j]);
+      if (d <= COL_FRAG_RADIUS && d < bestD) { bestD = d; bestJ = j; }
+    }
+    if (bestJ === -1) return null;
+    indices.push(bestJ);
+    text = `${text} ${items[bestJ].text}`;
+    if (parseColFragJoin(head.text, items[firstJ].text, text)) return { text, indices };
+    anchor = items[bestJ];
+  }
+  return null;
+}
+
 // Step 1: merge split callouts. A dangling run head ("45.0m - 250mmØ") is joined
 // with its nearest unconsumed continuation ("PVC STM @ 0.50%") within 40pt.
-function mergeLines(items: PositionedText[]): Line[] {
+function mergeLines(
+  items: PositionedText[],
+  colFragEnabled = false,
+  onColFragJoin?: () => void,
+): Line[] {
   const consumed = new Set<number>();
   const lines: Line[] = [];
   for (let i = 0; i < items.length; i++) {
     if (consumed.has(i)) continue;
     const head = items[i];
+    // S4 COL-FRAG (PR58): a length-only head is folded ONLY through the
+    // strict spatial fold above — never through the generic single-join
+    // below, whose one-continuation grab cannot satisfy the conjunction
+    // and could strand the fragments it consumed.
+    if (colFragEnabled && isLengthOnlyRunHead(head.text)) {
+      const joined = tryColFragJoin(items, i, consumed);
+      if (joined) {
+        consumed.add(i);
+        for (const j of joined.indices) consumed.add(j);
+        onColFragJoin?.();
+        lines.push({ text: joined.text, x: head.x, y: head.y });
+        continue;
+      }
+      consumed.add(i);
+      lines.push({ text: head.text, x: head.x, y: head.y });
+      continue;
+    }
     if (isDanglingRunHead(head.text)) {
       let bestJ = -1, bestD = Infinity;
       for (let j = 0; j < items.length; j++) {
@@ -59,7 +137,16 @@ function mergeLines(items: PositionedText[]): Line[] {
   return lines;
 }
 
-export function assembleTextTakeoff(pages: PageText[], projectName: string): TakeoffFacts {
+export function assembleTextTakeoff(
+  pages: PageText[],
+  projectName: string,
+  statsOut?: { specialists: Record<string, SpecialistFiring> },
+): TakeoffFacts {
+  // PR58: S4's kill switch is consulted once per assembly (the
+  // transcript assembler's convention); unset reproduces the registry
+  // default (the specialist is on).
+  const colFragEnabled = !isSpecialistDisabled('S4-col-frag');
+  let colFragJoins = 0;
   const structures: StructureFact[] = [];
   const warnings: string[] = [];
   const withheld: WithheldItem[] = [];
@@ -73,7 +160,7 @@ export function assembleTextTakeoff(pages: PageText[], projectName: string): Tak
     // evidence than the same pipe's dimension callout, and reconcile.ts prefers it.
     for (const table of detectTables(page)) sewers.push(...tableToSewers(table, page.page));
 
-    const lines = mergeLines(page.items);
+    const lines = mergeLines(page.items, colFragEnabled, () => { colFragJoins++; });
 
     // Step 2: classify each merged line. Step 4 (filter existing) is applied inline.
     const liveStructures: { parsed: ParsedStructure; x: number; y: number; topElevation: number | null; inverts: number[]; evidence: string }[] = [];
@@ -213,6 +300,15 @@ export function assembleTextTakeoff(pages: PageText[], projectName: string): Tak
   // immediately replaces. See confidence.ts. Physics notes
   // (physics-checks.ts) are appended after the assessment: they are not
   // confidence signals.
+  // PR58: S4's firing record for diagnostics (see specialists.ts) —
+  // listed only when it fired, the S2 convention. Counting only.
+  if (statsOut && colFragJoins > 0) {
+    statsOut.specialists['S4-col-frag'] = {
+      fired: colFragJoins,
+      detail: { joins: colFragJoins },
+    };
+  }
+
   return appendPhysicsWarnings(withConfidence(reconcileTakeoff({
     projectName, jobNumber: '', date: '',
     structures, catchbasins, sewers, watermain,

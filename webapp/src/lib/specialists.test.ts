@@ -51,7 +51,7 @@ const byLabel = (facts: ReturnType<typeof assembleTranscriptTakeoff>, want: stri
   facts.structures.find((x) => x.description.replace(/\s/g, '') === want);
 
 describe('specialist registry (PR47 Phase 1)', () => {
-  it('registers exactly the six formalised proto-specialists plus S2 (PR48)', () => {
+  it('registers exactly the six formalised proto-specialists plus S2 (PR48) and S4 (PR58)', () => {
     expect(SPECIALIST_REGISTRY.map((s) => s.id)).toEqual([
       'S6-detached-elevation',
       'S7-enumeration-scope',
@@ -60,7 +60,16 @@ describe('specialist registry (PR47 Phase 1)', () => {
       'image-only-locator',
       'dual-read-trigger',
       'S2-wm-table-miner',
+      'S4-col-frag',
     ]);
+  });
+
+  it('S4 kill switch: DISABLE_COL_FRAG follows disable-when-set', () => {
+    const id: SpecialistId = 'S4-col-frag';
+    const env = (v?: string) => (v === undefined ? {} : { DISABLE_COL_FRAG: v });
+    expect(isSpecialistDisabled(id, env())).toBe(false);
+    expect(isSpecialistDisabled(id, env('false'))).toBe(false);
+    expect(isSpecialistDisabled(id, env('1'))).toBe(true);
   });
 
   it('every entry is complete (families, origin, detector, kill switch)', () => {

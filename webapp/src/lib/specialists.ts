@@ -29,6 +29,10 @@
  * PR48 (routing Phase 2) added the first NEW specialist on this
  * registry — S2, the WM-table miner (wm-table-miner.ts) — registered
  * the same way: family, detector, kill switch, firing record.
+ *
+ * PR58 added S4 (COL-FRAG), the first Phase 4 specialist: a formation
+ * family that was parked at n=1 (PR44) until PR56's sweep found its
+ * second sighting in a second project on a second path.
  */
 
 export type SpecialistId =
@@ -38,7 +42,8 @@ export type SpecialistId =
   | 'S10-value-first'
   | 'image-only-locator'
   | 'dual-read-trigger'
-  | 'S2-wm-table-miner';
+  | 'S2-wm-table-miner'
+  | 'S4-col-frag';
 
 export interface SpecialistEntry {
   id: SpecialistId;
@@ -172,6 +177,24 @@ export const SPECIALIST_REGISTRY: SpecialistEntry[] = [
       'text layer at all. (PR 49\'s transcript-fragment signature was dropped in PR 50: the ' +
       'live gate proved it a frozen-cache artifact.)',
     killSwitchEnv: 'DISABLE_WM_TABLE_MINER',
+    killSwitchKind: 'disable-when-set',
+  },
+  {
+    id: 'S4-col-frag',
+    name: 'Fragmented callout reassembly (COL-FRAG)',
+    families: ['col-frag'],
+    origin: 'PR 58 — first Phase 4 specialist, unparked by PR 56\'s second-sighting sweep (Oakville text path, PR 44; Stevenson transcript path, PR 56)',
+    detector:
+      'A run callout split at the length|diameter boundary leaves a length-only head: a line ' +
+      'fully consumed by an optional status prefix, one length, and an optional trailing dash ' +
+      '("PROPOSED 7.47m", "8.2m -"). The join commits ONLY under the parseColFragJoin ' +
+      'conjunction: the first continuation line is diameter-bearing and supplies the parsed ' +
+      'diameter, the joined text parses as a complete not-existing callout WITH a slope, and ' +
+      'the joined text is fully consumed by callout vocabulary. Both joiners apply it ' +
+      '(joinBlockLines in transcript-takeoff.ts, mergeLines in text-takeoff.ts, via head ' +
+      'form (c) of isDanglingRunHead in callout-parser.ts); anything else leaves the lines ' +
+      'untouched.',
+    killSwitchEnv: 'DISABLE_COL_FRAG',
     killSwitchKind: 'disable-when-set',
   },
 ];

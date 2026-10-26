@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseRunCallout, parseStructureLabel, parseElevation, parseWatermainCallout,
-  isDanglingRunHead, isRunContinuation, parseSubdrainCallout, HASH_STRUCTURE_HEADER_RE,
+  isDanglingRunHead, isRunContinuation, isLengthOnlyRunHead, isDiameterBearingFragment,
+  parseColFragJoin, parseSubdrainCallout, HASH_STRUCTURE_HEADER_RE,
   parseScheduleRunRow, parseComponentStructures,
 } from './callout-parser';
 
@@ -97,6 +98,73 @@ describe('dangling run heads (callout split across two text lines)', () => {
     expect(parseRunCallout('15.5m - 450mm PVC STM @ 0.30%')).toMatchObject({
       length: 15.5, diameterMm: 450, system: 'STORM', material: 'PVC', slopePct: 0.3,
     });
+  });
+});
+
+describe('length-only run heads (S4 COL-FRAG, PR58)', () => {
+  it('detects the length-only head form, and only when the caller opts in', () => {
+    expect(isLengthOnlyRunHead('PROPOSED 7.47m')).toBe(true);   // Stevenson sighting
+    expect(isLengthOnlyRunHead('8.2m -')).toBe(true);          // Oakville sighting
+    expect(isLengthOnlyRunHead('PROP. 17.0m')).toBe(true);
+    expect(isLengthOnlyRunHead('45.0m')).toBe(true);
+    expect(isDanglingRunHead('PROPOSED 7.47m', { colFrag: true })).toBe(true);
+    expect(isDanglingRunHead('8.2m -', { colFrag: true })).toBe(true);
+    // Without the opt-in the shape is not a head at all (pre-PR58 behaviour).
+    expect(isDanglingRunHead('PROPOSED 7.47m')).toBe(false);
+    expect(isDanglingRunHead('8.2m -')).toBe(false);
+  });
+  it('refuses heads that are not fully consumed by prefix + length + dash', () => {
+    expect(isLengthOnlyRunHead('12.0m WIDE')).toBe(false);
+    expect(isLengthOnlyRunHead('MINIMUM 12.0m')).toBe(false);
+    expect(isLengthOnlyRunHead('12.0m - 300mmØ')).toBe(false); // head form (a), not (c)
+    expect(isLengthOnlyRunHead('375mmØ')).toBe(false);
+    expect(isLengthOnlyRunHead('INV 140.77')).toBe(false);
+    expect(isLengthOnlyRunHead('(25.0m)')).toBe(false);        // the diameter-first tail form
+    expect(isLengthOnlyRunHead('PROPOSED 150mmØ PVC WATERMAIN')).toBe(false);
+  });
+  it('recognises diameter-bearing fragments', () => {
+    expect(isDiameterBearingFragment('375mmØ')).toBe(true);
+    expect(isDiameterBearingFragment('250mmØ PVC')).toBe(true);
+    expect(isDiameterBearingFragment('375mmØ PVC STM @ 0.50%')).toBe(true);
+    expect(isDiameterBearingFragment('83.7m-375mmØ SAN @ 0.02%')).toBe(false); // a whole callout
+    expect(isDiameterBearingFragment('PVC STM')).toBe(false);
+    expect(isDiameterBearingFragment('CBMH 1 (1200Ø)')).toBe(false);
+  });
+  it('validates the fail-closed join on both sighting shapes', () => {
+    expect(parseColFragJoin(
+      'PROPOSED 7.47m', '375mmØ PVC STM @ 0.50%',
+      'PROPOSED 7.47m 375mmØ PVC STM @ 0.50%',
+    )).toMatchObject({ length: 7.47, diameterMm: 375, slopePct: 0.5, system: 'STORM' });
+    expect(parseColFragJoin(
+      '8.2m -', '375mmØ',
+      '8.2m - 375mmØ PVC STM @ 1.0%',
+    )).toMatchObject({ length: 8.2, diameterMm: 375, slopePct: 1.0 });
+    expect(parseColFragJoin(
+      'PROP. 17.0m', '250mmØ PVC',
+      'PROP. 17.0m 250mmØ PVC STM @ 0.50%',
+    )).toMatchObject({ length: 17.0, diameterMm: 250, slopePct: 0.5 });
+  });
+  it('refuses a join that breaks any conjunct', () => {
+    // no slope in the joined parse
+    expect(parseColFragJoin('PROPOSED 7.47m', '375mmØ PVC STM', 'PROPOSED 7.47m 375mmØ PVC STM')).toBeNull();
+    // the first continuation carries no diameter
+    expect(parseColFragJoin('PROPOSED 7.47m', 'PVC STM @ 0.50%', 'PROPOSED 7.47m PVC STM @ 0.50%')).toBeNull();
+    // the parsed diameter is not the first continuation's
+    expect(parseColFragJoin('8.2m -', '375mmØ', '8.2m - 450mmØ PVC STM @ 1.0%')).toBeNull();
+    // an existing callout is never reassembled
+    expect(parseColFragJoin('EX 8.2m -', '375mmØ', 'EX 8.2m - 375mmØ PVC STM @ 1.0%')).toBeNull();
+    // spec prose riding on the join — residue outside callout vocabulary
+    expect(parseColFragJoin(
+      'PROPOSED 7.47m', '375mmØ PVC STM @ 0.50%',
+      'PROPOSED 7.47m 375mmØ PVC STM @ 0.50% BEYOND THE LIMIT OF CONTRACT',
+    )).toBeNull();
+    // a "(TYP)" tail is not consumed either — partial joins stay refused
+    expect(parseColFragJoin(
+      'PROPOSED 7.47m', '375mmØ PVC STM @ 0.50%',
+      'PROPOSED 7.47m 375mmØ PVC STM @ 0.50% (TYP)',
+    )).toBeNull();
+    // the head itself is not length-only
+    expect(parseColFragJoin('45.0m - 250mmØ', '375mmØ', '45.0m - 250mmØ 375mmØ PVC STM @ 1.0%')).toBeNull();
   });
 });
 

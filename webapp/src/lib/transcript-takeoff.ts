@@ -13,7 +13,8 @@ import {
   parseRunCallout, parseStructureLabel, parseElevation, parseWatermainCallout,
   parseScheduleRunRow, parseComponentStructures,
   structureDescription, chamberWarning, HASH_STRUCTURE_HEADER_RE,
-  isDanglingRunHead, isRunContinuation, ParsedStructure, ParsedRun, ParsedElevation,
+  isDanglingRunHead, isRunContinuation, isLengthOnlyRunHead, parseColFragJoin,
+  ParsedStructure, ParsedRun, ParsedElevation,
 } from './callout-parser';
 import { reconcileTakeoff } from './reconcile';
 import { isSpecialistDisabled } from './specialists';
@@ -91,6 +92,8 @@ interface Sink {
     directionalAdoptions: number;
     /** Hyphenated system-prefix reads kept as corroboration (S6's M2). */
     hyphenCorroborated: number;
+    /** Length-only-head joins committed under the S4 conjunction (PR58). */
+    colFragJoins: number;
   };
 }
 
@@ -407,11 +410,15 @@ function addsDetail(before: ParsedRun, after: ParsedRun): boolean {
 // run, and only while each extra line adds a field (see addsDetail). A head whose
 // continuations never produce a parseable run is left untouched, line by line, rather than
 // emitted as a merged string the grammar cannot read.
-function joinBlockLines(block: string[]): string[] {
+function joinBlockLines(
+  block: string[],
+  colFragEnabled = false,
+  onColFragJoin?: () => void,
+): string[] {
   const lines: string[] = [];
   for (let i = 0; i < block.length; i++) {
     const head = block[i];
-    if (isDanglingRunHead(head)) {
+    if (isDanglingRunHead(head, { colFrag: colFragEnabled })) {
       let accumulated = head;
       let accumulatedRun = parseRunCallout(accumulated);
       let bestIndex = -1;
@@ -434,6 +441,16 @@ function joinBlockLines(block: string[]): string[] {
         bestText = accumulated;
       }
       if (bestIndex !== -1) {
+        // S4 COL-FRAG (PR58): a length-only head commits ONLY through
+        // parseColFragJoin's fail-closed conjunction (diameter on the
+        // first folded line, a complete not-existing parse WITH slope,
+        // joined text fully consumed by callout vocabulary). A greedy
+        // fold that fails the conjunction leaves every line untouched.
+        if (isLengthOnlyRunHead(head) && !parseColFragJoin(head, block[i + 1], bestText)) {
+          lines.push(head);
+          continue;
+        }
+        if (isLengthOnlyRunHead(head)) onColFragJoin?.();
         lines.push(bestText);
         i = bestIndex; // consume every line folded into the callout
         continue;
@@ -1025,6 +1042,7 @@ export function assembleTranscriptTakeoff(
   // reproduce today's behaviour exactly.
   const s6Disabled = isSpecialistDisabled('S6-detached-elevation');
   const s7Disabled = isSpecialistDisabled('S7-enumeration-scope');
+  const s4Disabled = isSpecialistDisabled('S4-col-frag');
   const out: Sink = {
     structures: [],
     catchbasinLabels: new Map(),
@@ -1045,7 +1063,7 @@ export function assembleTranscriptTakeoff(
     droppedStructureBlocks: [],
     currentPage: 0,
     readPages: new Map(),
-    stats: { valueFirstAdoptions: 0, directionalAdoptions: 0, hyphenCorroborated: 0 },
+    stats: { valueFirstAdoptions: 0, directionalAdoptions: 0, hyphenCorroborated: 0, colFragJoins: 0 },
   };
   const warnings: string[] = [];
 
@@ -1056,7 +1074,7 @@ export function assembleTranscriptTakeoff(
     if (tile.tile <= prevTileNum) out.currentPage++;
     prevTileNum = tile.tile;
     for (const block of usableBlocks(tile)) {
-      const joined = joinBlockLines(block);
+      const joined = joinBlockLines(block, !s4Disabled, () => { out.stats.colFragJoins++; });
 
       // Coverage bookkeeping: every label the grammar can see in this block,
       // including schedule-row cells the assembly deliberately does not
@@ -1253,6 +1271,16 @@ export function assembleTranscriptTakeoff(
         fired: out.stats.valueFirstAdoptions,
         detail: { adoptions: out.stats.valueFirstAdoptions },
       },
+      // PR58: S4 is listed only when it fired (the S2 convention) — a
+      // silent specialist leaves the record byte-identical.
+      ...(out.stats.colFragJoins > 0
+        ? {
+            'S4-col-frag': {
+              fired: out.stats.colFragJoins,
+              detail: { joins: out.stats.colFragJoins },
+            },
+          }
+        : {}),
     };
   }
 

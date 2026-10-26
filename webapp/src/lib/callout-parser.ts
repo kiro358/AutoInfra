@@ -305,14 +305,98 @@ function isDiameterFirstHead(line: string): boolean {
   return MATERIAL_RE.test(line) || CLASS_RE.test(line) || SYSTEM_RE.test(line);
 }
 /**
- * Head half of a callout the drafter wrapped across visual lines. Two shapes occur:
+ * Head half of a callout the drafter wrapped across visual lines. Three shapes occur:
  *   a) length-first   — "45.0m - 250mmØ", the tail carrying the material/slope;
- *   b) diameter-first — "300mm PVC STM", the tail carrying the slope and/or the length.
+ *   b) diameter-first — "300mm PVC STM", the tail carrying the slope and/or the length;
+ *   c) length-only    — "PROPOSED 7.47m", "8.2m -": the callout split at the
+ *      length|diameter boundary, its diameter still to come (S4 COL-FRAG, PR58).
+ * Form (c) is admitted only when the caller opts in (`opts.colFrag` — the
+ * joiners pass the S4 kill-switch state, the parseDetachedElevation
+ * convention), and a form-(c) head may be COMMITTED only through
+ * parseColFragJoin's conjunction below; the predicate alone never joins.
  */
-export function isDanglingRunHead(line: string): boolean {
+export function isDanglingRunHead(line: string, opts?: { colFrag?: boolean }): boolean {
   if (WM_RE.test(line)) return false;
   if (LEN_DIA_RE.test(line)) return !SLOPE_RE.test(line) && !MATERIAL_RE.test(line);
-  return isDiameterFirstHead(line);
+  if (isDiameterFirstHead(line)) return true;
+  return opts?.colFrag === true && isLengthOnlyRunHead(line);
+}
+
+// --- length-only heads (S4 COL-FRAG, PR58) -----------------------------------
+// A callout split at the length|diameter boundary leaves its length on a
+// line of its own: "PROPOSED 7.47m" (Stevenson, transcript path) and
+// "8.2m -" (Oakville, a rotated callout the text layer emits as fragments).
+// The head line is FULLY consumed by an optional status prefix, the length,
+// and an optional trailing dash — no diameter, no material, no slope,
+// nothing else. Any extra word ("12.0m WIDE") disqualifies it: a bare
+// figure is far too common on a drawing to trust on shape alone, which is
+// why the join side (parseColFragJoin) carries the real conjunction and
+// this predicate only names the shape.
+const LENGTH_ONLY_HEAD_RE = /^\s*(?:EX(?:IST(?:ING)?)?\.?\s*|(?:NEW|PROP(?:OSED)?|PR)\.?\s+)?\d+(?:\.\d+)?\s*m\s*(?:-|–)?\s*$/i;
+
+export function isLengthOnlyRunHead(line: string): boolean {
+  if (WM_RE.test(line)) return false;
+  if (!LENGTH_ONLY_HEAD_RE.test(line)) return false;
+  if (parseStructureLabel(line) !== null) return false;
+  return true;
+}
+
+/** Does the line carry a pipe diameter (and no length of its own)? The
+ * first-continuation shape a length-only head may join to: "375mmØ",
+ * "250mmØ PVC", "375mmØ PVC STM @ 0.50%". A whole neighbouring callout
+ * (it carries a length, or parses as a run) is never a fragment. */
+export function isDiameterBearingFragment(line: string): boolean {
+  if (!DIA_UNIT_RE.test(line)) return false;
+  if (LEN_DIA_RE.test(line) || BARE_LEN_RE.test(line) || PAREN_LEN_RE.test(line)) return false;
+  if (parseRunCallout(line) !== null) return false;
+  if (parseStructureLabel(line) !== null) return false;
+  return true;
+}
+
+/**
+ * Callout-vocabulary residue test: strip every token the callout grammar
+ * can consume (slope, lengths, diameters, classes, materials, system
+ * tags, status prefixes) and require that nothing but punctuation and
+ * whitespace remains. This is what keeps a spec-prose accident — a bare
+ * length line that happens to sit next to a pipe tail — from passing as
+ * a reassembled callout (the PR44/PR56 loose-scan failure mode).
+ */
+function calloutTextFullyConsumed(text: string): boolean {
+  const rest = text
+    .replace(/@\s*\d+(?:\.\d+)?\s*(?:%|‰)?/g, ' ')
+    .replace(/\(\s*\d+(?:\.\d+)?\s*m\s*\)/gi, ' ')
+    .replace(/\d+(?:\.\d+)?\s*m\b(?!m)/gi, ' ')
+    .replace(/\d{2,4}\s*(?:mm|#|Ø|DIAM|DIA)/gi, ' ')
+    .replace(/\bS?DR[\s-]*\d{1,3}\b/gi, ' ')
+    .replace(/\bCL(?:ASS)?\.?\s*(?:IV|III|II|I|V|\d{1,2})\b/gi, ' ')
+    .replace(/\b(?:PVC|HDPE|CONC|CSP|RCP|DI|SAN|SANITARY|STM|STORM|EX|EXIST|EXISTING|NEW|PROP|PROPOSED|PR|INS|INSULATED|INSULATION|POLY|OF)\b/gi, ' ');
+  return /^[\s\-–—().,/Ø]*$/.test(rest);
+}
+
+/**
+ * The fail-closed join for a length-only head (S4 COL-FRAG, PR58). Every
+ * condition must hold, or the lines are left exactly as they were:
+ *  - `head` is a length-only head (shape above);
+ *  - the FIRST continuation line is diameter-bearing, and the joined
+ *    parse's diameter is that line's diameter (the size arrived with
+ *    the continuation, not from somewhere else in the joined text);
+ *  - the joined text parses as a complete run that is NOT existing and
+ *    carries a slope (a slope-less join is some other annotation's
+ *    figure standing next to a pipe tail);
+ *  - the joined text is fully consumed by callout vocabulary.
+ */
+export function parseColFragJoin(head: string, firstContinuation: string, joined: string): ParsedRun | null {
+  if (!isLengthOnlyRunHead(head)) return null;
+  if (!isDiameterBearingFragment(firstContinuation)) return null;
+  const dia = DIA_UNIT_RE.exec(firstContinuation);
+  if (!dia) return null;
+  const run = parseRunCallout(joined);
+  if (!run) return null;
+  if (run.existing) return null;
+  if (run.slopePct === null) return null;
+  if (run.diameterMm !== snapToPipeDiameter(parseInt(dia[1], 10))) return null;
+  if (!calloutTextFullyConsumed(joined)) return null;
+  return run;
 }
 /**
  * Tail half of a wrapped callout: the material/slope tail ("DR 35 @ 0.05%", "PVC STM"), the

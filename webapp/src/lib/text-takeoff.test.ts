@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { assembleTextTakeoff } from './text-takeoff';
 import { PageText, decodeSymbolFontText } from './pdf-text';
+import { SpecialistFiring } from './types';
 
 const page = (items: { text: string; x: number; y: number }[]): PageText => ({
   page: 1, width: 2592, height: 1728,
@@ -219,5 +220,71 @@ describe('assembleTextTakeoff — PR25 grammar extensions', () => {
     expect(facts.watermain).toHaveLength(1);
     expect(facts.watermain[0].pipeDiameter).toBe(150);
     expect(facts.watermain[0].length).toBe(68);
+  });
+});
+
+describe('assembleTextTakeoff — S4 COL-FRAG rotated fragments (PR58)', () => {
+  // The Oakville first sighting (PR44/PR56): a rotated callout the text
+  // layer emits as a four-item column, ~13pt steps at x ≈ 1313.
+  const oakville = () => page([
+    { text: '8.2m -', x: 1313, y: 800 },
+    { text: '375mmØ', x: 1313, y: 787 },
+    { text: 'PVC STM', x: 1313, y: 774 },
+    { text: '@ 1.0%', x: 1313, y: 761 },
+  ]);
+
+  it('reassembles the rotated four-fragment callout', () => {
+    const facts = assembleTextTakeoff([oakville()], 'T');
+    expect(facts.sewers).toHaveLength(1);
+    // PR27 whole-metre-up recording: the stated 8.2m is recorded as 9 —
+    // the workbook's 9m for this run.
+    expect(facts.sewers[0]).toMatchObject({ length: 9, pipeDiameter: 375, slope: 1.0 });
+    expect(facts.sewers[0].source?.evidence).toBe('8.2m - 375mmØ PVC STM @ 1.0%');
+  });
+
+  it('records the S4 firing in the specialist stats', () => {
+    const stats: { specialists: Record<string, SpecialistFiring> } = { specialists: {} };
+    assembleTextTakeoff([oakville()], 'T', stats);
+    expect(stats.specialists['S4-col-frag']).toEqual({ fired: 1, detail: { joins: 1 } });
+  });
+
+  it('kill switch: DISABLE_COL_FRAG restores the pre-PR58 loss', () => {
+    const saved = process.env.DISABLE_COL_FRAG;
+    process.env.DISABLE_COL_FRAG = '1';
+    try {
+      const facts = assembleTextTakeoff([oakville()], 'T');
+      expect(facts.sewers).toHaveLength(0);
+    } finally {
+      if (saved === undefined) delete process.env.DISABLE_COL_FRAG;
+      else process.env.DISABLE_COL_FRAG = saved;
+    }
+  });
+
+  it('does not join when the slope fragment is absent (partial join)', () => {
+    const facts = assembleTextTakeoff([page([
+      { text: '8.2m -', x: 1313, y: 800 },
+      { text: '375mmØ', x: 1313, y: 787 },
+      { text: 'PVC STM', x: 1313, y: 774 },
+    ])], 'T');
+    expect(facts.sewers).toHaveLength(0);
+  });
+
+  it('does not join a length-only head whose neighbour carries no diameter', () => {
+    const facts = assembleTextTakeoff([page([
+      { text: '8.2m -', x: 1313, y: 800 },
+      { text: 'PVC STM @ 1.0%', x: 1313, y: 787 },
+    ])], 'T');
+    expect(facts.sewers).toHaveLength(0);
+  });
+
+  it('does not steal a neighbouring whole callout as the diameter fragment', () => {
+    const facts = assembleTextTakeoff([page([
+      { text: '8.2m -', x: 1313, y: 800 },
+      { text: '83.7m-375mmØ SAN @ 0.02%', x: 1313, y: 787 },
+    ])], 'T');
+    // The whole callout forms its own run (83.7 recorded as 84); the
+    // length-only head forms nothing.
+    expect(facts.sewers).toHaveLength(1);
+    expect(facts.sewers[0]).toMatchObject({ length: 84, pipeDiameter: 375 });
   });
 });

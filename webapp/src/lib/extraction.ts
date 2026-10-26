@@ -827,7 +827,8 @@ export async function assembleHybridTakeoff(
   const textySet = new Set(textyPageNums);
   const rasterSet = new Set(locatedPages.filter((p) => !textySet.has(p)));
 
-  const textFacts = assembleTextTakeoff(textyPages, projectName);
+  const textStats: { specialists: Record<string, SpecialistFiring> } = { specialists: {} };
+  const textFacts = assembleTextTakeoff(textyPages, projectName, textStats);
 
   const fallbackPageNums: number[] = [];
   const runFallbackPageNums: number[] = [];
@@ -963,6 +964,21 @@ export async function assembleHybridTakeoff(
   const specialistFirings: Record<string, SpecialistFiring> = {
     ...(transcriptFacts ? transcriptStats.specialists : {}),
   };
+  // PR58: S4 fires on both assembly paths — merge the text and
+  // transcript records into one (the transcript record, when present,
+  // was spread in above and is replaced by the sum).
+  {
+    const s4Text = textStats.specialists['S4-col-frag'];
+    const s4Transcript = transcriptFacts ? transcriptStats.specialists['S4-col-frag'] : undefined;
+    if (s4Text || s4Transcript) {
+      const textJoins = s4Text?.fired ?? 0;
+      const transcriptJoins = s4Transcript?.fired ?? 0;
+      specialistFirings['S4-col-frag'] = {
+        fired: textJoins + transcriptJoins,
+        detail: { joins: textJoins + transcriptJoins, textJoins, transcriptJoins },
+      };
+    }
+  }
   if (wmMined.tables.length > 0 || wmHookCalls > 0) {
     const firing = wmTableFiring(
       wmMined,

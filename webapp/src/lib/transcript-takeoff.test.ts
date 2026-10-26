@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { assembleTranscriptTakeoff } from './transcript-takeoff';
+import { SpecialistFiring } from './types';
 
 describe('assembleTranscriptTakeoff', () => {
   it('assembles structure blocks with elevations and run blocks', () => {
@@ -50,6 +51,69 @@ describe('assembleTranscriptTakeoff', () => {
     expect(facts.sewers).toHaveLength(1);
     // Length 8.4m is recorded whole-metre-up as 9 (PR27).
     expect(facts.sewers[0]).toMatchObject({ length: 9, pipeDiameter: 300, slope: 1.0 });
+  });
+
+  it('reassembles a callout split at the length|diameter boundary (S4 COL-FRAG, PR58)', () => {
+    // The Stevenson second sighting (PR56), tile 11 block 2 verbatim.
+    const facts = assembleTranscriptTakeoff([
+      { tile: 11, blocks: [['PROPOSED 7.47m', '375mmØ PVC STM @ 0.50%']] },
+    ], 'T');
+    expect(facts.sewers).toHaveLength(1);
+    // PR27 whole-metre-up recording: the stated 7.47m is recorded as 8 —
+    // which is exactly the workbook's rounded 8m for this run.
+    expect(facts.sewers[0]).toMatchObject({ length: 8, pipeDiameter: 375, slope: 0.5 });
+    expect(facts.sewers[0].source?.evidence).toBe('PROPOSED 7.47m 375mmØ PVC STM @ 0.50%');
+  });
+
+  it('reassembles the three-line length-only split (Stevenson corroboration shape)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 14, blocks: [['PROP. 17.0m', '250mmØ PVC', 'STM @ 0.50%']] },
+    ], 'T');
+    expect(facts.sewers).toHaveLength(1);
+    expect(facts.sewers[0]).toMatchObject({ length: 17, pipeDiameter: 250, slope: 0.5 });
+  });
+
+  it('records the S4 firing in the specialist stats (PR58)', () => {
+    const stats: { specialists: Record<string, SpecialistFiring> } = { specialists: {} };
+    assembleTranscriptTakeoff([
+      { tile: 11, blocks: [['PROPOSED 7.47m', '375mmØ PVC STM @ 0.50%']] },
+    ], 'T', stats);
+    expect(stats.specialists['S4-col-frag']).toEqual({ fired: 1, detail: { joins: 1 } });
+  });
+
+  it('S4 kill switch: DISABLE_COL_FRAG restores the pre-PR58 loss', () => {
+    const saved = process.env.DISABLE_COL_FRAG;
+    process.env.DISABLE_COL_FRAG = '1';
+    try {
+      const facts = assembleTranscriptTakeoff([
+        { tile: 11, blocks: [['PROPOSED 7.47m', '375mmØ PVC STM @ 0.50%']] },
+      ], 'T');
+      expect(facts.sewers).toHaveLength(0);
+    } finally {
+      if (saved === undefined) delete process.env.DISABLE_COL_FRAG;
+      else process.env.DISABLE_COL_FRAG = saved;
+    }
+  });
+
+  it('does not join a length-only head followed by a non-diameter line', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [['PROPOSED 7.47m', 'PVC STM @ 0.50%']] },
+    ], 'T');
+    expect(facts.sewers).toHaveLength(0);
+  });
+
+  it('does not join a length-only head when the completed parse has no slope', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [['PROPOSED 7.47m', '375mmØ PVC STM']] },
+    ], 'T');
+    expect(facts.sewers).toHaveLength(0);
+  });
+
+  it('does not join when prose rides on the diameter line (partial join)', () => {
+    const facts = assembleTranscriptTakeoff([
+      { tile: 1, blocks: [['PROPOSED 7.47m', '375mmØ PVC STM @ 0.50% WHERE REQUIRED BEYOND THE LIMIT']] },
+    ], 'T');
+    expect(facts.sewers).toHaveLength(0);
   });
 
   it('leaves a head untouched when no continuation completes it', () => {

@@ -230,6 +230,35 @@ describe('restart simulation', () => {
     expect(await store.getAsync('nope')).toBeUndefined();
   });
 
+  it('an orphaned job surfaces through getAsync as failed/interrupted — never 404, never a result', async () => {
+    const fake = new FakeJobObjectStore();
+    // Instance A accepts a job and gets as far as running before dying.
+    const persistenceA = new JobPersistence<string>(fake, identityResultCodec());
+    persistenceA.onTransition({
+      id: 'orphaned-job',
+      status: 'running',
+      stage: 'extracting',
+      fileName: 'orphan.pdf',
+      createdAt: 100,
+      updatedAt: 200,
+    });
+    await persistenceA.flush();
+
+    // Instance B boots: reconciliation runs, then the user's poll arrives.
+    const persistenceB = new JobPersistence<string>(fake, identityResultCodec(), { now: () => 300 });
+    await persistenceB.reconcileOrphans();
+    const storeB = new JobStore<string>({
+      maxConcurrent: 1,
+      maxActive: 5,
+      ttlMs: 60_000,
+      persistence: persistenceB,
+    });
+    const view = await storeB.getAsync('orphaned-job');
+    expect(view).toMatchObject({ status: 'failed', failureKind: 'interrupted', fileName: 'orphan.pdf' });
+    expect(view?.error).toBe(INTERRUPTED_JOB_ERROR);
+    expect(view?.diagnostic).toMatch(/worker restarted before completion/);
+    expect(view?.result).toBeUndefined();
+  });
 });
 
 describe('degradation: storage failure never breaks the job', () => {
@@ -321,26 +350,25 @@ describe('op timeout: a hung store degrades, never hangs', () => {
   });
 });
 
-describe('enablement (PR 59: inert by default)', () => {
-  it('requires ENABLE_JOB_PERSISTENCE and honours the kill switch', () => {
-    expect(isJobPersistenceEnabled({})).toBe(false);
-    expect(isJobPersistenceEnabled({ ENABLE_JOB_PERSISTENCE: '1' })).toBe(true);
-    expect(isJobPersistenceEnabled({ ENABLE_JOB_PERSISTENCE: 'true' })).toBe(true);
-    expect(isJobPersistenceEnabled({ ENABLE_JOB_PERSISTENCE: 'false' })).toBe(false);
-    expect(isJobPersistenceEnabled({ ENABLE_JOB_PERSISTENCE: '0' })).toBe(false);
-    expect(
-      isJobPersistenceEnabled({ ENABLE_JOB_PERSISTENCE: '1', DISABLE_JOB_PERSISTENCE: '1' })
-    ).toBe(false);
-    expect(
-      isJobPersistenceEnabled({ ENABLE_JOB_PERSISTENCE: '1', DISABLE_JOB_PERSISTENCE: 'false' })
-    ).toBe(true);
+describe('enablement (PR 60: on by default, kill switch opts out)', () => {
+  it('is on unless DISABLE_JOB_PERSISTENCE is set to a truthy value', () => {
+    expect(isJobPersistenceEnabled({})).toBe(true);
+    expect(isJobPersistenceEnabled({ DISABLE_JOB_PERSISTENCE: '1' })).toBe(false);
+    expect(isJobPersistenceEnabled({ DISABLE_JOB_PERSISTENCE: 'true' })).toBe(false);
+    expect(isJobPersistenceEnabled({ DISABLE_JOB_PERSISTENCE: 'yes' })).toBe(false);
+    expect(isJobPersistenceEnabled({ DISABLE_JOB_PERSISTENCE: 'false' })).toBe(true);
+    expect(isJobPersistenceEnabled({ DISABLE_JOB_PERSISTENCE: '0' })).toBe(true);
+    expect(isJobPersistenceEnabled({ DISABLE_JOB_PERSISTENCE: '' })).toBe(true);
     expect(isJobPersistenceDisabled({ DISABLE_JOB_PERSISTENCE: 'yes' })).toBe(true);
     expect(isJobPersistenceDisabled({})).toBe(false);
   });
 
-  it('factory returns undefined when not enabled — flag off means zero storage construction', () => {
-    expect(createJobPersistenceFromEnv({})).toBeUndefined();
+  it('factory returns an adapter by default and undefined under the kill switch', () => {
+    // Construction is lazy (no storage client work), so building the
+    // adapter here touches no network; without K_SERVICE the factory
+    // also fires no boot reconciliation.
     expect(createJobPersistenceFromEnv({ DISABLE_JOB_PERSISTENCE: '1' })).toBeUndefined();
+    expect(createJobPersistenceFromEnv({})).toBeInstanceOf(JobPersistence);
   });
 
   it('bucket resolution prefers JOBS_BUCKET, then GCS_BUCKET, then the eval-data default', () => {

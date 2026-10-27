@@ -14,6 +14,7 @@
  * routes only talk to the interface.
  */
 import { randomUUID } from 'crypto';
+import { createJobPersistenceFromEnv } from './job-persistence';
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed';
 
@@ -21,7 +22,7 @@ export type JobStatus = 'queued' | 'running' | 'completed' | 'failed';
 export const JOB_STAGES = ['queued', 'extracting', 'pricing', 'documents', 'done'] as const;
 export type JobStage = (typeof JOB_STAGES)[number];
 
-export type JobFailureKind = 'watchdog-timeout' | 'execution-error';
+export type JobFailureKind = 'watchdog-timeout' | 'execution-error' | 'interrupted';
 
 export interface Job<R = unknown> {
   id: string;
@@ -36,6 +37,19 @@ export interface Job<R = unknown> {
    * watchdog kill says so here while the public error remains concise. */
   diagnostic?: string;
   result?: R;
+}
+
+/**
+ * The persistence port (see job-persistence.ts). The store notifies every
+ * state transition and can read a job back after a restart. Implemented by
+ * the GCS write-through adapter; absent = pure in-memory store (the
+ * pre-persistence behaviour, byte for byte).
+ */
+export interface JobPersistencePort<R = unknown> {
+  /** Fire-and-forget transition hook; must never throw. */
+  onTransition(job: Readonly<Job<R>>): void;
+  /** Read a job back from the persistent store, if it exists there. */
+  load(id: string): Promise<Job<R> | undefined>;
 }
 
 /** Public view: never leaks the result until it is complete. */
@@ -74,6 +88,13 @@ export class JobStore<R = unknown> {
       deadlineMs?: number;
       /** Explicit test/config override for DISABLE_JOB_WATCHDOG. */
       watchdogDisabled?: boolean;
+      /**
+       * Optional write-through persistence. When present, every state
+       * transition is notified and getAsync can read jobs back after a
+       * restart. When absent, the store is exactly the pre-persistence
+       * in-memory store.
+       */
+      persistence?: JobPersistencePort<R>;
       now?: () => number;
     }
   ) {}
@@ -99,10 +120,7 @@ export class JobStore<R = unknown> {
     }
   }
 
-  get(id: string): JobView<R> | undefined {
-    this.sweep();
-    const job = this.jobs.get(id);
-    if (!job) return undefined;
+  private view(job: Job<R>): JobView<R> {
     return {
       id: job.id,
       status: job.status,
@@ -114,6 +132,52 @@ export class JobStore<R = unknown> {
       diagnostic: job.diagnostic,
       result: job.status === 'completed' ? job.result : undefined,
     };
+  }
+
+  get(id: string): JobView<R> | undefined {
+    this.sweep();
+    const job = this.jobs.get(id);
+    if (!job) return undefined;
+    return this.view(job);
+  }
+
+  /**
+   * Memory-first read with persistent read-back. The sync get() stays the
+   * hot path; only on a memory miss (the post-restart case) is the store
+   * consulted, and a found job is hydrated into memory so later polls are
+   * fast again. Without persistence configured this is exactly get().
+   */
+  async getAsync(id: string): Promise<JobView<R> | undefined> {
+    const hit = this.get(id);
+    if (hit) return hit;
+    const persistence = this.opts.persistence;
+    if (!persistence) return undefined;
+    let job: Job<R> | undefined;
+    try {
+      job = await persistence.load(id);
+    } catch (err) {
+      // A broken store must not turn an honest 404 into a 500.
+      console.error(`[jobs] persistent read-back failed for ${id}:`, err);
+      return undefined;
+    }
+    if (!job) return undefined;
+    if (!this.jobs.has(id)) this.jobs.set(id, job);
+    return this.view(job);
+  }
+
+  /**
+   * Notify the persistence adapter of a state transition. The adapter is
+   * fire-and-forget and must never throw; this guard keeps even a broken
+   * adapter from breaking the job itself.
+   */
+  private notify(job: Job<R>): void {
+    const persistence = this.opts.persistence;
+    if (!persistence) return;
+    try {
+      persistence.onTransition(job);
+    } catch (err) {
+      console.error(`[jobs] persistence hook failed for ${job.id}:`, err);
+    }
   }
 
   /**
@@ -138,6 +202,7 @@ export class JobStore<R = unknown> {
       updatedAt: t,
     };
     this.jobs.set(job.id, job);
+    this.notify(job);
 
     let watchdogFired = false;
     const setStage = (stage: JobStage) => {
@@ -147,6 +212,7 @@ export class JobStore<R = unknown> {
       if (watchdogFired) return;
       job.stage = stage;
       job.updatedAt = this.now();
+      this.notify(job);
     };
 
     void this.acquire()
@@ -192,6 +258,7 @@ export class JobStore<R = unknown> {
                 job.diagnostic = `${code}: ${err instanceof Error ? err.message : String(err)}`;
               }
             }
+            this.notify(job);
           }
           console.error(`[jobs] ${job.id} (${fileName}) failed:`, err);
         } finally {
@@ -299,4 +366,5 @@ export const jobStore: JobStore =
     maxActive: envInt('MAX_ACTIVE_JOBS', 10),
     ttlMs: envInt('JOB_TTL_MINUTES', 60) * 60_000,
     deadlineMs: isJobWatchdogDisabled() ? undefined : envInt('JOB_DEADLINE_MINUTES', 30) * 60_000,
+    persistence: createJobPersistenceFromEnv(),
   }));

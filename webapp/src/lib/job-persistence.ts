@@ -36,8 +36,8 @@
  * construction.
  *
  * Retention (D2: 7 days) is enforced by a lifecycle rule on the bucket,
- * not by this code — see docs/job-storage-lifecycle.json. The uploaded PDF
- * is never stored (D4).
+ * not by this code — see docs/job-storage.md for the rule and the gsutil
+ * command that applies it. The uploaded PDF is never stored (D4).
  *
  * Kill switch: DISABLE_JOB_PERSISTENCE (see createJobPersistenceFromEnv).
  */
@@ -388,7 +388,7 @@ export class JobPersistence<R = unknown> implements JobPersistencePort<R> {
    * Boot reconciliation (D1): any persisted job still queued/running at
    * boot is orphaned by construction (deploy pins --max-instances 1) and
    * becomes failed/interrupted. Terminal records are never touched.
-   * Wired into the boot path by PR 60 (the factory's enablement flip).
+   * Invoked by createJobPersistenceFromEnv on Cloud Run boot (PR 60).
    */
   async reconcileOrphans(): Promise<{ scanned: number; interrupted: number }> {
     const names = (await this.op('list records', () => this.store.list())).filter((n) =>
@@ -446,14 +446,15 @@ export function isJobPersistenceDisabled(
 }
 
 /**
- * PR 59 enablement: persistence is INERT unless ENABLE_JOB_PERSISTENCE is
- * set (and the kill switch is not). PR 60 flips this to on-by-default.
+ * PR 60 enablement: persistence is ON by default; the kill switch
+ * (DISABLE_JOB_PERSISTENCE) is the only opt-out. (PR 59 shipped this
+ * default-off behind ENABLE_JOB_PERSISTENCE; this flip is PR 60's core
+ * semantics change.)
  */
 export function isJobPersistenceEnabled(
   env: Record<string, string | undefined> = process.env
 ): boolean {
-  if (isJobPersistenceDisabled(env)) return false;
-  return envFlagSet(env.ENABLE_JOB_PERSISTENCE);
+  return !isJobPersistenceDisabled(env);
 }
 
 export function resolveJobsBucket(
@@ -464,15 +465,35 @@ export function resolveJobsBucket(
 
 /**
  * Build the singleton's persistence adapter from the environment, or
- * undefined when persistence is not enabled (pure in-memory store —
- * today's behaviour).
+ * undefined when the kill switch is set (pure in-memory store — the
+ * pre-persistence behaviour).
+ *
+ * Boot reconciliation fires here, but only on Cloud Run (K_SERVICE is
+ * set by the platform on every revision): the singleton is constructed
+ * at module import in tests and dev too, and reconciliation's orphan
+ * inference is only sound for the serving instance at boot. Failures
+ * are logged, never fatal — a broken store must not take the service
+ * down with it.
  */
 export function createJobPersistenceFromEnv(
   env: Record<string, string | undefined> = process.env
 ): JobPersistence<ProcessResponse> | undefined {
   if (!isJobPersistenceEnabled(env)) return undefined;
-  return new JobPersistence<ProcessResponse>(
+  const persistence = new JobPersistence<ProcessResponse>(
     new GcsJobObjectStore(resolveJobsBucket(env)),
     processResponseCodec
   );
+  if (env.K_SERVICE) {
+    void persistence
+      .reconcileOrphans()
+      .then(({ scanned, interrupted }) => {
+        if (interrupted > 0) {
+          console.error(
+            `[job-persistence] boot reconciliation: ${interrupted} orphaned job(s) marked interrupted (${scanned} record(s) scanned)`
+          );
+        }
+      })
+      .catch((err) => console.error('[job-persistence] boot reconciliation failed', err));
+  }
+  return persistence;
 }

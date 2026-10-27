@@ -43,3 +43,5 @@ Notes:
   same rule.
 
 <!-- live-proof redeploy trigger 1 — PR 60 proof, 2026-10-27 (no content change) -->
+
+<!-- live-proof redeploy trigger 2 — PR 60 proof, 2026-10-27 (no content change) -->

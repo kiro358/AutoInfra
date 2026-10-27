@@ -41,3 +41,5 @@ Notes:
 - Kill switch: `DISABLE_JOB_PERSISTENCE=1` returns the app to the pure
   in-memory store; already-stored objects are inert and age out under the
   same rule.
+
+<!-- live-proof redeploy trigger 1 — PR 60 proof, 2026-10-27 (no content change) -->

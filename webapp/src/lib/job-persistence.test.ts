@@ -381,3 +381,48 @@ describe('enablement (PR 60: on by default, kill switch opts out)', () => {
     expect(() => new GcsJobObjectStore('any-bucket')).not.toThrow();
   });
 });
+
+describe('PR 63 wart: a poll that hydrated `running` before reconciliation lands', () => {
+  it('the next getAsync serves interrupted, not the frozen running snapshot', async () => {
+    const fake = new FakeJobObjectStore();
+    // Instance A accepts a job and gets as far as running before dying.
+    const persistenceA = new JobPersistence<string>(fake, identityResultCodec());
+    persistenceA.onTransition({
+      id: 'wart-job',
+      status: 'running',
+      stage: 'extracting',
+      fileName: 'wart.pdf',
+      createdAt: 100,
+      updatedAt: 200,
+    });
+    await persistenceA.flush();
+
+    // Instance B boots. A poll arrives BEFORE B's boot reconciliation has
+    // written: B hydrates the still-`running` record into memory. (Fixed
+    // clock so the fixture timestamps sit inside the TTL window.)
+    const persistenceB = new JobPersistence<string>(fake, identityResultCodec(), { now: () => 300 });
+    const storeB = new JobStore<string>({
+      maxConcurrent: 1,
+      maxActive: 5,
+      ttlMs: 60_000,
+      persistence: persistenceB,
+      now: () => 10_000,
+    });
+    expect(await storeB.getAsync('wart-job')).toMatchObject({ status: 'running', elapsedMs: 100 });
+
+    // Reconciliation now lands in the store. B's in-memory copy is stale —
+    // the sync path still shows it (memory-first, unchanged by design)…
+    await persistenceB.reconcileOrphans();
+    expect(fake.storedRecord('wart-job')).toMatchObject({ status: 'failed', failureKind: 'interrupted' });
+    expect(storeB.get('wart-job')).toMatchObject({ status: 'running' });
+
+    // …but the poll path re-checks a hydrated non-terminal record against
+    // the store and serves the terminal truth (the #81 wart, fixed).
+    const healed = await storeB.getAsync('wart-job');
+    expect(healed).toMatchObject({ status: 'failed', failureKind: 'interrupted' });
+    expect(healed?.error).toBe(INTERRUPTED_JOB_ERROR);
+    expect(healed?.result).toBeUndefined();
+    // And it sticks: memory now holds the terminal record.
+    expect(storeB.get('wart-job')).toMatchObject({ status: 'failed', failureKind: 'interrupted' });
+  });
+});

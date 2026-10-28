@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { JobStore, JobCapacityError, describeError, isJobWatchdogDisabled } from './jobs';
+import {
+  JobStore,
+  JobCapacityError,
+  describeError,
+  isJobWatchdogDisabled,
+  type Job,
+  type JobPersistencePort,
+} from './jobs';
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
@@ -140,5 +147,125 @@ describe('describeError', () => {
     expect(describeError(new Error('plain'))).toBe('plain');
     expect(describeError(new Error('Retry budget exhausted after 2 attempts and 10.0 minutes (budget 10.0 minutes).')))
       .toContain('Retry budget exhausted after 2 attempts');
+  });
+});
+
+describe('JobStore persistent re-check of hydrated records (PR 63)', () => {
+  const runningJob: Job<string> = {
+    id: 'job-hydrated',
+    status: 'running',
+    stage: 'extracting',
+    fileName: 'x.pdf',
+    createdAt: 1_000,
+    updatedAt: 1_500,
+  };
+
+  /** A JobPersistencePort double: `stored` is what load() reads back;
+   *  tests mutate it to simulate the store moving under a hydrated copy. */
+  function fakePort(initial: Job<string> | undefined) {
+    const port: JobPersistencePort<string> & {
+      stored: Job<string> | undefined;
+      loads: number;
+      transitions: number;
+      failLoads: boolean;
+    } = {
+      stored: initial,
+      loads: 0,
+      transitions: 0,
+      failLoads: false,
+      onTransition() {
+        port.transitions++;
+      },
+      async load() {
+        port.loads++;
+        if (port.failLoads) throw new Error('store is down');
+        return port.stored ? { ...port.stored } : undefined;
+      },
+    };
+    return port;
+  }
+
+  function storeWith(port: JobPersistencePort<string>) {
+    // Fixed clock: the fixture timestamps (1_000–9_000) must sit inside
+    // the TTL window, or sweep() would evict terminal records mid-test.
+    return new JobStore<string>({
+      maxConcurrent: 1,
+      maxActive: 5,
+      ttlMs: 60_000,
+      persistence: port,
+      now: () => 10_000,
+    });
+  }
+
+  it('(a) serves the reconciled interrupted state over a stale hydrated running snapshot', async () => {
+    const port = fakePort({ ...runningJob });
+    const store = storeWith(port);
+    // First poll after the restart: memory miss → hydrate the running record.
+    expect(await store.getAsync('job-hydrated')).toMatchObject({ status: 'running', stage: 'extracting' });
+    expect(port.loads).toBe(1);
+
+    // Boot reconciliation lands in the store: the record is now interrupted.
+    port.stored = {
+      ...runningJob,
+      status: 'failed',
+      stage: 'extracting',
+      failureKind: 'interrupted',
+      error: 'This takeoff was interrupted — the server restarted before it finished.',
+      updatedAt: 2_000,
+    };
+    const view = await store.getAsync('job-hydrated');
+    expect(view).toMatchObject({ status: 'failed', failureKind: 'interrupted' });
+    expect(view?.error).toMatch(/interrupted/);
+    expect(port.loads).toBe(2);
+
+    // Terminal now: the record left the re-check set — later polls are
+    // pure memory hits with no further store reads.
+    expect(await store.getAsync('job-hydrated')).toMatchObject({ status: 'failed', failureKind: 'interrupted' });
+    expect(port.loads).toBe(2);
+  });
+
+  it('(b) serves a still-running store record refreshed, never regressed', async () => {
+    const port = fakePort({ ...runningJob });
+    const store = storeWith(port);
+    expect(await store.getAsync('job-hydrated')).toMatchObject({ status: 'running', elapsedMs: 500 });
+
+    // The store's snapshot moved on (a stage write landed before the
+    // worker died): the poll must show the fresher stage/elapsed.
+    port.stored = { ...runningJob, stage: 'pricing', updatedAt: 9_000 };
+    const view = await store.getAsync('job-hydrated');
+    expect(view).toMatchObject({ status: 'running', stage: 'pricing', elapsedMs: 8_000 });
+  });
+
+  it('(c) a same-instance job never triggers a store read on the poll path', async () => {
+    const port = fakePort(undefined);
+    const store = storeWith(port);
+    const d = deferred<string>();
+    const id = store.start('own.pdf', async () => d.promise);
+    await tick();
+    expect(await store.getAsync(id)).toMatchObject({ status: 'running' });
+    expect(await store.getAsync(id)).toMatchObject({ status: 'running' });
+    d.resolve('done');
+    await tick();
+    expect(await store.getAsync(id)).toMatchObject({ status: 'completed', result: 'done' });
+    // Write-through fired (the port saw transitions) but load() was
+    // never called: owned jobs are served purely from memory.
+    expect(port.transitions).toBeGreaterThan(0);
+    expect(port.loads).toBe(0);
+  });
+
+  it('a failing re-check serves the in-memory view instead of throwing', async () => {
+    const port = fakePort({ ...runningJob });
+    const store = storeWith(port);
+    expect(await store.getAsync('job-hydrated')).toMatchObject({ status: 'running' });
+    port.failLoads = true;
+    expect(await store.getAsync('job-hydrated')).toMatchObject({ status: 'running', stage: 'extracting' });
+  });
+
+  it('without persistence, getAsync stays exactly get()', async () => {
+    const store = new JobStore<string>({ maxConcurrent: 1, maxActive: 5, ttlMs: 60_000 });
+    expect(await store.getAsync('nope')).toBeUndefined();
+    const id = store.start('a.pdf', async () => 'r');
+    await tick();
+    expect(await store.getAsync(id)).toMatchObject({ status: 'completed', result: 'r' });
   });
 });

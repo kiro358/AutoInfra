@@ -27,6 +27,7 @@ import { renderTilesFlat, renderPageThumbnails, measureDrawnContent, IMAGE_MIME,
 import { normalizeLabel, runSignature } from './compare-facts';
 import { assembleTranscriptTakeoff } from './transcript-takeoff';
 import { applyWmTableMiner, wmTableFiring, WM_TABLE_MINER_ID, type VisionWmTableRead } from './wm-table-miner';
+import { dropServiceOnlyRows, isServiceRowFilterDisabled, type ServiceRowDrop } from './service-row-filter';
 import {
   buildWmTableReadPrompt, detectWmTableCandidates, parseWmTableReadResponse,
   WM_HOOK_MAX_CALLS_PER_JOB,
@@ -961,6 +962,22 @@ export async function assembleHybridTakeoff(
     }
   }
 
+  // PR 64: service-row filter — sewer rows whose only content is a
+  // billable-service label read off a printed schedule (2026-073's
+  // VIDEO / LAYOUT / AS BUILT) are dropped from the assembled facts and
+  // counted in diagnostics. Fail-closed conjunction (see
+  // service-row-filter.ts); costing-rules still prices the standard
+  // fees canonically, so no workbook amount changes — the takeoff just
+  // stops claiming the schedule's fee lines as extracted runs.
+  let serviceRowDrop: ServiceRowDrop | undefined;
+  if (!isServiceRowFilterDisabled()) {
+    const filtered = dropServiceOnlyRows(facts);
+    if (filtered.dropped.count > 0) {
+      facts = filtered.facts;
+      serviceRowDrop = filtered.dropped;
+    }
+  }
+
   const specialistFirings: Record<string, SpecialistFiring> = {
     ...(transcriptFacts ? transcriptStats.specialists : {}),
   };
@@ -988,6 +1005,12 @@ export async function assembleHybridTakeoff(
     );
     if (wmHookBudgetRefused > 0 && firing.detail) firing.detail.hookBudgetRefused = wmHookBudgetRefused;
     specialistFirings[WM_TABLE_MINER_ID] = firing;
+  }
+  if (serviceRowDrop) {
+    specialistFirings['service-row-filter'] = {
+      fired: serviceRowDrop.count,
+      detail: serviceRowDrop.byKind,
+    };
   }
   return {
     facts, transcript, textyPageNums, rasterPageNums, fallbackPageNums, runFallbackPageNums,

@@ -67,6 +67,14 @@ export interface JobView<R = unknown> {
 
 export class JobStore<R = unknown> {
   private readonly jobs = new Map<string, Job<R>>();
+  /**
+   * Ids whose in-memory record entered via persistent read-back (getAsync
+   * hydration) rather than this instance's start(). The distinction is the
+   * provenance the wart fix (PR 63) keys on: a hydrated record's worker is
+   * another (dead) instance, so its non-terminal snapshot can be stale in
+   * a way an owned record's never is — see getAsync.
+   */
+  private readonly hydrated = new Set<string>();
   private running = 0;
   private readonly waiting: Array<() => void> = [];
 
@@ -116,7 +124,10 @@ export class JobStore<R = unknown> {
     const cutoff = this.now() - this.opts.ttlMs;
     for (const [id, job] of this.jobs) {
       const finished = job.status === 'completed' || job.status === 'failed';
-      if (finished && job.updatedAt < cutoff) this.jobs.delete(id);
+      if (finished && job.updatedAt < cutoff) {
+        this.jobs.delete(id);
+        this.hydrated.delete(id);
+      }
     }
   }
 
@@ -146,11 +157,34 @@ export class JobStore<R = unknown> {
    * hot path; only on a memory miss (the post-restart case) is the store
    * consulted, and a found job is hydrated into memory so later polls are
    * fast again. Without persistence configured this is exactly get().
+   *
+   * PR 63 (the #81 wart): a hydrated NON-TERMINAL record is not trusted
+   * blindly. Its worker belonged to a dead instance, and this instance's
+   * boot reconciliation may already have marked the record interrupted in
+   * the store — but a poll that hydrated the record before that write (or
+   * on an instance whose reconciliation raced it) would otherwise serve
+   * the frozen `running` snapshot until the instance turns over. So a
+   * non-terminal record this instance did NOT create is re-checked
+   * against the store on each poll. The bound: owned jobs (start() on
+   * this instance) never pay a store read on the hit path, and a hydrated
+   * record leaves the re-check set the moment the store shows it
+   * terminal — in practice the re-check fires for the few polls between
+   * hydration and reconciliation landing, then never again.
    */
   async getAsync(id: string): Promise<JobView<R> | undefined> {
     const hit = this.get(id);
-    if (hit) return hit;
     const persistence = this.opts.persistence;
+    if (hit) {
+      if (
+        persistence &&
+        this.hydrated.has(id) &&
+        hit.status !== 'completed' &&
+        hit.status !== 'failed'
+      ) {
+        return this.recheckHydrated(id, persistence, hit);
+      }
+      return hit;
+    }
     if (!persistence) return undefined;
     let job: Job<R> | undefined;
     try {
@@ -161,8 +195,51 @@ export class JobStore<R = unknown> {
       return undefined;
     }
     if (!job) return undefined;
-    if (!this.jobs.has(id)) this.jobs.set(id, job);
+    if (!this.jobs.has(id)) {
+      this.jobs.set(id, job);
+      this.hydrated.add(id);
+    }
     return this.view(job);
+  }
+
+  /**
+   * Re-read a hydrated non-terminal record from the persistent store and
+   * serve the store's truth: a terminal record replaces the stale
+   * snapshot (and leaves the re-check set); a still-live record refreshes
+   * the snapshot when it has moved. A store failure or disappearance
+   * serves the in-memory view — a poll must never become a 500 or a
+   * false 404 because the re-check could not run.
+   */
+  private async recheckHydrated(
+    id: string,
+    persistence: JobPersistencePort<R>,
+    current: JobView<R>
+  ): Promise<JobView<R>> {
+    let fresh: Job<R> | undefined;
+    try {
+      fresh = await persistence.load(id);
+    } catch (err) {
+      console.error(`[jobs] persistent re-check failed for ${id}:`, err);
+      return current;
+    }
+    if (!fresh) return current;
+    const terminal = fresh.status === 'completed' || fresh.status === 'failed';
+    if (terminal) {
+      this.jobs.set(id, fresh);
+      this.hydrated.delete(id);
+      return this.view(fresh);
+    }
+    const held = this.jobs.get(id);
+    if (
+      !held ||
+      fresh.status !== held.status ||
+      fresh.stage !== held.stage ||
+      fresh.updatedAt !== held.updatedAt
+    ) {
+      this.jobs.set(id, fresh);
+      return this.view(fresh);
+    }
+    return current;
   }
 
   /**

@@ -75,6 +75,12 @@ export class JobStore<R = unknown> {
    * a way an owned record's never is — see getAsync.
    */
   private readonly hydrated = new Set<string>();
+  /**
+   * Ids for which the frozen-job signature (PR 65) has already been
+   * logged on this instance: the re-check serves a hydrated record on
+   * every poll, and the log must name the freeze once, not per poll.
+   */
+  private readonly recheckFreezeLogged = new Set<string>();
   private running = 0;
   private readonly waiting: Array<() => void> = [];
 
@@ -127,6 +133,7 @@ export class JobStore<R = unknown> {
       if (finished && job.updatedAt < cutoff) {
         this.jobs.delete(id);
         this.hydrated.delete(id);
+        this.recheckFreezeLogged.delete(id);
       }
     }
   }
@@ -227,8 +234,10 @@ export class JobStore<R = unknown> {
     if (terminal) {
       this.jobs.set(id, fresh);
       this.hydrated.delete(id);
+      this.recheckFreezeLogged.delete(id);
       return this.view(fresh);
     }
+    this.noteFrozenHydrated(id, fresh);
     const held = this.jobs.get(id);
     if (
       !held ||
@@ -240,6 +249,32 @@ export class JobStore<R = unknown> {
       return this.view(fresh);
     }
     return current;
+  }
+
+  /**
+   * PR 65 self-announcing freeze: a hydrated record that is still
+   * non-terminal in the store when its last update is older than the job
+   * deadline is the 09546d5b signature — its worker is gone and boot
+   * reconciliation has not marked it interrupted (or never landed). A
+   * live owned job can legitimately sit in one long stage past the
+   * deadline only until its watchdog fires; a hydrated one has no
+   * watchdog anywhere, so serving it past the deadline should name
+   * itself in the logs. Once per record per instance.
+   */
+  private noteFrozenHydrated(id: string, fresh: Job<R>): void {
+    if (this.opts.watchdogDisabled) return;
+    const deadlineMs = this.opts.deadlineMs;
+    if (!deadlineMs) return;
+    const ageMs = this.now() - fresh.updatedAt;
+    if (ageMs <= deadlineMs) return;
+    if (this.recheckFreezeLogged.has(id)) return;
+    this.recheckFreezeLogged.add(id);
+    console.error(
+      `[jobs] persistent re-check: hydrated job ${id} is still non-terminal in the store ` +
+        `(${fresh.status}/${fresh.stage}) ${ageMs} ms after its last update — older than the ` +
+        `${deadlineMs} ms job deadline; this is the frozen-job signature (its worker is gone ` +
+        'and reconciliation has not marked it interrupted)'
+    );
   }
 
   /**
@@ -297,6 +332,19 @@ export class JobStore<R = unknown> {
         job.status = 'running';
         setStage('extracting');
         const watchdogMs = this.opts.watchdogDisabled ? undefined : this.opts.deadlineMs;
+        // PR 65: one line per job start settles the watchdog question
+        // from the logs alone — armed (with its deadline) or explicitly
+        // disabled. The 09546d5b investigation could not tell an unarmed
+        // watchdog from a hung one without this line.
+        if (this.opts.watchdogDisabled) {
+          console.error(
+            `[jobs] watchdog disabled for job ${job.id} (DISABLE_JOB_WATCHDOG); no deadline will be enforced`
+          );
+        } else if (watchdogMs) {
+          console.error(
+            `[jobs] watchdog armed for job ${job.id}: deadline ${watchdogMs} ms (${watchdogMs / 60_000} minutes)`
+          );
+        }
         let timer: ReturnType<typeof setTimeout> | null = null;
         const watchdogPromise = watchdogMs
           ? new Promise<never>((_resolve, reject) => {

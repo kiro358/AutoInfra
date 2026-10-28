@@ -389,18 +389,44 @@ export class JobPersistence<R = unknown> implements JobPersistencePort<R> {
    * boot is orphaned by construction (deploy pins --max-instances 1) and
    * becomes failed/interrupted. Terminal records are never touched.
    * Invoked by createJobPersistenceFromEnv on Cloud Run boot (PR 60).
+   *
+   * PR 65 hardening (from the 09546d5b freeze investigation): every record
+   * is reconciled in isolation — one record's load or write rejecting is
+   * logged with its job id, counted as failed, and skipped; the rest of
+   * the scan still completes. A list() failure remains scan-fatal (there
+   * is nothing to scan), but it is logged loudly here before it throws,
+   * not left to whatever the caller does with the rejection. Exactly one
+   * outcome line is logged per scan — including zero-orphan scans, whose
+   * silence previously made "reconciled, nothing to do" indistinguishable
+   * from "reconciliation never ran".
    */
   async reconcileOrphans(): Promise<{ scanned: number; interrupted: number }> {
-    const names = (await this.op('list records', () => this.store.list())).filter((n) =>
-      n.endsWith('/record.json')
-    );
+    let names: string[];
+    try {
+      names = (await this.op('list records', () => this.store.list())).filter((n) =>
+        n.endsWith('/record.json')
+      );
+    } catch (err) {
+      this.log('boot reconciliation failed: could not list persisted job records; scan aborted', err);
+      throw err;
+    }
     let interrupted = 0;
+    const failedIds: string[] = [];
     for (const name of names) {
+      const id = name.slice(0, -'/record.json'.length);
       try {
         const raw = await this.op('read record', () => this.store.get(name));
-        if (!raw) continue;
+        if (!raw) {
+          this.log(`reconciliation failed for ${name} (job ${id}): record vanished before it could be read; skipping it`);
+          failedIds.push(id);
+          continue;
+        }
         const record = parseRecord(raw);
-        if (!record) continue;
+        if (!record) {
+          this.log(`reconciliation failed for ${name} (job ${id}): stored record is unreadable; skipping it`);
+          failedIds.push(id);
+          continue;
+        }
         if (record.status !== 'queued' && record.status !== 'running') continue;
         const now = this.now();
         const updated: PersistedJobRecord = {
@@ -421,9 +447,14 @@ export class JobPersistence<R = unknown> implements JobPersistencePort<R> {
         );
         interrupted++;
       } catch (err) {
-        this.log(`reconciliation failed for ${name}; leaving the record as-is`, err);
+        this.log(`reconciliation failed for ${name} (job ${id}); leaving the record as-is`, err);
+        failedIds.push(id);
       }
     }
+    this.log(
+      `boot reconciliation outcome: scanned=${names.length} interrupted=${interrupted} failed=${failedIds.length}` +
+        (failedIds.length > 0 ? ` failedIds=${failedIds.join(',')}` : '')
+    );
     return { scanned: names.length, interrupted };
   }
 }
@@ -484,15 +515,12 @@ export function createJobPersistenceFromEnv(
     processResponseCodec
   );
   if (env.K_SERVICE) {
+    // PR 65: reconcileOrphans logs its own outcome line on every scan
+    // (zero-interrupted included) and logs a list() failure before
+    // throwing; this catch remains only as the rejection guard, so a
+    // fatal scan failure logs at both layers — loudly, by design.
     void persistence
       .reconcileOrphans()
-      .then(({ scanned, interrupted }) => {
-        if (interrupted > 0) {
-          console.error(
-            `[job-persistence] boot reconciliation: ${interrupted} orphaned job(s) marked interrupted (${scanned} record(s) scanned)`
-          );
-        }
-      })
       .catch((err) => console.error('[job-persistence] boot reconciliation failed', err));
   }
   return persistence;

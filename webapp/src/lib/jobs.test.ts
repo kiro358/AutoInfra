@@ -269,3 +269,130 @@ describe('JobStore persistent re-check of hydrated records (PR 63)', () => {
     expect(await store.getAsync(id)).toMatchObject({ status: 'completed', result: 'r' });
   });
 });
+
+describe('PR 65 observability: watchdog-armed + recheck freeze logs', () => {
+  function captureConsoleError() {
+    const lines: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => {
+      lines.push(args.map((a) => String(a)).join(' '));
+    };
+    return { lines, restore: () => (console.error = original) };
+  }
+
+  it('logs the armed watchdog (job id + deadline minutes) when a job starts', async () => {
+    const cap = captureConsoleError();
+    try {
+      const store = new JobStore<string>({
+        maxConcurrent: 1,
+        maxActive: 5,
+        ttlMs: 60_000,
+        deadlineMs: 30 * 60_000,
+      });
+      const d = deferred<string>();
+      const id = store.start('armed.pdf', () => d.promise);
+      await tick();
+      await tick();
+      const armed = cap.lines.filter((l) => /watchdog armed/.test(l));
+      expect(armed).toHaveLength(1);
+      expect(armed[0]).toContain(id);
+      expect(armed[0]).toContain('30');
+      d.resolve('done');
+      await tick();
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('logs the watchdog as disabled (not silently unarmed) when the kill switch is on', async () => {
+    const cap = captureConsoleError();
+    try {
+      const store = new JobStore<string>({
+        maxConcurrent: 1,
+        maxActive: 5,
+        ttlMs: 60_000,
+        deadlineMs: 30 * 60_000,
+        watchdogDisabled: true,
+      });
+      const d = deferred<string>();
+      const id = store.start('disarmed.pdf', () => d.promise);
+      await tick();
+      await tick();
+      const lines = cap.lines.filter((l) => /watchdog/.test(l) && l.includes(id));
+      expect(lines.some((l) => /disabled/.test(l))).toBe(true);
+      d.resolve('done');
+      await tick();
+    } finally {
+      cap.restore();
+    }
+  });
+
+  // Same fake-port pattern as the PR 63 describe above: `stored` is the
+  // store's truth; the fixed clock (10_000) sits the fixture ages where
+  // the test wants them relative to the 5_000 ms deadline.
+  function freezePort(initial: Job<string>): JobPersistencePort<string> {
+    const port: JobPersistencePort<string> & { stored: Job<string> } = {
+      stored: initial,
+      onTransition() {},
+      async load() {
+        return port.stored ? { ...port.stored } : undefined;
+      },
+    };
+    return port;
+  }
+  const frozenRunning: Job<string> = {
+    id: 'job-frozen',
+    status: 'running',
+    stage: 'extracting',
+    fileName: 'frozen.pdf',
+    createdAt: 1_000,
+    updatedAt: 1_500, // age at now=10_000 is 8_500 ms — past the 5_000 deadline
+  };
+
+  it('logs the frozen-job signature once per record when the re-check serves an over-deadline hydrated record', async () => {
+    const cap = captureConsoleError();
+    try {
+      const port = freezePort({ ...frozenRunning });
+      const store = new JobStore<string>({
+        maxConcurrent: 1,
+        maxActive: 5,
+        ttlMs: 60_000,
+        deadlineMs: 5_000,
+        persistence: port,
+        now: () => 10_000,
+      });
+      // First poll hydrates (memory miss — no re-check, no log yet).
+      expect(await store.getAsync('job-frozen')).toMatchObject({ status: 'running' });
+      // Subsequent polls re-check and serve the still-running store record:
+      // the freeze names itself — once.
+      expect(await store.getAsync('job-frozen')).toMatchObject({ status: 'running' });
+      expect(await store.getAsync('job-frozen')).toMatchObject({ status: 'running' });
+      const hits = cap.lines.filter((l) => /still non-terminal/.test(l));
+      expect(hits).toHaveLength(1);
+      expect(hits[0]).toContain('job-frozen');
+      expect(hits[0]).toContain('8500');
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('does not log the freeze signature for a fresh (within-deadline) hydrated record', async () => {
+    const cap = captureConsoleError();
+    try {
+      const port = freezePort({ ...frozenRunning, updatedAt: 9_000 }); // age 1_000 < 5_000
+      const store = new JobStore<string>({
+        maxConcurrent: 1,
+        maxActive: 5,
+        ttlMs: 60_000,
+        deadlineMs: 5_000,
+        persistence: port,
+        now: () => 10_000,
+      });
+      expect(await store.getAsync('job-frozen')).toMatchObject({ status: 'running' });
+      expect(await store.getAsync('job-frozen')).toMatchObject({ status: 'running' });
+      expect(cap.lines.filter((l) => /still non-terminal/.test(l))).toHaveLength(0);
+    } finally {
+      cap.restore();
+    }
+  });
+});

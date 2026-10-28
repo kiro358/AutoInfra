@@ -426,3 +426,103 @@ describe('PR 63 wart: a poll that hydrated `running` before reconciliation lands
     expect(storeB.get('wart-job')).toMatchObject({ status: 'failed', failureKind: 'interrupted' });
   });
 });
+
+describe('PR 65 reconcile hardening: per-record isolation + outcome log', () => {
+  /** Delegating store that can fail puts for one object name, or fail list(). */
+  class SelectiveFailStore implements JobObjectStore {
+    failList = false;
+    constructor(
+      private readonly inner: FakeJobObjectStore,
+      private readonly failPutFor: string | null = null
+    ) {}
+    async put(name: string, body: Buffer): Promise<void> {
+      if (this.failPutFor && name.includes(this.failPutFor)) {
+        throw new Error(`injected put failure for ${name}`);
+      }
+      return this.inner.put(name, body);
+    }
+    async get(name: string): Promise<Buffer | undefined> {
+      return this.inner.get(name);
+    }
+    async list(): Promise<string[]> {
+      if (this.failList) throw new Error('injected list failure (403-ish)');
+      return this.inner.list();
+    }
+  }
+
+  const seedBase: Omit<PersistedJobRecord, 'id' | 'status'> = {
+    schema: 1,
+    stage: 'extracting',
+    fileName: 'seed.pdf',
+    createdAt: 100,
+    updatedAt: 200,
+    hasResult: false,
+    resultBlobs: [],
+  };
+  function seed(fake: FakeJobObjectStore, id: string) {
+    fake.objects.set(
+      `${id}/record.json`,
+      Buffer.from(JSON.stringify({ ...seedBase, id, status: 'running' }))
+    );
+  }
+
+  it("S5/S6 seed: the middle orphan's write rejecting does not abort the scan — the other two reconcile, the failure is logged with its id, the scan resolves", async () => {
+    const fake = new FakeJobObjectStore();
+    seed(fake, 'orphan-a');
+    seed(fake, 'orphan-b');
+    seed(fake, 'orphan-c');
+    const store = new SelectiveFailStore(fake, 'orphan-b/record.json');
+    const logs: string[] = [];
+    const persistence = new JobPersistence<string>(store, identityResultCodec(), {
+      now: () => 999,
+      log: (m) => logs.push(m),
+    });
+
+    const outcome = await persistence.reconcileOrphans(); // resolves, never throws
+    expect(outcome).toEqual({ scanned: 3, interrupted: 2 });
+    expect(fake.storedRecord('orphan-a')).toMatchObject({ status: 'failed', failureKind: 'interrupted' });
+    expect(fake.storedRecord('orphan-c')).toMatchObject({ status: 'failed', failureKind: 'interrupted' });
+    // The failing record is left exactly as it was.
+    expect(fake.storedRecord('orphan-b')).toMatchObject({ status: 'running' });
+
+    // Per-record failure logged with the job id…
+    expect(logs.some((l) => /reconciliation failed/.test(l) && l.includes('orphan-b'))).toBe(true);
+    // …and counted in the single outcome line, with its id.
+    const outcomeLines = logs.filter((l) => /boot reconciliation outcome/.test(l));
+    expect(outcomeLines).toHaveLength(1);
+    expect(outcomeLines[0]).toContain('scanned=3');
+    expect(outcomeLines[0]).toContain('interrupted=2');
+    expect(outcomeLines[0]).toContain('failed=1');
+    expect(outcomeLines[0]).toContain('orphan-b');
+  });
+
+  it('a zero-orphan scan still emits the outcome log (silence must not mean "never ran")', async () => {
+    const fake = new FakeJobObjectStore();
+    const logs: string[] = [];
+    const persistence = new JobPersistence<string>(fake, identityResultCodec(), {
+      log: (m) => logs.push(m),
+    });
+    const outcome = await persistence.reconcileOrphans();
+    expect(outcome).toEqual({ scanned: 0, interrupted: 0 });
+    const outcomeLines = logs.filter((l) => /boot reconciliation outcome/.test(l));
+    expect(outcomeLines).toHaveLength(1);
+    expect(outcomeLines[0]).toContain('scanned=0');
+    expect(outcomeLines[0]).toContain('interrupted=0');
+    expect(outcomeLines[0]).toContain('failed=0');
+  });
+
+  it('a list() failure remains scan-fatal but is logged loudly, not silently', async () => {
+    const fake = new FakeJobObjectStore();
+    seed(fake, 'orphan-a');
+    const store = new SelectiveFailStore(fake);
+    store.failList = true;
+    const logs: string[] = [];
+    const persistence = new JobPersistence<string>(store, identityResultCodec(), {
+      log: (m) => logs.push(m),
+    });
+    await expect(persistence.reconcileOrphans()).rejects.toThrow(/injected list failure/);
+    expect(logs.some((l) => /list/.test(l) && /fail/.test(l))).toBe(true);
+    // Nothing was reconciled behind the failure.
+    expect(fake.storedRecord('orphan-a')).toMatchObject({ status: 'running' });
+  });
+});
